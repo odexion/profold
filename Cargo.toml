@@ -1,0 +1,21 @@
+[package]
+name = "profold"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gpui = "0.2.2"
+image = "0.25"
+smallvec = "1"
+unicode-segmentation = "1"
+anyhow = "1"
+ureq = "3"
+serde_json = "1"
+dirs = "6"
+
+# The software rasterizer is unusable at opt-level 0.
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3
