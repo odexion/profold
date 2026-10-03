@@ -1,65 +1,81 @@
 # Draws assets/logo.svg: `python3 assets/logo.py assets/logo.svg`.
 #
-# Caffeine, the first of the built-in samples, in ball and stick as the
-# viewer draws it: one colour, shaded spheres, a dark hairline. Coordinates
-# come from samples/caffeine.sdf and are seen down z, as the app opens it.
-import math, os, sys
+# A DNA double helix in ball and stick, as the viewer draws it: one colour,
+# shaded spheres, a dark hairline. Two backbones of beads, one rung per base
+# pair; what lies further back fades a little toward the paper.
+import math, sys
 
 PAPER = '#fdfdfc'
-LIGHT, BASE, LINE = '#4b3769', '#2b1b40', '#13131b'
-BOX = 700.0                       # the drawing's longest side, in px
-RADIUS = {'H': 0.32}              # sphere radius in Å; heavy atoms get HEAVY
-HEAVY = 0.45
-STICK = 0.13                      # stick radius in Å
-EDGE = 0.022                      # outline width in Å
+LIGHT, MID, BASE, LINE = (0x4b, 0x37, 0x69), (0x3a, 0x28, 0x56), (0x2b, 0x1b, 0x40), (0x13, 0x13, 0x1b)
+PAIRS = 12                        # base pairs drawn
+TWIST = 36.0                      # degrees per pair
+RISE = 0.48                       # axis rise per pair, in helix radii
+GROOVE = 180.0                    # angle between the two strands' beads
+BEAD = 0.21                       # sphere radius, in helix radii
+STICK = 0.065
+EDGE = 0.016
+FADE = 0.28                       # how far the back fades toward the paper
+TILT = -34.0                      # lean of the axis on the tile
+PITCH = 0.0                       # look down the axis a little, into the rungs
+BOX = 690.0
 
-sdf = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'samples', 'caffeine.sdf')
-lines = open(sdf).read().splitlines()
-na, nb = int(lines[3][:3]), int(lines[3][3:6])
-atoms = [(float(l.split()[0]), float(l.split()[1]), float(l.split()[2]), l.split()[3])
-         for l in lines[4:4+na]]
-bonds = [(int(l[:3])-1, int(l[3:6])-1) for l in lines[4+na:4+na+nb]]
-rad = [RADIUS.get(a[3], HEAVY) for a in atoms]
+pts, sticks = [], []
+for i in range(PAIRS):
+    th = math.radians(i*TWIST + TWIST/2)
+    y = (i - (PAIRS-1)/2)*RISE
+    for s, off in ((0, 0.0), (1, math.radians(GROOVE))):
+        pts.append((math.cos(th+off), y, math.sin(th+off)))
+    a, b = 2*i, 2*i+1
+    sticks.append((a, b))                      # the base pair
+    if i:
+        sticks += [(a-2, a), (b-2, b)]         # the backbones
 
-xs = [a[0] for a in atoms]; ys = [a[1] for a in atoms]
-x0 = min(a[0]-r for a, r in zip(atoms, rad)); x1 = max(a[0]+r for a, r in zip(atoms, rad))
-y0 = min(a[1]-r for a, r in zip(atoms, rad)); y1 = max(a[1]+r for a, r in zip(atoms, rad))
+def view(p):
+    x, y, z = p
+    q = math.radians(PITCH)
+    y, z = y*math.cos(q) - z*math.sin(q), y*math.sin(q) + z*math.cos(q)
+    t = math.radians(TILT)
+    x, y = x*math.cos(t) - y*math.sin(t), x*math.sin(t) + y*math.cos(t)
+    return (x, -y, z)
+P = [view(p) for p in pts]
+x0 = min(p[0] for p in P)-BEAD; x1 = max(p[0] for p in P)+BEAD
+y0 = min(p[1] for p in P)-BEAD; y1 = max(p[1] for p in P)+BEAD
 sc = BOX/max(x1-x0, y1-y0)
-def at(i):
-    a = atoms[i]
-    return ((a[0]-(x0+x1)/2)*sc + 512, -(a[1]-(y0+y1)/2)*sc + 512)
+xy = [((p[0]-(x0+x1)/2)*sc + 512, (p[1]-(y0+y1)/2)*sc + 512) for p in P]
+zs = [p[2] for p in P]
+
+PAP = tuple(int(PAPER[k:k+2], 16) for k in (1, 3, 5))
+def tint(c, z):
+    f = FADE*(1 - (z + 1)/2)                  # 0 at the front, FADE at the back
+    return '#%02x%02x%02x' % tuple(round(c[k] + (PAP[k]-c[k])*f) for k in range(3))
 
 o = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">',
- '<defs>',
- '<filter id="sh" x="-20%" y="-20%" width="140%" height="140%">'
- '<feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#1f1d17" flood-opacity="0.18"/></filter>',
- # a sphere lit from the upper left
- f'<radialGradient id="ball" cx="0.42" cy="0.38" r="0.62"><stop offset="0" stop-color="{LIGHT}"/>'
- f'<stop offset="0.55" stop-color="#3a2856"/><stop offset="1" stop-color="{BASE}"/></radialGradient>',
- '</defs>',
- f'<rect x="100" y="100" width="824" height="824" rx="185" fill="{PAPER}" filter="url(#sh)"/>']
+ '<defs><filter id="sh" x="-20%" y="-20%" width="140%" height="140%">'
+ '<feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#1f1d17" flood-opacity="0.18"/></filter>']
+for i, z in enumerate(zs):
+    o.append(f'<radialGradient id="b{i}" cx="0.42" cy="0.38" r="0.62">'
+             f'<stop offset="0" stop-color="{tint(LIGHT, z)}"/><stop offset="0.55" stop-color="{tint(MID, z)}"/>'
+             f'<stop offset="1" stop-color="{tint(BASE, z)}"/></radialGradient>')
+o += ['</defs>', f'<rect x="100" y="100" width="824" height="824" rx="185" fill="{PAPER}" filter="url(#sh)"/>']
 
-# Back to front. A stick sits just behind the nearer of its two atoms.
-items = [(atoms[i][2], 1, i) for i in range(na)]
-items += [(min(atoms[a][2], atoms[b][2]) - 1e-3, 0, k) for k, (a, b) in enumerate(bonds)]
+# Back to front. A stick sits just behind the nearer of its two beads.
+items = [(z, 1, i) for i, z in enumerate(zs)]
+items += [(min(zs[a], zs[b]) - 1e-3, 0, k) for k, (a, b) in enumerate(sticks)]
 items.sort()
-e = EDGE*sc
+e, r, w = EDGE*sc, BEAD*sc, STICK*2*sc
 for z, kind, k in items:
-    if kind == 1:
-        x, y = at(k); r = rad[k]*sc
-        o.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="url(#ball)" stroke="{LINE}" stroke-width="{e:.1f}"/>')
+    if kind:
+        x, y = xy[k]
+        o.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="url(#b{k})" stroke="{tint(LINE, z)}" stroke-width="{e:.1f}"/>')
     else:
-        a, b = bonds[k]
-        (ax, ay), (bx, by) = at(a), at(b)
-        w = STICK*2*sc
+        a, b = sticks[k]
+        (ax, ay), (bx, by) = xy[a], xy[b]
         seg = f'x1="{ax:.1f}" y1="{ay:.1f}" x2="{bx:.1f}" y2="{by:.1f}"'
-        o.append(f'<line {seg} stroke="{LINE}" stroke-width="{w+2*e:.1f}"/>')
-        o.append(f'<line {seg} stroke="{BASE}" stroke-width="{w:.1f}"/>')
-        # the round of the stick: a lighter band toward the light
-        d = math.hypot(bx-ax, by-ay); nx, ny = -(by-ay)/d, (bx-ax)/d
+        o.append(f'<line {seg} stroke="{tint(LINE, z)}" stroke-width="{w+2*e:.1f}"/>')
+        o.append(f'<line {seg} stroke="{tint(BASE, z)}" stroke-width="{w:.1f}"/>')
+        d = math.hypot(bx-ax, by-ay) or 1.0; nx, ny = -(by-ay)/d, (bx-ax)/d
         if nx + ny > 0: nx, ny = -nx, -ny
-        off = w*0.14
-        o.append(f'<line x1="{ax+nx*off:.1f}" y1="{ay+ny*off:.1f}" x2="{bx+nx*off:.1f}" y2="{by+ny*off:.1f}" '
-                 f'stroke="#3d2a5a" stroke-width="{w*0.5:.1f}"/>')
+        o.append(f'<line x1="{ax+nx*w*0.14:.1f}" y1="{ay+ny*w*0.14:.1f}" x2="{bx+nx*w*0.14:.1f}" y2="{by+ny*w*0.14:.1f}" '
+                 f'stroke="{tint(MID, z)}" stroke-width="{w*0.5:.1f}"/>')
 o.append('</svg>')
 open(sys.argv[1], 'w').write('\n'.join(o))
