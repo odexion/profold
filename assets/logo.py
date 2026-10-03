@@ -15,7 +15,7 @@ def helix(s):
 th0 = -math.pi/2
 tan = (-R*math.sin(th0)*turns*2*math.pi, H, R*math.cos(th0)*turns*2*math.pi)
 L = math.sqrt(sum(v*v for v in tan)); tan = tuple(v/L for v in tan)
-P0, P1, P3 = (-3.0, -0.6, 0.6), (-2.0, -1.2, 0.5), helix(0.0)
+P0, P1, P3 = (-0.9, -2.0, 0.5), (-0.9, -1.3, 0.6), helix(0.0)
 P2 = tuple(P3[k] - tan[k]*1.4 for k in range(3))
 raw = []
 for i in range(90):
@@ -28,16 +28,16 @@ def view(p):
     x, y, z = p
     a = math.radians(38)          # pitch: see into the coils
     y, z = y*math.cos(a) - z*math.sin(a), y*math.sin(a) + z*math.cos(a)
-    b = math.radians(-22)         # roll: lean the axis right
+    b = math.radians(-40)         # roll: lean the axis right
     x, y = x*math.cos(b) - y*math.sin(b), x*math.sin(b) + y*math.cos(b)
     return (x, -y, z)
 P = [view(p) for p in raw]
 
-LINE = 0.15                       # stroke width, model units
+LINE = 0.17                       # stroke width, model units
 GAP = 0.12                        # paper either side of a stroke that crosses over
 xs = [p[0] for p in P]; ys = [p[1] for p in P]
 x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-sc = 560.0/max(x1-x0, y1-y0)
+sc = 680.0/max(x1-x0, y1-y0)
 cx, cy = 512 - (x0+x1)/2*sc, 512 - (y0+y1)/2*sc
 pts = [(p[0]*sc+cx, p[1]*sc+cy, p[2]) for p in P]
 n = len(pts)
