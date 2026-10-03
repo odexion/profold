@@ -25,6 +25,8 @@ actions!(profold, [Quit]);
 
 fn main() {
     Application::new().run(|cx: &mut App| {
+        #[cfg(target_os = "macos")]
+        set_dock_icon();
         ui::input::bind_keys(cx);
         cx.bind_keys([
             gpui::KeyBinding::new("cmd-q", Quit, None),
@@ -85,4 +87,19 @@ fn main() {
         .unwrap();
         cx.activate(true);
     });
+}
+
+/// Puts the logo in the Dock. A bundled build gets it from Info.plist; this
+/// covers `cargo run` and a bare binary.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let data = NSData::with_bytes(include_bytes!("../assets/icon.png"));
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+    }
 }

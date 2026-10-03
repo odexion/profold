@@ -29,3 +29,14 @@ opt-level = 3
 
 [dev-dependencies]
 gpui = { version = "0.2.2", features = ["test-support"] }
+
+# The Dock icon, set at launch so an unbundled build shows it too.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSData"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder"] }
+
+[package.metadata.bundle]
+name = "profold"
+identifier = "dev.profold"
+icon = ["assets/profold.icns"]
