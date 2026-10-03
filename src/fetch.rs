@@ -1,18 +1,22 @@
 //! Input classification and structure retrieval.
 //!
 //! One text field takes everything, so the classifier here decides whether a
-//! paste is a sequence to fold, a PDB entry, or a UniProt accession.
+//! paste is a file on disk, a PDB entry, a UniProt accession, or a sequence
+//! to fold.
 
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use crate::job::{Event, Progress};
-use crate::protein::{parse_any, Source, Structure};
+use crate::formats::parse_any;
+use crate::job::{Event, Outcome, Progress};
+use crate::protein::{Source, Structure};
 use anyhow::{anyhow, Context, Result};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Input {
+    File(PathBuf),
     Sequence(String),
     Pdb(String),
     UniProt(String),
@@ -23,6 +27,7 @@ pub enum Input {
 impl Input {
     pub fn kind(&self) -> &'static str {
         match self {
+            Input::File(_) => "FILE",
             Input::Sequence(_) => "SEQUENCE",
             Input::Pdb(_) => "PDB ID",
             Input::UniProt(_) => "UNIPROT",
@@ -33,19 +38,23 @@ impl Input {
 
     pub fn detail(&self) -> String {
         match self {
+            Input::File(p) => p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             Input::Sequence(s) => format!("{} aa", s.len()),
             Input::Pdb(id) => id.clone(),
             Input::UniProt(id) => id.clone(),
             Input::Empty => String::new(),
-            Input::Unknown => "not a sequence, PDB ID or accession".into(),
+            Input::Unknown => "not a file, PDB ID, accession or sequence".into(),
         }
     }
 
     pub fn action(&self) -> &'static str {
         match self {
+            Input::File(_) => "Open",
             Input::Sequence(_) => "Fold",
-            Input::Pdb(_) | Input::UniProt(_) => "Fetch",
-            _ => "Fold",
+            _ => "Fetch",
         }
     }
 }
@@ -94,10 +103,29 @@ fn is_uniprot(s: &str) -> bool {
     false
 }
 
+/// A path typed or pasted into the box, with `~` for home and the quotes a
+/// copied path sometimes carries.
+fn as_file(text: &str) -> Option<PathBuf> {
+    let text = text.trim_matches(|c: char| c == '"' || c == '\'');
+    if !(text.contains('/') || text.contains('.') || text.starts_with('~')) {
+        return None;
+    }
+    let path = match text.strip_prefix("~/") {
+        Some(rest) => dirs::home_dir()?.join(rest),
+        None => PathBuf::from(text),
+    };
+    path.is_file().then_some(path)
+}
+
 pub fn classify(raw: &str) -> Input {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Input::Empty;
+    }
+    if !trimmed.contains('\n') {
+        if let Some(path) = as_file(trimmed) {
+            return Input::File(path);
+        }
     }
 
     // A single bare token can be an identifier.
@@ -218,4 +246,28 @@ pub fn fetch_uniprot_sequence(acc: &str) -> Result<String> {
         anyhow::bail!("no sequence for {acc}");
     }
     Ok(seq)
+}
+
+/// Something to fetch: an entry in the PDB, or an AlphaFold model.
+#[derive(Clone)]
+pub enum Retrieval {
+    Pdb(String),
+    AlphaFold(String),
+}
+
+impl Retrieval {
+    pub fn run(self, tx: &Sender<Event>) -> Result<Outcome> {
+        match self {
+            Retrieval::Pdb(id) => fetch_pdb(&id, tx).map(Outcome::Structure),
+            Retrieval::AlphaFold(acc) => match fetch_alphafold(&acc, tx) {
+                Ok(s) => Ok(Outcome::Structure(s)),
+                // An accession without a model can still be folded, by a
+                // plugin that folds.
+                Err(e) => match fetch_uniprot_sequence(&acc) {
+                    Ok(seq) => Ok(Outcome::Sequence(seq)),
+                    Err(_) => Err(e),
+                },
+            },
+        }
+    }
 }

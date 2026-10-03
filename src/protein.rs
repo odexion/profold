@@ -1,75 +1,14 @@
-//! Structure model plus PDB and mmCIF parsers.
+//! The structure model.
 //!
 //! Everything downstream (renderer, sequence view, colouring) reads this and
-//! nothing else, so the two parsers are the only places that know about file
-//! formats.
+//! nothing else, so the parsers in `formats` are the only places that know
+//! about file formats. A protein and a box of argon are the same thing here:
+//! atoms, grouped into residues and chains where the file says so, with bonds,
+//! a periodic cell and further frames where it has them.
 
-use std::ops::Range;
+use std::sync::Arc;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Element {
-    C,
-    N,
-    O,
-    S,
-    P,
-    H,
-    Other,
-}
-
-impl Element {
-    fn from_symbol(sym: &str) -> Self {
-        match sym.trim().to_ascii_uppercase().as_str() {
-            "C" => Element::C,
-            "N" => Element::N,
-            "O" => Element::O,
-            "S" => Element::S,
-            "P" => Element::P,
-            "H" | "D" => Element::H,
-            _ => Element::Other,
-        }
-    }
-
-    /// Guess from a PDB atom name when the element column is missing.
-    fn from_atom_name(name: &str) -> Self {
-        let n = name.trim_start_matches(|c: char| c.is_ascii_digit());
-        match n.chars().next().map(|c| c.to_ascii_uppercase()) {
-            Some('C') => Element::C,
-            Some('N') => Element::N,
-            Some('O') => Element::O,
-            Some('S') => Element::S,
-            Some('P') => Element::P,
-            Some('H') => Element::H,
-            _ => Element::Other,
-        }
-    }
-
-    /// Van der Waals radius in ångström.
-    pub fn vdw(self) -> f32 {
-        match self {
-            Element::C => 1.70,
-            Element::N => 1.55,
-            Element::O => 1.52,
-            Element::S => 1.80,
-            Element::P => 1.80,
-            Element::H => 1.10,
-            Element::Other => 1.60,
-        }
-    }
-
-    /// CPK-ish colours, desaturated a little so they sit well on paper white.
-    pub fn color(self) -> [f32; 3] {
-        match self {
-            Element::C => [0.42, 0.44, 0.47],
-            Element::N => [0.24, 0.42, 0.78],
-            Element::O => [0.83, 0.28, 0.26],
-            Element::S => [0.85, 0.68, 0.20],
-            Element::P => [0.90, 0.51, 0.20],
-            Element::H => [0.85, 0.85, 0.87],
-            Element::Other => [0.55, 0.45, 0.70],
-        }
-    }
-}
+pub use crate::elements::Element;
 
 #[derive(Clone, Copy)]
 pub struct Atom {
@@ -78,6 +17,72 @@ pub struct Atom {
     /// B-factor, or pLDDT for predicted models.
     pub b: f32,
     pub residue: u32,
+    /// Index into `Structure::kinds`: the atom type in a simulation file.
+    pub kind: u16,
+}
+
+/// A periodic simulation cell: a corner and the three edge vectors.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Cell {
+    pub origin: [f32; 3],
+    pub vectors: [[f32; 3]; 3],
+}
+
+impl Cell {
+    /// An orthorhombic box from its corners.
+    pub fn from_bounds(lo: [f32; 3], hi: [f32; 3]) -> Self {
+        Cell {
+            origin: lo,
+            vectors: [
+                [hi[0] - lo[0], 0.0, 0.0],
+                [0.0, hi[1] - lo[1], 0.0],
+                [0.0, 0.0, hi[2] - lo[2]],
+            ],
+        }
+    }
+
+    pub fn lengths(&self) -> [f32; 3] {
+        self.vectors
+            .map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+    }
+
+    /// Fractional coordinates to Cartesian.
+    pub fn to_cartesian(&self, f: [f32; 3]) -> [f32; 3] {
+        let v = &self.vectors;
+        std::array::from_fn(|k| {
+            self.origin[k] + f[0] * v[0][k] + f[1] * v[1][k] + f[2] * v[2][k]
+        })
+    }
+
+    /// The eight corners.
+    pub fn corners(&self) -> [[f32; 3]; 8] {
+        std::array::from_fn(|i| {
+            self.to_cartesian([
+                (i & 1) as f32,
+                ((i >> 1) & 1) as f32,
+                ((i >> 2) & 1) as f32,
+            ])
+        })
+    }
+
+    /// The twelve edges, as pairs of corners.
+    pub fn edges(&self) -> [([f32; 3], [f32; 3]); 12] {
+        let c = self.corners();
+        const E: [(usize, usize); 12] = [
+            (0, 1), (2, 3), (4, 5), (6, 7),
+            (0, 2), (1, 3), (4, 6), (5, 7),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ];
+        E.map(|(a, b)| (c[a], c[b]))
+    }
+}
+
+/// One frame of a trajectory: where every atom is, and the cell, which moves
+/// too under constant pressure.
+#[derive(Clone)]
+pub struct Snapshot {
+    pub pos: Vec<[f32; 3]>,
+    pub cell: Option<Cell>,
 }
 
 /// Secondary structure, assigned from backbone geometry.
@@ -121,7 +126,12 @@ pub struct Chain {
 pub enum Source {
     Pdb,
     AlphaFold,
+    #[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
     SimpleFold,
+    /// Opened from disk.
+    File,
+    /// Built into the app.
+    Sample,
 }
 
 impl Source {
@@ -130,7 +140,24 @@ impl Source {
             Source::Pdb => "RCSB PDB",
             Source::AlphaFold => "AlphaFold DB",
             Source::SimpleFold => "SimpleFold",
+            Source::File => "Local file",
+            Source::Sample => "Sample",
         }
+    }
+
+    /// Whether the coordinates were measured or predicted.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Source::Pdb => "experimental",
+            Source::AlphaFold | Source::SimpleFold => "predicted",
+            Source::File => "file",
+            Source::Sample => "sample",
+        }
+    }
+
+    /// Read from a file rather than fetched or predicted.
+    pub fn is_local(self) -> bool {
+        matches!(self, Source::File | Source::Sample)
     }
 }
 
@@ -149,11 +176,103 @@ pub struct Structure {
     pub deviation: Vec<f32>,
     /// A flat colour, set when this structure is one half of a comparison.
     pub tint: Option<[f32; 3]>,
+    /// Pairs of atom indices, read from the file or worked out from distance.
+    pub bonds: Vec<[u32; 2]>,
+    pub cell: Option<Cell>,
+    /// Every frame of a trajectory, the current one included. Empty for a
+    /// single structure. Shared, so changing frame does not copy the lot.
+    pub frames: Arc<Vec<Snapshot>>,
+    pub frame: usize,
+    /// Atom type names, indexed by `Atom::kind`. Empty when the file has no
+    /// types beyond elements.
+    pub kinds: Vec<String>,
+    /// The file format it was read from, for display.
+    pub format: Option<&'static str>,
+    /// Drawing radius for atoms of unknown element, set from the spacing of
+    /// the atoms: a Lennard-Jones fluid in reduced units is one wide, not 1.6.
+    pub unknown_radius: f32,
 }
 
 impl Structure {
+    pub fn new(id: String, title: String, source: Source) -> Self {
+        Structure {
+            id,
+            title,
+            source,
+            atoms: Vec::new(),
+            residues: Vec::new(),
+            chains: Vec::new(),
+            has_confidence: false,
+            deviation: Vec::new(),
+            tint: None,
+            bonds: Vec::new(),
+            cell: None,
+            frames: Arc::new(Vec::new()),
+            frame: 0,
+            kinds: Vec::new(),
+            format: None,
+            unknown_radius: Element::UNKNOWN.vdw(),
+        }
+    }
+
     pub fn sequence(&self) -> String {
-        self.residues.iter().map(|r| r.code).collect()
+        self.residues
+            .iter()
+            .filter(|r| r.ca.is_some())
+            .map(|r| r.code)
+            .collect()
+    }
+
+    /// Whether there is a protein backbone to draw as a cartoon or a tube.
+    pub fn has_polymer(&self) -> bool {
+        self.residues.iter().filter(|r| r.ca.is_some()).take(3).count() >= 3
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.frames.len().max(1)
+    }
+
+    /// Move every atom to where it is in frame `i`. Bonds and secondary
+    /// structure are kept from the first frame's topology, but the helices are
+    /// reassigned, since they do change over a simulation.
+    pub fn set_frame(&mut self, i: usize) {
+        let Some(snap) = self.frames.get(i).cloned() else {
+            return;
+        };
+        if snap.pos.len() != self.atoms.len() {
+            return;
+        }
+        for (a, p) in self.atoms.iter_mut().zip(&snap.pos) {
+            a.pos = *p;
+        }
+        if snap.cell.is_some() {
+            self.cell = snap.cell;
+        }
+        self.frame = i;
+        if self.has_polymer() {
+            crate::dssp::assign(self);
+        }
+    }
+
+    /// Element counts, most common first, for the info panel.
+    pub fn composition(&self) -> Vec<(Element, usize)> {
+        let mut counts = [0usize; 256];
+        for a in &self.atoms {
+            counts[a.element.0 as usize] += 1;
+        }
+        let mut out: Vec<(Element, usize)> = counts
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n > 0)
+            .map(|(z, n)| (Element(z as u8), *n))
+            .collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0 .0.cmp(&b.0 .0)));
+        out
+    }
+
+    /// Molecular weight in dalton from the atoms themselves.
+    pub fn atomic_mass(&self) -> f32 {
+        self.atoms.iter().map(|a| a.element.mass()).sum()
     }
 
     /// The longest protein chain: its residue indices and one-letter sequence.
@@ -182,6 +301,47 @@ impl Structure {
         (best, seq)
     }
 
+    /// Molecular weight in kilodalton, from the sequence rather than the
+    /// atoms: most files carry no hydrogens, so adding up what is in the
+    /// coordinates would come out roughly seven per cent light.
+    pub fn mass_kda(&self) -> f32 {
+        let residues: f32 = self.residues.iter().map(|r| residue_mass(r.code)).sum();
+        // One water is released per peptide bond, so each chain keeps one.
+        let water = 18.0153 * self.chains.len().max(1) as f32;
+        (residues + water) / 1000.0
+    }
+
+    /// The chains worth folding, one entry per distinct sequence: the ids of
+    /// the chains that share it, and the sequence itself. A tetramer of two
+    /// pairs comes back as two entries, since folding the same sequence twice
+    /// would return the same answer twice.
+    #[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
+    pub fn distinct_chains(&self) -> Vec<(Vec<String>, String)> {
+        let mut out: Vec<(Vec<String>, String)> = Vec::new();
+        for (i, chain) in self.chains.iter().enumerate() {
+            let sequence: String = chain
+                .residues
+                .iter()
+                .map(|&ri| &self.residues[ri as usize])
+                .filter(|r| r.ca.is_some() && r.code != 'X')
+                .map(|r| r.code)
+                .collect();
+            if sequence.is_empty() {
+                continue;
+            }
+            let id = if chain.id.trim().is_empty() {
+                (i + 1).to_string()
+            } else {
+                chain.id.clone()
+            };
+            match out.iter_mut().find(|(_, seq)| *seq == sequence) {
+                Some((ids, _)) => ids.push(id),
+                None => out.push((vec![id], sequence)),
+            }
+        }
+        out
+    }
+
     pub fn mean_confidence(&self) -> Option<f32> {
         if !self.has_confidence || self.residues.is_empty() {
             return None;
@@ -195,6 +355,34 @@ impl Structure {
 // ---------------------------------------------------------------------------
 // Shared residue handling
 // ---------------------------------------------------------------------------
+
+/// Average mass of a residue in the chain, in dalton. Anything unrecognised
+/// counts as the mean over the twenty, which is close enough for a total.
+fn residue_mass(code: char) -> f32 {
+    match code {
+        'A' => 71.0788,
+        'R' => 156.1875,
+        'N' => 114.1038,
+        'D' => 115.0886,
+        'C' => 103.1388,
+        'E' => 129.1155,
+        'Q' => 128.1307,
+        'G' => 57.0519,
+        'H' => 137.1411,
+        'I' => 113.1594,
+        'L' => 113.1594,
+        'K' => 128.1741,
+        'M' => 131.1926,
+        'F' => 147.1766,
+        'P' => 97.1167,
+        'S' => 87.0782,
+        'T' => 101.1051,
+        'W' => 186.2132,
+        'Y' => 163.1760,
+        'V' => 99.1326,
+        _ => 110.0,
+    }
+}
 
 pub fn three_to_one(name: &str) -> char {
     match name.trim().to_ascii_uppercase().as_str() {
@@ -225,26 +413,65 @@ pub fn three_to_one(name: &str) -> char {
     }
 }
 
+/// One atom as a parser hands it over. Formats without residues or chains
+/// leave those fields at their defaults, and everything lands in one residue.
+pub struct Record<'a> {
+    pub chain: &'a str,
+    pub res_name: &'a str,
+    pub res_seq: i32,
+    pub ins: &'a str,
+    pub name: &'a str,
+    pub element: Element,
+    pub pos: [f32; 3],
+    pub b: f32,
+    pub kind: u16,
+}
+
+impl Default for Record<'_> {
+    fn default() -> Self {
+        Record {
+            chain: "",
+            res_name: "",
+            res_seq: 0,
+            ins: "",
+            name: "",
+            element: Element::UNKNOWN,
+            pos: [0.0; 3],
+            b: 0.0,
+            kind: 0,
+        }
+    }
+}
+
 /// Accumulates atoms into residues and chains regardless of source format.
-struct Builder {
+#[derive(Default)]
+pub struct Builder {
     atoms: Vec<Atom>,
     residues: Vec<Residue>,
     chains: Vec<Chain>,
+    cur_chain: usize,
     cur_res_key: Option<(usize, String, i32, String)>,
     b_sum: f32,
     b_n: f32,
+    /// Bonds the file lists. When it lists none they are worked out.
+    pub bonds: Vec<[u32; 2]>,
+    pub cell: Option<Cell>,
+    /// Frames after the first; the first is the atoms themselves.
+    pub frames: Vec<Snapshot>,
+    pub kinds: Vec<String>,
+    pub format: Option<&'static str>,
 }
 
 impl Builder {
-    fn new() -> Self {
+    pub fn new(format: &'static str) -> Self {
         Self {
-            atoms: Vec::new(),
-            residues: Vec::new(),
-            chains: Vec::new(),
-            cur_res_key: None,
-            b_sum: 0.0,
-            b_n: 0.0,
+            format: Some(format),
+            ..Default::default()
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.atoms.len()
     }
 
     fn flush_residue(&mut self) {
@@ -257,46 +484,53 @@ impl Builder {
         self.b_n = 0.0;
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn push(
-        &mut self,
-        chain_id: &str,
-        res_name: &str,
-        res_seq: i32,
-        ins_code: &str,
-        atom_name: &str,
-        element: Element,
-        pos: [f32; 3],
-        b: f32,
-    ) {
+    /// The index of a named atom type, adding it if new.
+    pub fn kind(&mut self, name: &str) -> u16 {
+        match self.kinds.iter().position(|k| k == name) {
+            Some(i) => i as u16,
+            None => {
+                self.kinds.push(name.to_string());
+                (self.kinds.len() - 1) as u16
+            }
+        }
+    }
+
+    pub fn push(&mut self, r: Record) {
         // Ligand records revisit chains that already appeared, so look the
         // chain up by name rather than assuming one contiguous block per chain.
-        let chain = match self.chains.iter().position(|c| c.id == chain_id) {
-            Some(i) => i,
-            None => {
-                self.chains.push(Chain {
-                    id: chain_id.to_string(),
-                    residues: Vec::new(),
-                });
-                self.chains.len() - 1
+        let chain = if self.chains.get(self.cur_chain).is_some_and(|c| c.id == r.chain) {
+            self.cur_chain
+        } else {
+            match self.chains.iter().position(|c| c.id == r.chain) {
+                Some(i) => i,
+                None => {
+                    self.chains.push(Chain {
+                        id: r.chain.to_string(),
+                        residues: Vec::new(),
+                    });
+                    self.chains.len() - 1
+                }
             }
         };
+        self.cur_chain = chain;
 
-        let key = (chain, res_name.to_string(), res_seq, ins_code.to_string());
-        if self.cur_res_key.as_ref() != Some(&key) {
+        let same = self.cur_res_key.as_ref().is_some_and(|(c, name, seq, ins)| {
+            *c == chain && name == r.res_name && *seq == r.res_seq && ins == r.ins
+        });
+        if !same {
             self.flush_residue();
-            self.cur_res_key = Some(key);
+            self.cur_res_key = Some((chain, r.res_name.to_string(), r.res_seq, r.ins.to_string()));
             self.chains[chain].residues.push(self.residues.len() as u32);
             self.residues.push(Residue {
-                name: res_name.to_string(),
-                seq: res_seq,
+                name: r.res_name.to_string(),
+                seq: r.res_seq,
                 chain: chain as u16,
                 ca: None,
                 n: None,
                 c: None,
                 o: None,
-                b,
-                code: three_to_one(res_name),
+                b: r.b,
+                code: three_to_one(r.res_name),
                 ss: Ss::Coil,
             });
         }
@@ -304,26 +538,31 @@ impl Builder {
         let residue = (self.residues.len() - 1) as u32;
         let idx = self.atoms.len() as u32;
         {
-            let r = &mut self.residues[residue as usize];
-            match (atom_name.trim(), element) {
-                ("CA", Element::C) => r.ca = Some(idx),
-                ("N", Element::N) => r.n = Some(idx),
-                ("C", Element::C) => r.c = Some(idx),
-                ("O", Element::O) => r.o = Some(idx),
-                _ => {}
+            let res = &mut self.residues[residue as usize];
+            // Backbone atoms only count in an amino acid: a calcium named CA
+            // in a ligand is not an alpha carbon.
+            if res.code != 'X' {
+                match (r.name.trim(), r.element) {
+                    ("CA", Element::C) => res.ca = Some(idx),
+                    ("N", Element::N) => res.n = Some(idx),
+                    ("C", Element::C) => res.c = Some(idx),
+                    ("O", Element::O) => res.o = Some(idx),
+                    _ => {}
+                }
             }
         }
-        self.b_sum += b;
+        self.b_sum += r.b;
         self.b_n += 1.0;
         self.atoms.push(Atom {
-            pos,
-            element,
-            b,
+            pos: r.pos,
+            element: r.element,
+            b: r.b,
             residue,
+            kind: r.kind,
         });
     }
 
-    fn finish(mut self, id: String, title: String, source: Source) -> Structure {
+    pub fn finish(mut self, id: String, title: String, source: Source) -> Structure {
         self.flush_residue();
         self.chains.retain(|c| !c.residues.is_empty());
 
@@ -339,296 +578,36 @@ impl Builder {
             && hi <= 100.0
             && hi - lo > 0.5;
 
-        let mut structure = Structure {
-            id,
-            title,
-            source,
-            atoms: self.atoms,
-            residues: self.residues,
-            chains: self.chains,
-            has_confidence,
-            deviation: Vec::new(),
-            tint: None,
-        };
-        crate::dssp::assign(&mut structure);
-        structure
-    }
-}
-
-// ---------------------------------------------------------------------------
-// PDB
-// ---------------------------------------------------------------------------
-
-pub fn parse_pdb(text: &str, id: String, source: Source) -> anyhow::Result<Structure> {
-    let mut b = Builder::new();
-    let mut title = String::new();
-
-    for line in text.lines() {
-        if line.starts_with("TITLE ") {
-            let part = line.get(10..).unwrap_or("").trim();
-            if !title.is_empty() {
-                title.push(' ');
-            }
-            title.push_str(part);
-            continue;
-        }
-        // Only the first model of an ensemble.
-        if line.starts_with("ENDMDL") {
-            break;
-        }
-        if !(line.starts_with("ATOM  ") || line.starts_with("HETATM")) {
-            continue;
-        }
-        let col = |r: Range<usize>| line.get(r).unwrap_or("").trim().to_string();
-
-        let res_name = col(17..20);
-        if res_name == "HOH" || res_name == "DOD" {
-            continue;
-        }
-        // Keep only the first alternate location.
-        let alt = line.as_bytes().get(16).copied().unwrap_or(b' ');
-        if alt != b' ' && alt != b'A' {
-            continue;
-        }
-
-        let atom_name = col(12..16);
-        let chain_id = {
-            let c = col(21..22);
-            if c.is_empty() {
-                "A".to_string()
-            } else {
-                c
-            }
-        };
-        let res_seq: i32 = col(22..26).parse().unwrap_or(0);
-        let ins_code = col(26..27);
-        let (Ok(x), Ok(y), Ok(z)) = (
-            col(30..38).parse::<f32>(),
-            col(38..46).parse::<f32>(),
-            col(46..54).parse::<f32>(),
-        ) else {
-            continue;
-        };
-        let bf: f32 = col(60..66).parse().unwrap_or(0.0);
-        let element = {
-            let sym = col(76..78);
-            if sym.is_empty() {
-                Element::from_atom_name(&atom_name)
-            } else {
-                Element::from_symbol(&sym)
-            }
-        };
-
-        b.push(
-            &chain_id, &res_name, res_seq, &ins_code, &atom_name, element, [x, y, z], bf,
-        );
-    }
-
-    let s = b.finish(id, title, source);
-    if s.atoms.is_empty() {
-        anyhow::bail!("no atoms found in PDB file");
-    }
-    Ok(s)
-}
-
-// ---------------------------------------------------------------------------
-// mmCIF
-// ---------------------------------------------------------------------------
-
-fn unquote(v: &str) -> String {
-    let v = v.trim();
-    if v.len() >= 2
-        && ((v.starts_with('\'') && v.ends_with('\'')) || (v.starts_with('"') && v.ends_with('"')))
-    {
-        v[1..v.len() - 1].to_string()
-    } else {
-        v.to_string()
-    }
-}
-
-/// Split an mmCIF data line into values, honouring single and double quotes.
-fn cif_tokens(line: &str) -> Vec<&str> {
-    let bytes = line.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
-            i += 1;
-        }
-        if i >= bytes.len() {
-            break;
-        }
-        let quote = bytes[i];
-        if quote == b'\'' || quote == b'"' {
-            i += 1;
-            let start = i;
-            while i < bytes.len() && bytes[i] != quote {
-                i += 1;
-            }
-            out.push(&line[start..i]);
-            i += 1;
+        let mut structure = Structure::new(id, title, source);
+        structure.has_confidence = has_confidence;
+        structure.format = self.format;
+        structure.cell = self.cell;
+        structure.kinds = self.kinds;
+        structure.bonds = if self.bonds.is_empty() {
+            crate::bonds::infer(&self.atoms)
         } else {
-            let start = i;
-            while i < bytes.len() && bytes[i] != b' ' && bytes[i] != b'\t' {
-                i += 1;
-            }
-            out.push(&line[start..i]);
-        }
-    }
-    out
-}
-
-pub fn parse_mmcif(text: &str, id: String, source: Source) -> anyhow::Result<Structure> {
-    let mut b = Builder::new();
-    let mut title = String::new();
-
-    let mut lines = text.lines().peekable();
-    while let Some(line) = lines.next() {
-        let trimmed = line.trim();
-
-        if let Some(rest) = trimmed.strip_prefix("_struct.title") {
-            if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
-                continue;
-            }
-            let rest = rest.trim();
-            if !rest.is_empty() {
-                title = unquote(rest);
-            } else if let Some(next) = lines.next() {
-                // The value sits on the following line, either quoted or as a
-                // semicolon-delimited block.
-                let next = next.trim_end();
-                if let Some(first) = next.strip_prefix(';') {
-                    title = first.trim().to_string();
-                    for line in lines.by_ref() {
-                        let l = line.trim_end();
-                        if l.trim() == ";" {
-                            break;
-                        }
-                        if !title.is_empty() {
-                            title.push(' ');
-                        }
-                        title.push_str(l.trim());
-                    }
-                } else {
-                    title = unquote(next.trim());
-                }
-            }
-            continue;
-        }
-
-        if trimmed != "loop_" {
-            continue;
-        }
-
-        // Collect this loop's column names.
-        let mut cols: Vec<String> = Vec::new();
-        while let Some(peek) = lines.peek() {
-            let p = peek.trim();
-            if p.starts_with('_') {
-                cols.push(p.split_whitespace().next().unwrap_or("").to_string());
-                lines.next();
-            } else {
-                break;
-            }
-        }
-        if !cols.first().is_some_and(|c| c.starts_with("_atom_site.")) {
-            continue;
-        }
-
-        let idx = |name: &str| cols.iter().position(|c| c == name);
-        let i_group = idx("_atom_site.group_PDB");
-        let i_symbol = idx("_atom_site.type_symbol");
-        let i_atom = idx("_atom_site.label_atom_id");
-        let i_alt = idx("_atom_site.label_alt_id");
-        let i_comp = idx("_atom_site.auth_comp_id").or_else(|| idx("_atom_site.label_comp_id"));
-        let i_asym = idx("_atom_site.auth_asym_id").or_else(|| idx("_atom_site.label_asym_id"));
-        let i_seq = idx("_atom_site.auth_seq_id").or_else(|| idx("_atom_site.label_seq_id"));
-        let i_ins = idx("_atom_site.pdbx_PDB_ins_code");
-        let i_x = idx("_atom_site.Cartn_x");
-        let i_y = idx("_atom_site.Cartn_y");
-        let i_z = idx("_atom_site.Cartn_z");
-        let i_b = idx("_atom_site.B_iso_or_equiv");
-        let i_model = idx("_atom_site.pdbx_PDB_model_num");
-
-        let (Some(i_x), Some(i_y), Some(i_z), Some(i_comp), Some(i_asym), Some(i_seq)) =
-            (i_x, i_y, i_z, i_comp, i_asym, i_seq)
-        else {
-            continue;
+            self.bonds
         };
-
-        let mut first_model: Option<String> = None;
-        for row in lines.by_ref() {
-            let t = row.trim();
-            if t.is_empty() || t == "#" || t.starts_with('_') || t == "loop_" {
-                break;
-            }
-            let f = cif_tokens(row);
-            if f.len() < cols.len() {
-                continue;
-            }
-            let get = |i: Option<usize>| i.and_then(|i| f.get(i).copied()).unwrap_or("");
-
-            if let Some(model) = i_model.and_then(|i| f.get(i).copied()) {
-                match &first_model {
-                    None => first_model = Some(model.to_string()),
-                    Some(m) if m != model => break,
-                    _ => {}
-                }
-            }
-            let group = get(i_group);
-            let res_name = f[i_comp];
-            if res_name == "HOH" || res_name == "DOD" || group == "HETATM" && res_name == "HOH" {
-                continue;
-            }
-            let alt = get(i_alt);
-            if !(alt.is_empty() || alt == "." || alt == "?" || alt == "A") {
-                continue;
-            }
-
-            let (Ok(x), Ok(y), Ok(z)) = (
-                f[i_x].parse::<f32>(),
-                f[i_y].parse::<f32>(),
-                f[i_z].parse::<f32>(),
-            ) else {
-                continue;
+        structure.unknown_radius = crate::bonds::spacing_radius(&self.atoms);
+        if !self.frames.is_empty() {
+            let first = Snapshot {
+                pos: self.atoms.iter().map(|a| a.pos).collect(),
+                cell: self.cell,
             };
-            let atom_name = get(i_atom);
-            let element = {
-                let sym = get(i_symbol);
-                if sym.is_empty() || sym == "." {
-                    Element::from_atom_name(atom_name)
-                } else {
-                    Element::from_symbol(sym)
-                }
-            };
-            let bf = get(i_b).parse::<f32>().unwrap_or(0.0);
-            let seq = f[i_seq].parse::<i32>().unwrap_or(0);
-            let ins = {
-                let v = get(i_ins);
-                if v == "?" || v == "." { "" } else { v }
-            };
-
-            b.push(
-                f[i_asym], res_name, seq, ins, atom_name, element, [x, y, z], bf,
-            );
+            let n = self.atoms.len();
+            let mut frames = vec![first];
+            // A trajectory whose atom count changes partway is cut there.
+            frames.extend(self.frames.into_iter().take_while(|f| f.pos.len() == n));
+            if frames.len() > 1 {
+                structure.frames = Arc::new(frames);
+            }
         }
-        break;
-    }
-
-    let s = b.finish(id, title, source);
-    if s.atoms.is_empty() {
-        anyhow::bail!("no atoms found in mmCIF file");
-    }
-    Ok(s)
-}
-
-/// Dispatch on content rather than filename: SimpleFold, RCSB and AlphaFold all
-/// hand us slightly different things.
-pub fn parse_any(text: &str, id: String, source: Source) -> anyhow::Result<Structure> {
-    let looks_cif = text.contains("_atom_site.");
-    if looks_cif {
-        parse_mmcif(text, id, source)
-    } else {
-        parse_pdb(text, id, source)
+        structure.atoms = self.atoms;
+        structure.residues = self.residues;
+        structure.chains = self.chains;
+        if structure.has_polymer() {
+            crate::dssp::assign(&mut structure);
+        }
+        structure
     }
 }

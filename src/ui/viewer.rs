@@ -21,8 +21,10 @@ struct Key {
     height: usize,
     /// Camera parameters, compared bitwise.
     cam: [u32; 5],
-    scene: usize,
-    len: usize,
+    /// The scene's own stamp. Its address will not do: a freed scene's
+    /// memory is reused, and a recoloured scene has the same number of
+    /// primitives, so the old frame would be shown again.
+    scene: u64,
     style: Style,
 }
 
@@ -37,8 +39,7 @@ fn key(scene: &Arc<Scene>, cam: &Camera, width: usize, height: usize, style: Sty
             cam.pan[0].to_bits(),
             cam.pan[1].to_bits(),
         ],
-        scene: Arc::as_ptr(scene) as usize,
-        len: scene.len(),
+        scene: scene.version,
         style,
     }
 }
@@ -47,6 +48,8 @@ fn key(scene: &Arc<Scene>, cam: &Camera, width: usize, height: usize, style: Sty
 pub struct Cache {
     key: Option<Key>,
     image: Option<Arc<RenderImage>>,
+    /// The pixel size last painted, which is what an exported image matches.
+    pub size: (usize, usize),
 }
 
 /// `interactive` renders at 1x instead of the display's scale factor, which
@@ -70,15 +73,11 @@ pub fn viewport(
             let height = (f32::from(bounds.size.height) * scale).round().max(1.0) as usize;
 
             let mut cache = cache.borrow_mut();
+            cache.size = (width, height);
             let k = key(&scene, &cam, width, height, style);
             if cache.key.as_ref() != Some(&k) {
-                // A drawn figure sits on plain paper; the soft style keeps
-                // its gradient.
-                let (top, bottom) = match style {
-                    Style::Illustrative => (theme::VIEW_FLAT, theme::VIEW_FLAT),
-                    Style::Soft => (theme::VIEW_TOP, theme::VIEW_BOTTOM),
-                };
-                let frame = render::render(&scene, &cam, width, height, top, bottom, style);
+                let frame =
+                    render::render(&scene, &cam, width, height, theme::VIEW, style);
                 let buffer =
                     RgbaImage::from_raw(frame.width as u32, frame.height as u32, frame.bgra)
                     .expect("frame buffer is width * height * 4");

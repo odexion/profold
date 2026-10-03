@@ -21,6 +21,7 @@ actions!(
     input,
     [
         Submit,
+        Cancel,
         Backspace,
         Delete,
         Left,
@@ -593,6 +594,8 @@ impl Element for TextElement {
 pub enum InputEvent {
     Changed,
     Submit,
+    /// Escape: leave the field without taking what was typed.
+    Cancel,
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -630,6 +633,16 @@ impl TextInput {
     fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(InputEvent::Submit);
     }
+
+    fn cancel(&mut self, _: &Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(InputEvent::Cancel);
+    }
+
+    /// Select everything, so typing replaces the value.
+    pub fn select_everything(&mut self, cx: &mut Context<Self>) {
+        self.move_to(0, cx);
+        self.select_to(self.content.len(), cx)
+    }
 }
 
 /// Register the field's key bindings once, at startup.
@@ -648,6 +661,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("home", Home, Some("Input")),
         KeyBinding::new("end", End, Some("Input")),
         KeyBinding::new("enter", Submit, Some("Input")),
+        KeyBinding::new("escape", Cancel, Some("Input")),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some("Input")),
     ]);
 }
@@ -674,6 +688,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::cancel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))

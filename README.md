@@ -1,10 +1,11 @@
 # profold
 
-A small desktop app for [Apple's SimpleFold](https://github.com/apple/ml-simplefold),
-written in Rust with [GPUI](https://www.gpui.rs).
+A small molecular viewer, written in Rust with [GPUI](https://www.gpui.rs).
 
-Paste a protein sequence and it folds it. Paste an identifier and it fetches the
-structure. Either way you get a molecule you can turn around.
+Open a structure or a trajectory — a protein from the PDB, a ligand, a crystal,
+a LAMMPS or GROMACS simulation box — and turn it around. Paste an identifier and
+it fetches the structure. With the SimpleFold plugin, paste a sequence and it
+folds it with [Apple's SimpleFold](https://github.com/apple/ml-simplefold).
 
 ## Using it
 
@@ -12,16 +13,58 @@ One field takes everything, and the app works out what you gave it:
 
 | Input | What happens |
 | --- | --- |
+| `~/sims/dump.melt` — a path | Opens the file |
 | `1CRN` — a PDB ID | Downloads the experimental structure from RCSB |
 | `P69905` — a UniProt accession | Downloads the predicted model from AlphaFold DB |
-| `MVLSPADKTNVK…` — residue letters, FASTA and all | Folds it with SimpleFold |
+| `MVLSPADKTNVK…` — residue letters, FASTA and all | Folds it with SimpleFold (plugin) |
 
 An accession with no AlphaFold model falls back to fetching its sequence from
-UniProt and folding that instead.
+UniProt and folding that instead, when the SimpleFold plugin is built in.
+
+## Samples
+
+No data to hand? Six structures are built into the app, listed on the empty
+screen and under **Samples** at any time: caffeine, buckminsterfullerene,
+crambin, rock salt grown from its symmetry, a silicon supercell, and a
+Lennard-Jones crystal melting over 41 frames. Where they come from is in
+[`samples/`](samples/README.md).
+
+## Opening files
+
+Drop a file on the window, use **Open…** (⌘O), type its path, or name it on the
+command line. The format is told from the name — `data.*`, `dump.*`, `CONTCAR`
+and `XDATCAR` included — and from the content when the name says nothing.
+Gzipped files open as they are.
+
+| Format | Extensions | Notes |
+| --- | --- | --- |
+| PDB, PQR | `.pdb` `.ent` `.pqr` | Every MODEL, or VMD's END-separated frames, becomes a frame |
+| mmCIF | `.cif` `.mmcif` | Further models become frames |
+| CIF (crystallographic) | `.cif` | Fractional sites expanded by the symmetry operations to fill the cell |
+| XYZ, extended XYZ | `.xyz` `.extxyz` | Multi-frame; `Lattice=` and `Properties=` honoured |
+| GROMACS | `.gro` | Multi-frame, triclinic boxes, any precision |
+| MOL2 | `.mol2` | Bonds from the file; same-atom molecules become frames |
+| MDL molfile / SD | `.sdf` `.mol` | V2000 and V3000; conformers become frames |
+| LAMMPS data | `.data` `.lmp` `data.*` | Any atom style; elements from Masses; bonds from the file |
+| LAMMPS dump | `.lammpstrj` `.dump` `dump.*` | Text dumps; scaled, unwrapped and triclinic all handled |
+| VASP | `POSCAR` `CONTCAR` `XDATCAR` `.vasp` | Direct or Cartesian; XDATCAR steps become frames |
+| Gaussian cube | `.cube` | The molecule and its grid box |
+| XCrySDen | `.xsf` `.axsf` | Molecules, crystals and animations |
+
+Where a file does not list bonds they are worked out from distance: closer than
+the two covalent radii plus 0.4 Å, as VMD does, though never metal to metal, so
+a lattice of iron does not turn into scaffolding. A simulation's atoms often
+have no element at all — a LAMMPS type with no mass to go on, a Lennard-Jones
+bead in reduced units. Those are coloured by type and sized from their own
+spacing, the way OVITO draws them.
+
+A trajectory gets a bar along the foot of the viewport: play, step, or drag
+through the frames. A simulation cell is drawn as a fine box, and can be
+switched off under **View**.
 
 ## Comparing
 
-Next to **Fetch** there is **Compare**, which is the interesting one. It pulls
+*Part of the SimpleFold plugin.* Next to **Fetch** there is **Compare**, which is the interesting one. It pulls
 the deposited structure, folds that structure's *own* sequence with SimpleFold,
 superimposes the two, and reports the Cα RMSD between them — how close the
 prediction came to the experiment, for this protein, on your machine.
@@ -55,16 +98,23 @@ silhouette and across every overlap, saturated colour, light quantised into a
 few bands, and no depth fade, because a drawn figure does not have one. The line
 weight scales with the frame, so it holds on a retina display.
 
-Three representations. **Cartoon** is the default: ribbons for helices, arrows
-for strands, cord for everything else. **Tube** is a plain backbone trace, and
-**Spacefill** puts every atom at its van der Waals radius. Colour by chain,
-by position along the chain, by pLDDT, or by element.
+Five representations. **Cartoon** is the default for a protein: ribbons for
+helices, arrows for strands, cord for everything else, with ligands, ions and
+nucleic acids drawn as atoms beside it rather than left out. **Tube** is a
+plain backbone trace. **Ball & stick** is the default for anything else, and
+**Licorice** draws bonds as rods of one thickness. **Spacefill** puts every
+atom at its van der Waals radius, and is how a box of anonymous beads opens.
+Colour by chain (by molecule, without chains), by position, by pLDDT, or by
+element.
 
 Anything slow — a download, an install, a fold — takes over the viewport with
 its own progress. Where the underlying tool reports a percentage the bar is
 real; where it does not, it says so by travelling instead.
 
 ## Folding
+
+Folding is a plugin, compiled in by the `simplefold` Cargo feature, which is on
+by default. `cargo build --no-default-features` builds the viewer on its own.
 
 SimpleFold is a Python package, so the first fold sets up a private environment
 under `~/.profold`: a shallow clone of `apple/ml-simplefold`, a Python 3.10
@@ -104,7 +154,14 @@ It also takes an argument, which saves typing while iterating:
 
 ```
 profold 1UBQ              # open with that already loaded
-profold --compare 1UBQ    # fetch it and fold its sequence alongside
+profold traj.lammpstrj    # or a file
+profold --compare 1UBQ    # fetch it and fold its sequence alongside (plugin)
+```
+
+Without the folding plugin:
+
+```
+cargo run --release --no-default-features
 ```
 
 Requires the Xcode Metal toolchain, which GPUI compiles shaders with:
@@ -117,13 +174,16 @@ xcodebuild -downloadComponent MetalToolchain
 
 | File | |
 | --- | --- |
-| [`protein.rs`](src/protein.rs) | Structure model, PDB and mmCIF parsers |
+| [`protein.rs`](src/protein.rs) | Structure model: atoms, residues, bonds, cell, frames |
+| [`formats/`](src/formats/) | One reader per file format |
+| [`elements.rs`](src/elements.rs) | The periodic table: radii, masses, colours |
+| [`bonds.rs`](src/bonds.rs) | Bonds from distance, on a grid |
 | [`dssp.rs`](src/dssp.rs) | Secondary structure from backbone geometry |
 | [`align.rs`](src/align.rs) | Superposition and RMSD |
 | [`job.rs`](src/job.rs) | Progress reporting shared by the slow paths |
 | [`render.rs`](src/render.rs) | The software rasterizer |
 | [`fetch.rs`](src/fetch.rs) | Input classification, RCSB / AlphaFold / UniProt |
-| [`fold.rs`](src/fold.rs) | The SimpleFold subprocess and its environment |
+| [`plugins/simplefold/`](src/plugins/simplefold/) | The folding plugin: jobs, settings, and the SimpleFold subprocess |
 | [`ui/`](src/ui/) | The GPUI views |
 
 GPUI has no 3D pipeline, so the viewer is a software rasterizer: an orthographic

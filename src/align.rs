@@ -5,6 +5,10 @@
 //! eigenvalue. That avoids needing a general SVD, and unlike the determinant
 //! fix-up on a rotation matrix it can never fall into a reflection.
 
+// Superposition is the viewer's, but only a plugin produces pairs to lay
+// over each other so far.
+#![cfg_attr(not(feature = "simplefold"), allow(dead_code))]
+
 use anyhow::{bail, Result};
 
 use crate::protein::Structure;

@@ -45,11 +45,13 @@ pub const DANGER: Hsla = Hsla { h: 0.0092, s: 0.7005, l: 0.4059, a: 1.00 };
 pub const ON_INK: Hsla = Hsla { h: 0.1250, s: 0.3333, l: 0.9765, a: 1.00 };
 
 
-/// Viewport gradient, in linear 0..1 RGB for the rasterizer.
-pub const VIEW_TOP: [f32; 3] = [1.0, 1.0, 1.0];
-/// Flat page behind the illustrative style.
-pub const VIEW_FLAT: [f32; 3] = [0.992, 0.992, 0.988];
-pub const VIEW_BOTTOM: [f32; 3] = [0.945, 0.937, 0.918];
+/// The page behind the molecule, in 0..1 RGB for the rasterizer. Both styles
+/// sit on the same flat paper, so switching between them changes the drawing
+/// and nothing else.
+pub const VIEW: [f32; 3] = [0.992, 0.992, 0.988];
 
 /// Monospace family, used for sequences and identifiers.
 pub const MONO: &str = "Menlo";
+
+/// Display serif, used only for the name of the structure on screen.
+pub const SERIF: &str = "Charter";

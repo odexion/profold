@@ -5,7 +5,103 @@
 //! depth cueing and a depth-discontinuity outline — that give the result the
 //! flat, printed look of a molecular illustration.
 
+use std::collections::HashMap;
+
 use crate::protein::{Ss, Structure};
+
+/// What an atom is, as far as its drawing settings go: its element, or for
+/// an atom of no known element, the name of its type.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Species {
+    Element(u8),
+    Kind(String),
+}
+
+/// How one species is drawn: a multiple of its usual size, how opaque, and
+/// a colour of its own in place of the element's when colouring by element.
+/// Size or opacity at zero hides it, and its bonds with it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Look {
+    pub size: f32,
+    pub alpha: f32,
+    pub color: Option<[f32; 3]>,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Look {
+            size: 1.0,
+            alpha: 1.0,
+            color: None,
+        }
+    }
+}
+
+impl Look {
+    pub fn hidden(self) -> bool {
+        self.size <= 0.0 || self.alpha <= 0.0
+    }
+}
+
+/// The size and opacity set for each species. Kept by element and by type
+/// name rather than per structure, so hiding hydrogens stays hidden from one
+/// file to the next.
+#[derive(Clone, Default)]
+pub struct Appearance {
+    looks: HashMap<Species, Look>,
+}
+
+impl Appearance {
+    pub fn get(&self, species: &Species) -> Look {
+        self.looks.get(species).copied().unwrap_or_default()
+    }
+
+    pub fn set(&mut self, species: Species, look: Look) {
+        if look == Look::default() {
+            self.looks.remove(&species);
+        } else {
+            self.looks.insert(species, look);
+        }
+    }
+
+    pub fn is_default(&self) -> bool {
+        self.looks.is_empty()
+    }
+
+    pub fn reset(&mut self) {
+        self.looks.clear();
+    }
+
+    /// Every species that differs from the default, for saving.
+    pub fn entries(&self) -> impl Iterator<Item = (&Species, &Look)> {
+        self.looks.iter()
+    }
+
+    /// One look per atom of `s`.
+    fn resolve(&self, s: &Structure) -> Vec<Look> {
+        if self.looks.is_empty() {
+            return vec![Look::default(); s.atoms.len()];
+        }
+        let elements: Vec<Look> = (0..=255u8)
+            .map(|z| self.get(&Species::Element(z)))
+            .collect();
+        let kinds: Vec<Look> = s
+            .kinds
+            .iter()
+            .map(|k| self.get(&Species::Kind(k.clone())))
+            .collect();
+        s.atoms
+            .iter()
+            .map(|a| {
+                if a.element.is_known() {
+                    elements[a.element.0 as usize]
+                } else {
+                    kinds.get(a.kind as usize).copied().unwrap_or_default()
+                }
+            })
+            .collect()
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Repr {
@@ -13,17 +109,47 @@ pub enum Repr {
     Cartoon,
     /// Smooth tube through the alpha carbons.
     Tube,
+    /// Small atoms joined by thin bonds.
+    BallAndStick,
+    /// Bonds as rods of one thickness, atoms only as their rounded ends.
+    Licorice,
     /// Every atom at its van der Waals radius.
     Spacefill,
 }
 
 impl Repr {
-    pub const ALL: [Repr; 3] = [Repr::Cartoon, Repr::Tube, Repr::Spacefill];
+    pub const ALL: [Repr; 5] = [
+        Repr::Cartoon,
+        Repr::Tube,
+        Repr::BallAndStick,
+        Repr::Licorice,
+        Repr::Spacefill,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Repr::Cartoon => "Cartoon",
             Repr::Tube => "Tube",
+            Repr::BallAndStick => "Ball & stick",
+            Repr::Licorice => "Licorice",
             Repr::Spacefill => "Spacefill",
+        }
+    }
+
+    /// Drawn from the protein backbone, so meaningless without one.
+    pub fn needs_polymer(self) -> bool {
+        matches!(self, Repr::Cartoon | Repr::Tube)
+    }
+
+    /// What a structure opens as: the cartoon for a protein, ball and stick
+    /// for a molecule, and spheres for a simulation whose atoms are anonymous
+    /// beads or too many to make out bonds between.
+    pub fn default_for(s: &Structure) -> Repr {
+        if s.has_polymer() {
+            Repr::Cartoon
+        } else if s.atoms.iter().all(|a| a.element.is_known()) && s.atoms.len() <= 50_000 {
+            Repr::BallAndStick
+        } else {
+            Repr::Spacefill
         }
     }
 }
@@ -77,14 +203,23 @@ pub enum Palette {
     Viridis,
     Ember,
     Ice,
+    Magma,
+    Plasma,
+    /// Even and readable to every kind of colour vision.
+    Cividis,
+    Mako,
 }
 
 impl Palette {
-    pub const ALL: [Palette; 4] = [
+    pub const ALL: [Palette; 8] = [
         Palette::Spectrum,
         Palette::Viridis,
         Palette::Ember,
         Palette::Ice,
+        Palette::Magma,
+        Palette::Plasma,
+        Palette::Cividis,
+        Palette::Mako,
     ];
 
     pub fn label(self) -> &'static str {
@@ -93,6 +228,10 @@ impl Palette {
             Palette::Viridis => "Viridis",
             Palette::Ember => "Ember",
             Palette::Ice => "Ice",
+            Palette::Magma => "Magma",
+            Palette::Plasma => "Plasma",
+            Palette::Cividis => "Cividis",
+            Palette::Mako => "Mako",
         }
     }
 
@@ -128,6 +267,46 @@ impl Palette {
                     [0.11, 0.37, 0.62],
                     [0.24, 0.64, 0.75],
                     [0.72, 0.92, 0.92],
+                ],
+                t,
+            ),
+            Palette::Magma => sample(
+                &[
+                    [0.001, 0.000, 0.014],
+                    [0.316, 0.072, 0.485],
+                    [0.716, 0.215, 0.475],
+                    [0.986, 0.536, 0.382],
+                    [0.987, 0.991, 0.749],
+                ],
+                t,
+            ),
+            Palette::Plasma => sample(
+                &[
+                    [0.050, 0.030, 0.528],
+                    [0.494, 0.012, 0.658],
+                    [0.798, 0.280, 0.470],
+                    [0.973, 0.585, 0.254],
+                    [0.940, 0.975, 0.131],
+                ],
+                t,
+            ),
+            Palette::Cividis => sample(
+                &[
+                    [0.000, 0.135, 0.305],
+                    [0.253, 0.344, 0.454],
+                    [0.478, 0.508, 0.472],
+                    [0.719, 0.699, 0.406],
+                    [0.995, 0.909, 0.218],
+                ],
+                t,
+            ),
+            Palette::Mako => sample(
+                &[
+                    [0.043, 0.035, 0.052],
+                    [0.238, 0.235, 0.443],
+                    [0.263, 0.478, 0.635],
+                    [0.362, 0.716, 0.663],
+                    [0.867, 0.949, 0.792],
                 ],
                 t,
             ),
@@ -186,7 +365,8 @@ pub enum Style {
 }
 
 impl Style {
-    pub const ALL: [Style; 2] = [Style::Soft, Style::Illustrative];
+    /// The drawn figure leads: it is what the viewer opens with.
+    pub const ALL: [Style; 2] = [Style::Illustrative, Style::Soft];
     pub fn label(self) -> &'static str {
         match self {
             Style::Soft => "Soft",
@@ -207,6 +387,28 @@ pub struct Camera {
 }
 
 impl Camera {
+    /// The three-quarter view every structure opens at, which reads as
+    /// zero degrees on the angle readout.
+    pub const HOME_YAW: f32 = 0.55;
+    pub const HOME_PITCH: f32 = 0.25;
+
+    /// Rotation away from the opening view, in degrees about the screen's
+    /// x axis (tilting) and y axis (turning), each in -180..=180.
+    pub fn angles(&self) -> [f32; 2] {
+        let wrap = |r: f32| {
+            let d = r.to_degrees().rem_euclid(360.0);
+            if d > 180.0 {
+                d - 360.0
+            } else {
+                d
+            }
+        };
+        [
+            wrap(self.pitch - Self::HOME_PITCH),
+            wrap(self.yaw - Self::HOME_YAW),
+        ]
+    }
+
     pub fn frame(structure: &Structure) -> Self {
         Self::frame_all(&[structure])
     }
@@ -216,18 +418,28 @@ impl Camera {
     pub fn frame_all(structures: &[&Structure]) -> Self {
         let mut lo = [f32::MAX; 3];
         let mut hi = [f32::MIN; 3];
+        // The cell's corners count too, so a crystal is framed whole. A
+        // protein's crystal cell is not drawn, and does not count.
+        let points = |s: &Structure| {
+            let polymer = s.has_polymer();
+            s.atoms
+                .iter()
+                .map(|a| a.pos)
+                .chain(s.cell.iter().filter(|_| !polymer).flat_map(|c| c.corners()))
+                .collect::<Vec<_>>()
+        };
         for s in structures {
-            for a in &s.atoms {
+            for p in points(s) {
                 for i in 0..3 {
-                    lo[i] = lo[i].min(a.pos[i]);
-                    hi[i] = hi[i].max(a.pos[i]);
+                    lo[i] = lo[i].min(p[i]);
+                    hi[i] = hi[i].max(p[i]);
                 }
             }
         }
         if lo[0] > hi[0] {
             return Camera {
-                yaw: 0.55,
-                pitch: 0.25,
+                yaw: Camera::HOME_YAW,
+                pitch: Camera::HOME_PITCH,
                 zoom: 1.0,
                 pan: [0.0, 0.0],
                 center: [0.0; 3],
@@ -241,19 +453,19 @@ impl Camera {
         ];
         let mut r2: f32 = 0.0;
         for s in structures {
-            for a in &s.atoms {
+            for p in points(s) {
                 let d = [
-                    a.pos[0] - center[0],
-                    a.pos[1] - center[1],
-                    a.pos[2] - center[2],
+                    p[0] - center[0],
+                    p[1] - center[1],
+                    p[2] - center[2],
                 ];
                 r2 = r2.max(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
             }
         }
         let radius = r2.sqrt().max(1.0);
         Camera {
-            yaw: 0.55,
-            pitch: 0.25,
+            yaw: Camera::HOME_YAW,
+            pitch: Camera::HOME_PITCH,
             zoom: 1.0,
             pan: [0.0, 0.0],
             center,
@@ -278,6 +490,8 @@ pub struct Sphere {
     pub c: [f32; 3],
     pub r: f32,
     pub color: [f32; 3],
+    /// Opacity; anything under one is blended after the opaque scene.
+    pub alpha: f32,
 }
 
 /// A sphere-swept segment. The tube is built from these rather than from a
@@ -290,6 +504,7 @@ pub struct Capsule {
     pub r: f32,
     pub ca: [f32; 3],
     pub cb: [f32; 3],
+    pub alpha: f32,
 }
 
 /// A shaded triangle with per-vertex normals, used for cartoon ribbons.
@@ -305,9 +520,20 @@ pub struct Scene {
     pub spheres: Vec<Sphere>,
     pub capsules: Vec<Capsule>,
     pub tris: Vec<Tri>,
+    /// Which build this is, for telling a frame of it from a frame of any
+    /// other. Set by `stamp`; zero until then.
+    pub version: u64,
 }
 
 impl Scene {
+    /// Give the scene a number no other scene has had, so a viewer caching
+    /// frames never mistakes a recoloured scene for the one before it.
+    pub fn stamp(mut self) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.version = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self
+    }
+
     pub fn len(&self) -> usize {
         self.spheres.len() + self.capsules.len() + self.tris.len()
     }
@@ -441,8 +667,90 @@ fn catmull_rom(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3], p3: [f32; 3], t: f32) -
     out
 }
 
+/// Colours for one structure under one scheme, with what the scheme needs to
+/// know about the structure worked out once.
+/// The colour of each element: from the palette, the elements present
+/// taking its colours most common first, unless colours are fixed, in which
+/// case the chemists' convention, CPK by way of Jmol.
+pub fn element_colors(s: &Structure, palette: Palette, fixed: bool) -> Vec<[f32; 3]> {
+    let mut out: Vec<[f32; 3]> = (0..=255u8)
+        .map(|z| crate::elements::Element(z).color())
+        .collect();
+    if !fixed {
+        for (rank, (e, _)) in s
+            .composition()
+            .into_iter()
+            .filter(|(e, _)| e.is_known())
+            .enumerate()
+        {
+            out[e.0 as usize] = palette.chain(rank);
+        }
+    }
+    out
+}
+
+struct Paint<'a> {
+    s: &'a Structure,
+    /// By atomic number.
+    elements: Vec<[f32; 3]>,
+    coloring: Coloring,
+    palette: Palette,
+    polymer: bool,
+    /// Size and opacity, per atom.
+    looks: Vec<Look>,
+}
+
+impl Paint<'_> {
+    fn residue(&self, residue: usize) -> [f32; 3] {
+        residue_color(self.s, residue, self.coloring, self.palette)
+    }
+
+    fn atom(&self, i: usize) -> [f32; 3] {
+        let a = &self.s.atoms[i];
+        match self.coloring {
+            Coloring::Element if self.looks[i].color.is_some() => self.looks[i].color.unwrap(),
+            Coloring::Element if a.element.is_known() => self.elements[a.element.0 as usize],
+            // A simulation's anonymous types get a colour each.
+            Coloring::Element => self.palette.chain(a.kind as usize),
+            Coloring::Rainbow if !self.polymer => self
+                .palette
+                .ramp(i as f32 / (self.s.atoms.len().max(2) - 1) as f32),
+            // Without chains, each molecule is told apart instead.
+            Coloring::Chain if !self.polymer => self.palette.chain(a.residue as usize),
+            _ => self.residue(a.residue as usize),
+        }
+    }
+
+    /// Drawing radius of an atom drawn at its full size, times the size set
+    /// for its species.
+    fn radius(&self, i: usize) -> f32 {
+        let e = self.s.atoms[i].element;
+        let r = if e.is_known() {
+            e.vdw()
+        } else {
+            self.s.unknown_radius
+        };
+        r * self.looks[i].size
+    }
+
+    fn alpha(&self, i: usize) -> f32 {
+        self.looks[i].alpha
+    }
+}
+
+/// Residue names that are solvent. Hidden under a cartoon, where a box of
+/// water would bury the protein; shown in the atomistic styles.
+fn is_solvent(name: &str) -> bool {
+    matches!(
+        name,
+        "HOH" | "WAT" | "SOL" | "TIP3" | "TIP3P" | "TIP4" | "TIP4P" | "TIP5P" | "SPC" | "SPCE"
+            | "T3P" | "T4P" | "H2O" | "DOD"
+    )
+}
+
 /// Build the drawable primitives for a structure. `quality` in 0..=1 trades
 /// tube smoothness for speed on very long chains.
+#[allow(clippy::too_many_arguments)]
 pub fn build_scene(
     s: &Structure,
     repr: Repr,
@@ -450,8 +758,24 @@ pub fn build_scene(
     quality: f32,
     style: Style,
     palette: Palette,
+    fixed_colors: bool,
+    cell: bool,
+    appearance: &Appearance,
 ) -> Scene {
-    let mut scene = build_primitives(s, repr, coloring, quality, palette);
+    let paint = Paint {
+        s,
+        elements: element_colors(s, palette, fixed_colors),
+        coloring,
+        palette,
+        polymer: s.has_polymer(),
+        looks: appearance.resolve(s),
+    };
+    let mut scene = build_primitives(&paint, repr, quality);
+    if cell {
+        if let Some(c) = &s.cell {
+            scene.capsules.extend(cell_edges(c));
+        }
+    }
     if style == Style::Illustrative {
         for c in scene
             .spheres
@@ -466,42 +790,152 @@ pub fn build_scene(
     scene
 }
 
-fn build_primitives(
-    s: &Structure,
-    repr: Repr,
-    coloring: Coloring,
-    quality: f32,
-    palette: Palette,
-) -> Scene {
+fn build_primitives(paint: &Paint, repr: Repr, quality: f32) -> Scene {
+    let s = paint.s;
+    let (coloring, palette) = (paint.coloring, paint.palette);
     match repr {
         Repr::Spacefill => Scene {
-            spheres: s
-                .atoms
-                .iter()
-                .map(|a| Sphere {
-                    c: a.pos,
-                    r: a.element.vdw(),
-                    color: if coloring == Coloring::Element {
-                        a.element.color()
-                    } else {
-                        residue_color(s, a.residue as usize, coloring, palette)
-                    },
+            spheres: (0..s.atoms.len())
+                .filter(|&i| !paint.looks[i].hidden())
+                .map(|i| Sphere {
+                    c: s.atoms[i].pos,
+                    r: paint.radius(i),
+                    color: paint.atom(i),
+                    alpha: paint.alpha(i),
                 })
                 .collect(),
-            capsules: Vec::new(),
-            tris: Vec::new(),
+            ..Scene::default()
         },
-        Repr::Tube => Scene {
-            spheres: Vec::new(),
-            capsules: build_tube(s, coloring, quality, palette),
-            tris: Vec::new(),
-        },
-        Repr::Cartoon => Scene {
-            spheres: Vec::new(),
-            capsules: Vec::new(),
-            tris: build_cartoon(s, coloring, quality, palette),
-        },
+        Repr::BallAndStick | Repr::Licorice => {
+            let all: Vec<bool> = vec![true; s.atoms.len()];
+            build_sticks(paint, &all, repr == Repr::Licorice)
+        }
+        Repr::Tube | Repr::Cartoon => {
+            let mut scene = Scene::default();
+            if repr == Repr::Tube {
+                scene.capsules = build_tube(s, coloring, quality, palette);
+            } else {
+                scene.tris = build_cartoon(s, coloring, quality, palette);
+            }
+            // Ligands, ions and nucleic acids have no alpha carbons to draw a
+            // backbone through, and would vanish; they are drawn as atoms.
+            let ligand: Vec<bool> = s
+                .atoms
+                .iter()
+                .map(|a| {
+                    let r = &s.residues[a.residue as usize];
+                    r.ca.is_none() && !is_solvent(&r.name)
+                })
+                .collect();
+            if ligand.iter().any(|l| *l) {
+                scene.merge(build_sticks(paint, &ligand, false));
+            }
+            scene
+        }
     }
+}
+
+/// Atoms and bonds among the atoms marked in `keep`. Each bond is two
+/// half-rods, each in its own atom's colour.
+fn build_sticks(paint: &Paint, keep: &[bool], licorice: bool) -> Scene {
+    let s = paint.s;
+    // Rods are sized for ångström; a simulation in other units scales them
+    // to its own atoms.
+    let unit = |i: usize| {
+        if s.atoms[i].element.is_known() {
+            1.0
+        } else {
+            (s.unknown_radius / 0.8).min(1.0)
+        }
+    };
+    let rod = if licorice { 0.22 } else { 0.14 };
+
+    let mut bonded = vec![false; s.atoms.len()];
+    let mut capsules = Vec::new();
+    for &[a, b] in &s.bonds {
+        let (a, b) = (a as usize, b as usize);
+        if !keep[a] || !keep[b] || paint.looks[a].hidden() || paint.looks[b].hidden() {
+            continue;
+        }
+        bonded[a] = true;
+        bonded[b] = true;
+        let pa = s.atoms[a].pos;
+        let pb = s.atoms[b].pos;
+        let mid = mix(pa, pb, 0.5);
+        let r = rod * unit(a).min(unit(b));
+        let (ca, cb) = (paint.atom(a), paint.atom(b));
+        capsules.push(Capsule {
+            a: pa,
+            b: mid,
+            r,
+            ca,
+            cb: ca,
+            alpha: paint.alpha(a),
+        });
+        capsules.push(Capsule {
+            a: mid,
+            b: pb,
+            r,
+            ca: cb,
+            cb,
+            alpha: paint.alpha(b),
+        });
+    }
+
+    let spheres = (0..s.atoms.len())
+        .filter(|&i| keep[i] && !paint.looks[i].hidden())
+        .filter_map(|i| {
+            let r = if licorice {
+                // The rod ends round off bonded atoms; only the lone ones,
+                // ions and the like, need a sphere of their own.
+                // Grown past one, a bonded atom swells out of its rods.
+                if bonded[i] {
+                    let size = paint.looks[i].size;
+                    if size <= 1.0 {
+                        return None;
+                    }
+                    return Some(Sphere {
+                        c: s.atoms[i].pos,
+                        r: rod * unit(i) * size,
+                        color: paint.atom(i),
+                        alpha: paint.alpha(i),
+                    });
+                }
+                paint.radius(i) * 0.3
+            } else {
+                paint.radius(i) * 0.25
+            };
+            Some(Sphere {
+                c: s.atoms[i].pos,
+                r,
+                color: paint.atom(i),
+                alpha: paint.alpha(i),
+            })
+        })
+        .collect();
+    Scene {
+        spheres,
+        capsules,
+        ..Scene::default()
+    }
+}
+
+/// The edges of the simulation cell, as fine dark rods sized to the box.
+fn cell_edges(cell: &crate::protein::Cell) -> Vec<Capsule> {
+    const EDGE: [f32; 3] = [0.30, 0.31, 0.34];
+    let longest = cell.lengths().into_iter().fold(0.0f32, f32::max);
+    let r = (longest * 0.0015).clamp(0.01, 0.5);
+    cell.edges()
+        .into_iter()
+        .map(|(a, b)| Capsule {
+            a,
+            b,
+            r,
+            ca: EDGE,
+            cb: EDGE,
+            alpha: 1.0,
+        })
+        .collect()
 }
 
 // -- small vector helpers ----------------------------------------------------
@@ -627,6 +1061,7 @@ fn build_tube(
                     r: TUBE_RADIUS,
                     ca: pair[0].1,
                     cb: pair[1].1,
+                    alpha: 1.0,
                 });
             }
         }
@@ -873,17 +1308,6 @@ pub struct Frame {
     pub bgra: Vec<u8>,
 }
 
-/// Vertical paper gradient behind the molecule.
-#[inline]
-fn background(y: usize, height: usize, top: [f32; 3], bottom: [f32; 3]) -> [f32; 3] {
-    let t = y as f32 / height.max(1) as f32;
-    [
-        top[0] + (bottom[0] - top[0]) * t,
-        top[1] + (bottom[1] - top[1]) * t,
-        top[2] + (bottom[2] - top[2]) * t,
-    ]
-}
-
 /// Light from the upper left, slightly in front of the viewer.
 const LIGHT: [f32; 3] = [-0.4082, 0.5585, 0.7226];
 /// Halfway between the light and the view direction, for the highlight.
@@ -951,8 +1375,7 @@ pub fn render(
     cam: &Camera,
     width: usize,
     height: usize,
-    bg_top: [f32; 3],
-    bg_bottom: [f32; 3],
+    page: [f32; 3],
     style: Style,
 ) -> Frame {
     let n = width * height;
@@ -962,14 +1385,10 @@ pub fn render(
         style,
     };
 
-    for y in 0..height {
-        let bg = background(y, height, bg_top, bg_bottom);
-        for x in 0..width {
-            let o = (y * width + x) * 3;
-            t.color[o] = bg[0];
-            t.color[o + 1] = bg[1];
-            t.color[o + 2] = bg[2];
-        }
+    for o in (0..n * 3).step_by(3) {
+        t.color[o] = page[0];
+        t.color[o + 1] = page[1];
+        t.color[o + 2] = page[2];
     }
 
     if scene.is_empty() || width == 0 || height == 0 {
@@ -997,9 +1416,6 @@ pub fn render(
             m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
         ]
     };
-    // View-space coordinates of a pixel centre.
-    let view_x = |px: usize| (px as f32 + 0.5 - cx) * inv;
-    let view_y = |py: usize| -(py as f32 + 0.5 - cy) * inv;
 
     let mut zmin = f32::MAX;
     let mut zmax = f32::MIN;
@@ -1011,113 +1427,46 @@ pub fn render(
             zmax = hi;
         }
     };
+    let grid = Grid {
+        cx,
+        cy,
+        scale,
+        inv,
+        width,
+        height,
+    };
+
+    // Translucent atoms and bonds wait until the opaque scene, its fog and
+    // its outlines are down, and are then laid over it back to front.
+    let mut translucent: Vec<(f32, Layer)> = Vec::new();
 
     // -- spheres ----------------------------------------------------------
-    for s in &scene.spheres {
+    for (k, s) in scene.spheres.iter().enumerate() {
+        if s.alpha <= 0.0 || s.r <= 0.0 {
+            continue;
+        }
         let v = to_view(s.c);
         track(v[2] - s.r, v[2] + s.r);
-
-        let sx = cx + v[0] * scale;
-        let sy = cy - v[1] * scale;
-        let rp = s.r * scale;
-        let Some((x0, x1, y0, y1)) = bbox(sx - rp, sx + rp, sy - rp, sy + rp, width, height) else {
+        if s.alpha < OPAQUE {
+            translucent.push((v[2], Layer::Sphere(k, v)));
             continue;
-        };
-        for py in y0..y1 {
-            let y = view_y(py);
-            let row = py * width;
-            for px in x0..x1 {
-                if let Some((z, n)) = sphere_hit(v, s.r, view_x(px), y) {
-                    t.plot(row + px, z, n, s.color);
-                }
-            }
         }
+        grid.sphere(v, s.r, |idx, z, n, _| t.plot(idx, z, n, s.color));
     }
 
     // -- capsules ---------------------------------------------------------
-    for c in &scene.capsules {
+    for (k, c) in scene.capsules.iter().enumerate() {
+        if c.alpha <= 0.0 {
+            continue;
+        }
         let a = to_view(c.a);
         let b = to_view(c.b);
         track(a[2].min(b[2]) - c.r, a[2].max(b[2]) + c.r);
-
-        let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        let u = if len > 1e-6 {
-            [d[0] / len, d[1] / len, d[2] / len]
-        } else {
-            [0.0, 0.0, 1.0]
-        };
-
-        let sax = cx + a[0] * scale;
-        let say = cy - a[1] * scale;
-        let sbx = cx + b[0] * scale;
-        let sby = cy - b[1] * scale;
-        let rp = c.r * scale;
-        let Some((x0, x1, y0, y1)) = bbox(
-            sax.min(sbx) - rp,
-            sax.max(sbx) + rp,
-            say.min(sby) - rp,
-            say.max(sby) + rp,
-            width,
-            height,
-        ) else {
+        if c.alpha < OPAQUE {
+            translucent.push(((a[2] + b[2]) * 0.5, Layer::Capsule(k, a, b)));
             continue;
-        };
-
-        // Coefficients of the ray-cylinder quadratic that do not vary per
-        // pixel. `q` collapses to zero when the axis points at the viewer, in
-        // which case the end caps alone describe the shape.
-        let q = 1.0 - u[2] * u[2];
-        let rr = c.r * c.r;
-
-        for py in y0..y1 {
-            let y = view_y(py);
-            let row = py * width;
-            for px in x0..x1 {
-                let x = view_x(px);
-                let wx = x - a[0];
-                let wy = y - a[1];
-
-                if q > 1e-6 && len > 1e-6 {
-                    let k = wx * u[0] + wy * u[1];
-                    let bq = -2.0 * k * u[2];
-                    let cq = wx * wx + wy * wy - k * k - rr;
-                    let disc = bq * bq - 4.0 * q * cq;
-                    if disc >= 0.0 {
-                        let cz = (-bq + disc.sqrt()) / (2.0 * q);
-                        let along = k + cz * u[2];
-                        let s = along / len;
-                        if (0.0..=1.0).contains(&s) {
-                            let nrm = [
-                                (wx - u[0] * along) / c.r,
-                                (wy - u[1] * along) / c.r,
-                                (cz - u[2] * along) / c.r,
-                            ];
-                            let base = [
-                                c.ca[0] + (c.cb[0] - c.ca[0]) * s,
-                                c.ca[1] + (c.cb[1] - c.ca[1]) * s,
-                                c.ca[2] + (c.cb[2] - c.ca[2]) * s,
-                            ];
-                            t.plot(row + px, a[2] + cz, nrm, base);
-                            continue;
-                        }
-                    }
-                }
-
-                // Outside the cylinder's span, the caps take over.
-                let mut best: Option<(f32, [f32; 3], [f32; 3])> = None;
-                for (centre, color) in [(a, c.ca), (b, c.cb)] {
-                    if let Some((z, nrm)) = sphere_hit(centre, c.r, x, y) {
-                        if best.as_ref().is_none_or(|(bz, _, _)| z > *bz) {
-                            best = Some((z, nrm, color));
-                        }
-                    }
-                }
-                if let Some((z, nrm, color)) = best {
-                    t.plot(row + px, z, nrm, color);
-                }
-            }
         }
+        grid.capsule(a, b, c.r, |idx, z, n, f| t.plot(idx, z, n, mix(c.ca, c.cb, f)));
     }
 
     // -- ribbon meshes ----------------------------------------------------
@@ -1198,19 +1547,15 @@ pub fn render(
         Style::Soft => 0.42,
         Style::Illustrative => 0.0,
     };
-    for y in 0..height {
-        let bg = background(y, height, bg_top, bg_bottom);
-        for x in 0..width {
-            let idx = y * width + x;
-            if t.depth[idx] == f32::NEG_INFINITY {
-                continue;
-            }
-            let d = ((t.depth[idx] - zmin) / span).clamp(0.0, 1.0);
-            let fog = (1.0 - d) * fog_strength;
-            let o = idx * 3;
-            for k in 0..3 {
-                t.color[o + k] += (bg[k] - t.color[o + k]) * fog;
-            }
+    for idx in 0..width * height {
+        if t.depth[idx] == f32::NEG_INFINITY {
+            continue;
+        }
+        let d = ((t.depth[idx] - zmin) / span).clamp(0.0, 1.0);
+        let fog = (1.0 - d) * fog_strength;
+        let o = idx * 3;
+        for k in 0..3 {
+            t.color[o + k] += (page[k] - t.color[o + k]) * fog;
         }
     }
 
@@ -1302,8 +1647,194 @@ pub fn render(
         }
     }
 
+    // -- translucent atoms and bonds ----------------------------------------
+    // Painter's order, farthest first, each blended where it is in front of
+    // the opaque scene. They take the same fog, and a sphere keeps an ink
+    // rim in the illustrative style so it still reads as drawn.
+    translucent.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let rim = (width.min(height) / 700).max(1) as f32 + 0.5;
+    for (_, layer) in &translucent {
+        let mut blend = |idx: usize, z: f32, n: [f32; 3], base: [f32; 3], alpha: f32, edge: bool| {
+            if z <= t.depth[idx] {
+                return;
+            }
+            let mut c = shade(n, base, style);
+            let d = ((z - zmin) / span).clamp(0.0, 1.0);
+            let fog = (1.0 - d) * fog_strength;
+            for k in 0..3 {
+                c[k] += (page[k] - c[k]) * fog;
+            }
+            let (c, alpha) = match (edge, style) {
+                (true, Style::Illustrative) => ([0.07, 0.07, 0.09], alpha.max(0.45)),
+                (true, Style::Soft) => (c.map(|x| x * 0.8), alpha),
+                _ => (c, alpha),
+            };
+            let o = idx * 3;
+            for k in 0..3 {
+                t.color[o + k] = c[k] * alpha + t.color[o + k] * (1.0 - alpha);
+            }
+        };
+        match *layer {
+            Layer::Sphere(k, v) => {
+                let s = &scene.spheres[k];
+                let inner = (s.r * scale - rim).max(0.0);
+                grid.sphere(v, s.r, |idx, z, n, from_centre| {
+                    blend(idx, z, n, s.color, s.alpha, from_centre > inner)
+                });
+            }
+            Layer::Capsule(k, a, b) => {
+                let c = &scene.capsules[k];
+                grid.capsule(a, b, c.r, |idx, z, n, f| {
+                    blend(idx, z, n, mix(c.ca, c.cb, f), c.alpha, false)
+                });
+            }
+        }
+    }
+
     to_bgra(t.color, width, height)
 }
+
+/// Below this an atom is drawn as see-through.
+const OPAQUE: f32 = 0.999;
+
+/// A translucent primitive held back for the second pass: its index, and
+/// where it sits in view space.
+enum Layer {
+    Sphere(usize, [f32; 3]),
+    Capsule(usize, [f32; 3], [f32; 3]),
+}
+
+/// The mapping between view space and the frame's pixels, and the two
+/// impostor shapes resolved against it.
+struct Grid {
+    cx: f32,
+    cy: f32,
+    scale: f32,
+    inv: f32,
+    width: usize,
+    height: usize,
+}
+
+impl Grid {
+    #[inline]
+    fn view_x(&self, px: usize) -> f32 {
+        (px as f32 + 0.5 - self.cx) * self.inv
+    }
+
+    #[inline]
+    fn view_y(&self, py: usize) -> f32 {
+        -(py as f32 + 0.5 - self.cy) * self.inv
+    }
+
+    /// Every pixel the sphere covers, with its depth, normal, and distance
+    /// from the centre in pixels.
+    fn sphere(&self, v: [f32; 3], r: f32, mut f: impl FnMut(usize, f32, [f32; 3], f32)) {
+        let sx = self.cx + v[0] * self.scale;
+        let sy = self.cy - v[1] * self.scale;
+        let rp = r * self.scale;
+        let Some((x0, x1, y0, y1)) =
+            bbox(sx - rp, sx + rp, sy - rp, sy + rp, self.width, self.height)
+        else {
+            return;
+        };
+        for py in y0..y1 {
+            let y = self.view_y(py);
+            let row = py * self.width;
+            for px in x0..x1 {
+                let x = self.view_x(px);
+                if let Some((z, n)) = sphere_hit(v, r, x, y) {
+                    let d = ((x - v[0]).powi(2) + (y - v[1]).powi(2)).sqrt() * self.scale;
+                    f(row + px, z, n, d);
+                }
+            }
+        }
+    }
+
+    /// Every pixel the capsule covers, with its depth, normal, and how far
+    /// along from `a` to `b` the surface there is, for blending the colour.
+    fn capsule(
+        &self,
+        a: [f32; 3],
+        b: [f32; 3],
+        r: f32,
+        mut f: impl FnMut(usize, f32, [f32; 3], f32),
+    ) {
+        let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let u = if len > 1e-6 {
+            [d[0] / len, d[1] / len, d[2] / len]
+        } else {
+            [0.0, 0.0, 1.0]
+        };
+
+        let sax = self.cx + a[0] * self.scale;
+        let say = self.cy - a[1] * self.scale;
+        let sbx = self.cx + b[0] * self.scale;
+        let sby = self.cy - b[1] * self.scale;
+        let rp = r * self.scale;
+        let Some((x0, x1, y0, y1)) = bbox(
+            sax.min(sbx) - rp,
+            sax.max(sbx) + rp,
+            say.min(sby) - rp,
+            say.max(sby) + rp,
+            self.width,
+            self.height,
+        ) else {
+            return;
+        };
+
+        // Coefficients of the ray-cylinder quadratic that do not vary per
+        // pixel. `q` collapses to zero when the axis points at the viewer, in
+        // which case the end caps alone describe the shape.
+        let q = 1.0 - u[2] * u[2];
+        let rr = r * r;
+
+        for py in y0..y1 {
+            let y = self.view_y(py);
+            let row = py * self.width;
+            for px in x0..x1 {
+                let x = self.view_x(px);
+                let wx = x - a[0];
+                let wy = y - a[1];
+
+                if q > 1e-6 && len > 1e-6 {
+                    let k = wx * u[0] + wy * u[1];
+                    let bq = -2.0 * k * u[2];
+                    let cq = wx * wx + wy * wy - k * k - rr;
+                    let disc = bq * bq - 4.0 * q * cq;
+                    if disc >= 0.0 {
+                        let cz = (-bq + disc.sqrt()) / (2.0 * q);
+                        let along = k + cz * u[2];
+                        let s = along / len;
+                        if (0.0..=1.0).contains(&s) {
+                            let nrm = [
+                                (wx - u[0] * along) / r,
+                                (wy - u[1] * along) / r,
+                                (cz - u[2] * along) / r,
+                            ];
+                            f(row + px, a[2] + cz, nrm, s);
+                            continue;
+                        }
+                    }
+                }
+
+                // Outside the cylinder's span, the caps take over.
+                let mut best: Option<(f32, [f32; 3], f32)> = None;
+                for (centre, s) in [(a, 0.0), (b, 1.0)] {
+                    if let Some((z, nrm)) = sphere_hit(centre, r, x, y) {
+                        if best.as_ref().is_none_or(|(bz, _, _)| z > *bz) {
+                            best = Some((z, nrm, s));
+                        }
+                    }
+                }
+                if let Some((z, nrm, s)) = best {
+                    f(row + px, z, nrm, s);
+                }
+            }
+        }
+    }
+}
+
 
 /// The four pixels sharing an edge with this one.
 #[inline]
@@ -1358,5 +1889,100 @@ fn to_bgra(color: Vec<f32>, width: usize, height: usize) -> Frame {
         width,
         height,
         bgra,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pixel(f: &Frame, x: usize, y: usize) -> [u8; 3] {
+        let o = (y * f.width + x) * 4;
+        [f.bgra[o + 2], f.bgra[o + 1], f.bgra[o]]
+    }
+
+    #[test]
+    fn palettes_recolour_elements_unless_fixed() {
+        let s = crate::formats::load_bytes(
+            "caffeine.sdf",
+            include_bytes!("../samples/caffeine.sdf").to_vec(),
+        )
+        .unwrap();
+        let colors = |palette, fixed| {
+            build_scene(
+                &s,
+                Repr::BallAndStick,
+                Coloring::Element,
+                1.0,
+                Style::Soft,
+                palette,
+                fixed,
+                false,
+                &Appearance::default(),
+            )
+            .spheres
+            .iter()
+            .map(|p| p.color)
+            .collect::<Vec<_>>()
+        };
+        // Fixed, elements keep their standard colours whatever the palette.
+        let standard = colors(Palette::Spectrum, true);
+        assert_eq!(standard[0], crate::elements::Element::O.color());
+        assert_eq!(colors(Palette::Viridis, true), standard);
+        // Otherwise each palette paints them its own way.
+        assert_ne!(colors(Palette::Viridis, false), standard);
+        assert_ne!(colors(Palette::Magma, false), colors(Palette::Viridis, false));
+    }
+
+    #[test]
+    fn angles_start_at_zero() {
+        let mut cam = Camera::frame_all(&[]);
+        assert_eq!(cam.angles(), [0.0, 0.0]);
+        cam.yaw += std::f32::consts::FRAC_PI_2;
+        cam.pitch -= 0.5f32.to_radians() * 20.0;
+        let [x, y] = cam.angles();
+        assert!((y - 90.0).abs() < 1e-3 && (x + 10.0).abs() < 1e-3);
+        // A full turn comes back round.
+        cam.yaw += std::f32::consts::TAU;
+        assert!((cam.angles()[1] - 90.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn translucent_spheres_blend_over_opaque_ones() {
+        let behind = Sphere {
+            c: [0.0, 0.0, -2.0],
+            r: 1.0,
+            color: [1.0, 0.0, 0.0],
+            alpha: 1.0,
+        };
+        let front = Sphere {
+            c: [0.0, 0.0, 2.0],
+            r: 1.0,
+            color: [0.0, 0.0, 1.0],
+            alpha: 0.5,
+        };
+        let cam = Camera {
+            yaw: 0.0,
+            pitch: 0.0,
+            zoom: 1.0,
+            pan: [0.0, 0.0],
+            center: [0.0; 3],
+            radius: 2.0,
+        };
+        let draw = |spheres: Vec<Sphere>| {
+            let scene = Scene {
+                spheres,
+                ..Scene::default()
+            };
+            render(&scene, &cam, 64, 64, [1.0; 3], Style::Soft)
+        };
+        let both = pixel(&draw(vec![behind, front]), 32, 32);
+        // Red shows through the blue in front of it.
+        assert!(both[0] > 40 && both[2] > 40, "{both:?}");
+        // Fully transparent is not drawn at all.
+        let mut gone = front;
+        gone.alpha = 0.0;
+        let alone = pixel(&draw(vec![behind]), 32, 32);
+        assert_eq!(pixel(&draw(vec![behind, gone]), 32, 32), alone);
     }
 }

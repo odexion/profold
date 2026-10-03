@@ -186,6 +186,7 @@ impl Engine {
         if !self.is_installed() {
             return Err(anyhow!("installation finished but `simplefold` is missing"));
         }
+        self.ease_esm_load(tx);
         stage(tx, "Folding engine ready.");
         Ok(())
     }
@@ -198,9 +199,155 @@ impl Engine {
         }
     }
 
+    /// Is this model's checkpoint already on disk? SimpleFold fetches a
+    /// missing one on first use, which is a wait worth knowing about before
+    /// picking it.
+    pub fn has_checkpoint(&self, model: &str) -> bool {
+        self.checkpoints().join(format!("{model}.ckpt")).exists()
+    }
+
     /// Has the checkpoint that pLDDT scoring needs already been fetched?
     pub fn has_plddt_weights(&self) -> bool {
         self.checkpoints().join("simplefold_1.6B.ckpt").exists()
+    }
+
+    /// SimpleFold's MLX path converts ESM2-3B in a single comprehension, so a
+    /// torch copy and an MLX copy of the same eleven gigabytes are resident at
+    /// once. That peak is what folding costs, whatever the sequence: the
+    /// language model is loaded in full for a forty-residue chain. The
+    /// conversion is rewritten here to free each tensor as it goes, which
+    /// halves the peak and produces exactly the same weights.
+    ///
+    /// It is their file, so the edit is made only when the code is the code
+    /// profold knows, and only once.
+    fn ease_esm_load(&self, tx: &Sender<Event>) {
+        const MARKER: &str = "# profold: one tensor at a time";
+        const ORIGINAL: &str = concat!(
+            "def initialize_esm_model(args, device):\n",
+            "    # load ESM2 model\n",
+            "    esm_model, esm_dict = esm_registry[\"esm2_3B\"]()\n",
+            "    af2_to_esm = _af2_to_esm(esm_dict)\n",
+            "\n",
+            "    if args.backend == 'torch':\n",
+            "        esm_model = esm_model.to(device)\n",
+            "        af2_to_esm = af2_to_esm.to(device)\n",
+            "    elif args.backend == 'mlx':\n",
+            "        esm_model_mlx = ESM2MLX(num_layers=36, embed_dim=2560, attention_heads=40)\n",
+            "        esm_state_dict_torch = esm_model.cpu().state_dict()\n",
+            "\n",
+            "        esm_state_dict_torch = {k: mx.array(v) for k, v in starmap(map_torch_to_mlx, esm_state_dict_torch.items()) if k is not None}\n",
+            "        esm_model_mlx.update(tree_unflatten(list(esm_state_dict_torch.items())))\n",
+            "        esm_model = esm_model_mlx\n",
+            "    print(f\"pLM ESM-3B loaded with {args.backend} backend.\")\n",
+        );
+        const PATCHED: &str = concat!(
+            "def initialize_esm_model(args, device):\n",
+            "    # profold: one tensor at a time. Upstream builds a float32 torch copy of\n",
+            "    # ESM2-3B and converts that to mlx, so two eleven-gigabyte copies are\n",
+            "    # resident at once whatever is being folded. On the mlx backend the\n",
+            "    # weights are read straight from the checkpoint instead, in short runs so\n",
+            "    # the mapped pages do not pile up beside the model being built. Same\n",
+            "    # weights, same precision, about half the peak.\n",
+            "    if args.backend == 'mlx':\n",
+            "        import re as _re\n",
+            "        import esm as _esm\n",
+            "\n",
+            "        name = \"esm2_t36_3B_UR50D\"\n",
+            "        url = f\"https://dl.fbaipublicfiles.com/fair-esm/models/{name}.pt\"\n",
+            "        ckpt = os.path.join(torch.hub.get_dir(), \"checkpoints\", f\"{name}.pt\")\n",
+            "        regression = ckpt.replace(\".pt\", \"-contact-regression.pt\")\n",
+            "        for path, source in ((ckpt, url), (regression, url.replace(\".pt\", \"-contact-regression.pt\"))):\n",
+            "            if not os.path.exists(path):\n",
+            "                os.makedirs(os.path.dirname(path), exist_ok=True)\n",
+            "                torch.hub.download_url_to_file(source, path)\n",
+            "\n",
+            "        esm_dict = _esm.data.Alphabet.from_architecture(\"ESM-1b\")\n",
+            "        af2_to_esm = _af2_to_esm(esm_dict)\n",
+            "        prefix = _re.compile(\"^encoder.sentence_encoder.|^encoder.\")\n",
+            "\n",
+            "        def read(names):\n",
+            "            # The mapping is dropped with this frame, freeing what it touched.\n",
+            "            weights = torch.load(ckpt, map_location=\"cpu\", mmap=True, weights_only=False)[\"model\"]\n",
+            "            done = {}\n",
+            "            for stored in names:\n",
+            "                key, value = map_torch_to_mlx(prefix.sub(\"\", stored), weights[stored].float())\n",
+            "                if key is not None:\n",
+            "                    done[key] = mx.array(value)\n",
+            "            return done\n",
+            "\n",
+            "        stored_names = list(\n",
+            "            torch.load(ckpt, map_location=\"cpu\", mmap=True, weights_only=False)[\"model\"].keys()\n",
+            "        )\n",
+            "        converted = {}\n",
+            "        for start in range(0, len(stored_names), 48):\n",
+            "            converted.update(read(stored_names[start:start + 48]))\n",
+            "        for stored, value in torch.load(regression, map_location=\"cpu\", weights_only=False)[\"model\"].items():\n",
+            "            key, value = map_torch_to_mlx(prefix.sub(\"\", stored), value.float())\n",
+            "            if key is not None:\n",
+            "                converted[key] = mx.array(value)\n",
+            "\n",
+            "        esm_model = ESM2MLX(num_layers=36, embed_dim=2560, attention_heads=40)\n",
+            "        esm_model.update(tree_unflatten(list(converted.items())))\n",
+            "        del converted\n",
+            "\n",
+            "        print(\"pLM ESM-3B loaded with mlx backend.\")\n",
+            "        esm_model.eval()\n",
+            "        return esm_model, esm_dict, af2_to_esm\n",
+            "\n",
+            "    # load ESM2 model\n",
+            "    esm_model, esm_dict = esm_registry[\"esm2_3B\"]()\n",
+            "    af2_to_esm = _af2_to_esm(esm_dict)\n",
+            "\n",
+            "    if args.backend == 'torch':\n",
+            "        esm_model = esm_model.to(device)\n",
+            "        af2_to_esm = af2_to_esm.to(device)\n",
+            "    print(f\"pLM ESM-3B loaded with {args.backend} backend.\")\n",
+        );
+
+        // The folding checkpoint is converted the same way, which is eleven
+        // gigabytes of its own at the 3B model.
+        const ORIGINAL_MODEL: &str = concat!(
+            "        mlx_state_dict = {k: mx.array(v) for k, v in ",
+            "starmap(map_torch_to_mlx, checkpoint.items()) if k is not None}\n",
+            "        model.update(tree_unflatten(list(mlx_state_dict.items())))\n",
+        );
+        const PATCHED_MODEL: &str = concat!(
+            "        mlx_state_dict = {}\n",
+            "        for name in list(checkpoint.keys()):\n",
+            "            key, value = map_torch_to_mlx(name, checkpoint.pop(name))\n",
+            "            if key is not None:\n",
+            "                mlx_state_dict[key] = mx.array(value)\n",
+            "            del value\n",
+            "        model.update(tree_unflatten(list(mlx_state_dict.items())))\n",
+            "        del mlx_state_dict\n",
+        );
+
+        let path = self.repo().join("src/simplefold/inference.py");
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        if source.contains(MARKER) {
+            return;
+        }
+        if !source.contains(ORIGINAL) {
+            let _ = tx.send(Event::Log(
+                "SimpleFold loads ESM differently than expected; leaving its code alone.".into(),
+            ));
+            return;
+        }
+        let eased = source
+            .replace(ORIGINAL, PATCHED)
+            .replace(ORIGINAL_MODEL, PATCHED_MODEL);
+        match std::fs::write(&path, eased) {
+            Ok(()) => {
+                let _ = tx.send(Event::Log(
+                    "Eased SimpleFold's model loading to one tensor at a time.".into(),
+                ));
+            }
+            Err(e) => {
+                let _ = tx.send(Event::Log(format!("Could not ease the model loading: {e}")));
+            }
+        }
     }
 
     /// Fold one sequence and return the path of the predicted structure.
@@ -217,6 +364,7 @@ impl Engine {
         std::fs::create_dir_all(&run_dir)?;
         std::fs::create_dir_all(self.checkpoints())?;
         clear_previous(&run_dir)?;
+        self.ease_esm_load(tx);
         let started = std::time::SystemTime::now();
 
         let fasta = run_dir.join(format!("{name}.fasta"));

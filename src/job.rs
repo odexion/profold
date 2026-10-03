@@ -21,6 +21,7 @@ pub enum Outcome {
     Sequence(String),
     /// An experimental structure and a prediction folded from its own
     /// sequence, already superimposed.
+    #[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
     Comparison {
         reference: Structure,
         prediction: Structure,
@@ -33,6 +34,7 @@ pub enum Event {
     /// The phase the job has reached, in our own words.
     Stage(String),
     /// A line of output worth keeping.
+    #[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
     Log(String),
     /// Transient status, replacing whatever came before it.
     Progress(Progress),
@@ -40,6 +42,7 @@ pub enum Event {
 }
 
 impl Progress {
+    #[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
     pub fn indeterminate(text: impl Into<String>) -> Self {
         Progress {
             text: text.into(),
@@ -74,6 +77,7 @@ pub fn size(bytes: u64) -> String {
 }
 
 /// Recover a percentage from a subprocess's own progress display.
+#[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
 pub fn parse(line: &str) -> Progress {
     let trimmed = line.trim();
 
