@@ -9,7 +9,7 @@ import math, sys
 PAPER = '#ffffff'
 # the ramp along the chain, start to end
 RAMP = [(0x43, 0x38, 0xca), (0x7c, 0x3a, 0xed), (0xc0, 0x26, 0xd3), (0xf4, 0x3f, 0x5e), (0xfb, 0x92, 0x3c)]
-TURNS, H = 2.18, 5.4              # helix turns and length, in radii
+TURNS, H = 1.12, 2.6              # helix turns and length, in radii
 LINE = 0.54                       # strand width, in radii
 THIN = 0.65                       # width at the far side, as a fraction of the near
 TAPER = 0.06                      # the ends narrow over this fraction of the chain
