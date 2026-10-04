@@ -9,9 +9,9 @@ import math, sys
 PAPER = '#ffffff'
 # the ramp along the chain, start to end
 RAMP = [(0x43, 0x38, 0xca), (0x7c, 0x3a, 0xed), (0xc0, 0x26, 0xd3), (0xf4, 0x3f, 0x5e), (0xfb, 0x92, 0x3c)]
-TURNS, H = 2.18, 4.1              # helix turns and length, in radii
-LINE = 0.46                       # strand width, in radii
-THIN = 0.45                       # width at the far side, as a fraction of the near
+TURNS, H = 2.18, 5.4              # helix turns and length, in radii
+LINE = 0.54                       # strand width, in radii
+THIN = 0.65                       # width at the far side, as a fraction of the near
 TAPER = 0.06                      # the ends narrow over this fraction of the chain
 GAP = 0.08                        # paper either side of a strand that passes over
 BOX = 690.0
@@ -40,7 +40,7 @@ for i in range(801):
 
 def view(p):
     x, y, z = p
-    a = math.radians(38)          # pitch: see into the coils
+    a = math.radians(55)          # pitch: see into the coils
     y, z = y*math.cos(a) - z*math.sin(a), y*math.sin(a) + z*math.cos(a)
     b = math.radians(-40)         # roll: lay the axis on the diagonal
     x, y = x*math.cos(b) - y*math.sin(b), x*math.sin(b) + y*math.cos(b)
@@ -57,7 +57,7 @@ def width(k):
     t = (pts[k][2] - zmin)/(zmax - zmin)          # 0 far, 1 near
     e = min(1.0, min(k, n-1-k)/((n-1)*TAPER))     # 0 at an end
     e = e*e*(3 - 2*e)                             # eased, so the taper has no corner
-    return W*(THIN + (1-THIN)*t)*(0.6 + 0.4*e)
+    return W*(THIN + (1-THIN)*t)*(0.75 + 0.25*e)
 wd = [width(k) for k in range(n)]
 # a running mean, so the width never changes faster than the eye expects
 R = 20
@@ -71,6 +71,16 @@ for k in range(1, n):
 hidden = [any(abs(arc[j]-arc[k]) > 3*W and pts[j][2] > pts[k][2]
               and math.hypot(pts[j][0]-pts[k][0], pts[j][1]-pts[k][1]) < (wd[j]+wd[k])/2 + G
               for j in range(0, n, 2)) for k in range(n)]
+# a visible stretch too short to read as strand is a stray dash; hide it too
+k = 0
+while k < n:
+    if hidden[k]:
+        k += 1; continue
+    e = k
+    while e + 1 < n and not hidden[e+1]: e += 1
+    if k > 0 and e < n-1 and arc[e] - arc[k] < 2.5*W:
+        for m in range(k, e+1): hidden[m] = True
+    k = e + 1
 
 o = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">',
  '<defs><filter id="sh" x="-20%" y="-20%" width="140%" height="140%">'
