@@ -1,8 +1,12 @@
 //! The 3D viewport.
 //!
-//! A GPUI `canvas` that rasterizes the molecule on the CPU and uploads the
-//! result as an image. The frame is cached against the camera and viewport
-//! size, so idle redraws cost nothing.
+//! A GPUI `canvas` that draws the molecule offscreen, on the graphics card or
+//! failing that the CPU, and uploads the result as an image. The frame is
+//! cached against the camera and viewport size, so idle redraws cost nothing.
+//!
+//! Frames are drawn off the main thread. While one is being drawn the last
+//! one stays up, and the newest view is drawn once it is done, so the window
+//! keeps answering however long a frame takes.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,7 +19,7 @@ use smallvec::smallvec;
 use crate::render::{self, Camera, Scene, Style};
 use crate::theme;
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct Key {
     width: usize,
     height: usize,
@@ -48,12 +52,15 @@ fn key(scene: &Arc<Scene>, cam: &Camera, width: usize, height: usize, style: Sty
 pub struct Cache {
     key: Option<Key>,
     image: Option<Arc<RenderImage>>,
+    /// The view of the frame being drawn, if one is.
+    drawing: Option<Key>,
     /// The pixel size last painted, which is what an exported image matches.
     pub size: (usize, usize),
 }
 
 /// `interactive` renders at 1x instead of the display's scale factor, which
-/// keeps dragging smooth on a retina screen.
+/// keeps dragging smooth on a retina screen when the frame is drawn on the
+/// CPU. The graphics card keeps up at full resolution.
 pub fn viewport(
     scene: Arc<Scene>,
     cam: Camera,
@@ -63,8 +70,8 @@ pub fn viewport(
 ) -> impl IntoElement {
     canvas(
         |_, _, _| {},
-        move |bounds, _, window, _cx| {
-            let scale = if interactive {
+        move |bounds, _, window, cx| {
+            let scale = if interactive && !render::accelerated() {
                 1.0
             } else {
                 window.scale_factor()
@@ -72,27 +79,137 @@ pub fn viewport(
             let width = (f32::from(bounds.size.width) * scale).round().max(1.0) as usize;
             let height = (f32::from(bounds.size.height) * scale).round().max(1.0) as usize;
 
-            let mut cache = cache.borrow_mut();
-            cache.size = (width, height);
+            let _timer = Phase::Paint.timer();
+            let mut current = cache.borrow_mut();
+            current.size = (width, height);
             let k = key(&scene, &cam, width, height, style);
-            if cache.key.as_ref() != Some(&k) {
-                let frame =
-                    render::render(&scene, &cam, width, height, theme::VIEW, style);
-                let buffer =
-                    RgbaImage::from_raw(frame.width as u32, frame.height as u32, frame.bgra)
-                    .expect("frame buffer is width * height * 4");
-                let image = Arc::new(RenderImage::new(smallvec![Frame::new(buffer)]));
-                if let Some(old) = cache.image.take() {
+            let resized = current
+                .key
+                .as_ref()
+                .is_none_or(|old| (old.width, old.height) != (width, height));
+            if resized {
+                // Nothing of the right size to show meanwhile: draw it now.
+                let image = draw(&scene, &cam, width, height, style);
+                if let Some(old) = current.image.replace(image) {
                     let _ = window.drop_image(old);
                 }
-                cache.image = Some(image);
-                cache.key = Some(k);
+                current.key = Some(k);
+            } else if current.key.as_ref() != Some(&k) && current.drawing.is_none() {
+                current.drawing = Some(k);
+                let (scene, cache) = (scene.clone(), cache.clone());
+                let drawn = cx
+                    .background_executor()
+                    .spawn(async move { draw(&scene, &cam, width, height, style) });
+                window
+                    .spawn(cx, async move |cx| {
+                        let image = drawn.await;
+                        let _ = cx.update(|window, _| {
+                            let mut cache = cache.borrow_mut();
+                            // A resize may have drawn past it in the meantime.
+                            let Some(k) = cache.drawing.take() else { return };
+                            if cache.key.as_ref().is_some_and(|old| {
+                                (old.width, old.height) != (k.width, k.height)
+                            }) {
+                                let _ = window.drop_image(image);
+                            } else {
+                                if let Some(old) = cache.image.replace(image) {
+                                    let _ = window.drop_image(old);
+                                }
+                                cache.key = Some(k);
+                            }
+                            // Paint again, which starts on the newest view if
+                            // it has moved on since.
+                            window.refresh();
+                        });
+                    })
+                    .detach();
             }
 
-            if let Some(image) = cache.image.clone() {
+            if let Some(image) = current.image.clone() {
                 let _ = window.paint_image(bounds, Corners::all(px(0.)), image, 0, false);
             }
         },
     )
     .size_full()
+}
+
+fn draw(scene: &Scene, cam: &Camera, width: usize, height: usize, style: Style) -> Arc<RenderImage> {
+    let frame = {
+        let _timer = Phase::Draw.timer();
+        render::render(scene, cam, width, height, theme::VIEW, style)
+    };
+    let buffer = RgbaImage::from_raw(frame.width as u32, frame.height as u32, frame.bgra)
+        .expect("frame buffer is width * height * 4");
+    Arc::new(RenderImage::new(smallvec![Frame::new(buffer)]))
+}
+
+/// `PROFOLD_SPIN=1` turns the camera every frame and prints where the time
+/// goes, for measuring the viewer as it is used rather than in isolation.
+pub fn spinning() -> bool {
+    static SPIN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SPIN.get_or_init(|| std::env::var_os("PROFOLD_SPIN").is_some())
+}
+
+#[derive(Clone, Copy)]
+pub enum Phase {
+    /// Building the window's element tree.
+    Tree,
+    /// Painting the viewport, the draw included.
+    Paint,
+    /// Drawing the frame itself.
+    Draw,
+}
+
+/// Time spent in each phase, in nanoseconds, and frames shown.
+static SPENT: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+static DRAWN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+thread_local! {
+    static TRACE: std::cell::RefCell<(u32, Option<std::time::Instant>)> = Default::default();
+}
+
+pub struct Timer(Phase, std::time::Instant);
+
+impl Phase {
+    pub fn timer(self) -> Option<Timer> {
+        spinning().then(|| Timer(self, std::time::Instant::now()))
+    }
+}
+
+impl Drop for Timer {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let spent = self.1.elapsed();
+        SPENT[self.0 as usize].fetch_add(spent.as_nanos() as u64, Relaxed);
+        match self.0 {
+            Phase::Draw => {
+                DRAWN.fetch_add(1, Relaxed);
+                return;
+            }
+            Phase::Tree => return,
+            Phase::Paint => {}
+        }
+        TRACE.with_borrow_mut(|(frames, since)| {
+            *frames += 1;
+            let start = *since.get_or_insert_with(std::time::Instant::now);
+            if *frames == 120 {
+                let n = *frames;
+                let wall = start.elapsed();
+                let drawn = DRAWN.swap(0, Relaxed).max(1);
+                let per = |i: usize, n: u32| {
+                    std::time::Duration::from_nanos(SPENT[i].swap(0, Relaxed) / n as u64)
+                };
+                eprintln!(
+                    "{:.1} fps  {:.1} drawn/s  tree {:.2?}  paint {:.2?}  draw {:.2?}",
+                    n as f64 / wall.as_secs_f64(),
+                    drawn as f64 / wall.as_secs_f64(),
+                    per(0, n),
+                    per(1, n),
+                    per(2, drawn),
+                );
+                *frames = 0;
+                *since = Some(std::time::Instant::now());
+            }
+        });
+    }
 }

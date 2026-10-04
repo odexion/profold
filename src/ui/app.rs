@@ -3311,6 +3311,11 @@ impl Profold {
 
 impl Render for Profold {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if viewer::spinning() {
+            self.camera.yaw += 0.02;
+            window.request_animation_frame();
+        }
+        let _timer = viewer::Phase::Tree.timer();
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         // Model, steps and pLDDT are the settings for Fold and Compare, so they
         // appear exactly when those can be run.

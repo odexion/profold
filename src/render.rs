@@ -1,6 +1,7 @@
 //! A small software rasterizer for molecules.
 //!
-//! GPUI has no 3D pipeline, so we build the frame ourselves: orthographic
+//! GPUI has no 3D pipeline, so we build the frame ourselves, on the graphics
+//! card where there is one (see `gpu.rs`) and otherwise here: orthographic
 //! camera, sphere impostors with a z-buffer, then two screen-space passes —
 //! depth cueing and a depth-discontinuity outline — that give the result the
 //! flat, printed look of a molecular illustration.
@@ -473,7 +474,7 @@ impl Camera {
         }
     }
 
-    fn basis(&self) -> [[f32; 3]; 3] {
+    pub(crate) fn basis(&self) -> [[f32; 3]; 3] {
         let (sy, cy) = self.yaw.sin_cos();
         let (sp, cp) = self.pitch.sin_cos();
         // Rows of Rx(pitch) * Ry(yaw): world -> view.
@@ -1370,7 +1371,26 @@ fn sphere_hit(c: [f32; 3], r: f32, x: f32, y: f32) -> Option<(f32, [f32; 3])> {
     Some((c[2] + dz, [dx / r, dy / r, dz / r]))
 }
 
+/// Draw a frame: on the graphics card when there is one, else on the CPU.
 pub fn render(
+    scene: &Scene,
+    cam: &Camera,
+    width: usize,
+    height: usize,
+    page: [f32; 3],
+    style: Style,
+) -> Frame {
+    crate::gpu::get()
+        .and_then(|gpu| gpu.render(scene, cam, width, height, page, style))
+        .unwrap_or_else(|| render_cpu(scene, cam, width, height, page, style))
+}
+
+/// Whether frames are drawn on the graphics card.
+pub fn accelerated() -> bool {
+    crate::gpu::get().is_some()
+}
+
+pub fn render_cpu(
     scene: &Scene,
     cam: &Camera,
     width: usize,
@@ -1695,7 +1715,7 @@ pub fn render(
 }
 
 /// Below this an atom is drawn as see-through.
-const OPAQUE: f32 = 0.999;
+pub(crate) const OPAQUE: f32 = 0.999;
 
 /// A translucent primitive held back for the second pass: its index, and
 /// where it sits in view space.
@@ -1984,5 +2004,154 @@ mod tests {
         gone.alpha = 0.0;
         let alone = pixel(&draw(vec![behind]), 32, 32);
         assert_eq!(pixel(&draw(vec![behind, gone]), 32, 32), alone);
+    }
+}
+
+/// Frame times for a structure, run with
+/// `PROFOLD_BENCH=path cargo test --release bench_render -- --ignored --nocapture`.
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore]
+    fn bench_render() {
+        let path = std::env::var("PROFOLD_BENCH").expect("PROFOLD_BENCH names a structure");
+        let t = Instant::now();
+        let s = crate::formats::load_path(std::path::Path::new(&path)).unwrap();
+        println!("load: {:?}, {} atoms, {} bonds", t.elapsed(), s.atoms.len(), s.bonds.len());
+        // As well as everything opaque, the solvent turned almost to glass,
+        // which is how a simulation box is usually looked into.
+        let mut glass = Appearance::default();
+        if let Some(kind) = s.kinds.iter().find(|k| k.as_str() == "6") {
+            glass.set(Species::Kind(kind.clone()), Look { alpha: 0.02, ..Look::default() });
+        }
+        for (repr, appearance) in [
+            (Repr::Spacefill, &Appearance::default()),
+            (Repr::Spacefill, &glass),
+            (Repr::BallAndStick, &Appearance::default()),
+        ] {
+            for style in Style::ALL {
+                let t = Instant::now();
+                let scene = build_scene(
+                    &s, repr, Coloring::Element, 1.0, style, Palette::Spectrum, false, true,
+                    appearance,
+                )
+                .stamp();
+                let built = t.elapsed();
+                let mut cam = Camera::frame(&s);
+                for (w, h) in [(900, 700), (1800, 1400)] {
+                    let n = 8;
+                    let time = |draw: &dyn Fn(&Camera) -> Frame, cam: &mut Camera| {
+                        draw(cam);
+                        let t = Instant::now();
+                        for i in 0..n {
+                            cam.yaw += 0.01 * i as f32;
+                            std::hint::black_box(draw(cam));
+                        }
+                        t.elapsed() / n
+                    };
+                    let cpu = time(&|c| render_cpu(&scene, c, w, h, [1.0; 3], style), &mut cam);
+                    let gpu = time(&|c| render(&scene, c, w, h, [1.0; 3], style), &mut cam);
+                    println!(
+                        "{:?}{} {:?} build {:?}  {w}x{h}: cpu {:?}  gpu {:?}",
+                        repr,
+                        if appearance.is_default() { "" } else { "+glass" },
+                        style, built, cpu, gpu
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod gpu_tests {
+    use super::*;
+
+    /// The card draws what the CPU draws: past the odd pixel along an edge,
+    /// where the two round a pixel centre differently, the frames agree.
+    #[test]
+    fn gpu_matches_cpu() {
+        let Some(gpu) = crate::gpu::get() else {
+            eprintln!("no GPU here; skipped");
+            return;
+        };
+        let samples = [
+            ("caffeine.sdf", include_bytes!("../samples/caffeine.sdf").to_vec()),
+            ("1crn.pdb.gz", include_bytes!("../samples/1crn.pdb.gz").to_vec()),
+            ("rocksalt.cif", include_bytes!("../samples/rocksalt.cif").to_vec()),
+        ];
+        let out = std::env::var("PROFOLD_DIFF_DIR").ok();
+        for (name, bytes) in samples {
+            let s = crate::formats::load_bytes(name, bytes).unwrap();
+            for repr in Repr::ALL {
+                if repr.needs_polymer() && !s.has_polymer() {
+                    continue;
+                }
+                for style in Style::ALL {
+                    for see_through in [false, true] {
+                        let mut appearance = Appearance::default();
+                        if see_through {
+                            // Half the elements turned to glass.
+                            for (i, (e, _)) in s.composition().into_iter().enumerate() {
+                                if i % 2 == 0 {
+                                    appearance.set(
+                                        Species::Element(e.0),
+                                        Look { alpha: 0.5, ..Look::default() },
+                                    );
+                                }
+                            }
+                        }
+                        let scene = build_scene(
+                            &s, repr, Coloring::Element, 1.0, style, Palette::Spectrum,
+                            false, true, &appearance,
+                        )
+                        .stamp();
+                        let mut cam = Camera::frame(&s);
+                        cam.yaw += 0.3;
+                        // Lines one, two and three pixels wide, which the card
+                        // finds by three routes.
+                        let sizes: &[(usize, usize)] = if name == "caffeine.sdf" {
+                            &[(640, 480), (1500, 1450), (2200, 2150)]
+                        } else {
+                            &[(640, 480)]
+                        };
+                        for &(w, h) in sizes {
+                        let cpu = render_cpu(&scene, &cam, w, h, [0.97, 0.96, 0.94], style);
+                        let gpu = gpu
+                            .render(&scene, &cam, w, h, [0.97, 0.96, 0.94], style)
+                            .unwrap();
+                        // Glass is blended into eight bits a layer at a time on
+                        // the card, in floating point on the CPU, so stacked
+                        // layers drift a few levels apart.
+                        let tolerance = if see_through { 16 } else { 6 };
+                        let off = cpu
+                            .bgra
+                            .chunks_exact(4)
+                            .zip(gpu.bgra.chunks_exact(4))
+                            .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > tolerance))
+                            .count();
+                        let frac = off as f32 / (w * h) as f32;
+                        let label = format!("{name}-{repr:?}-{style:?}-{see_through}-{w}");
+                        println!("{label}: {:.3}% differ", frac * 100.0);
+                        if let Some(dir) = &out {
+                            for (tag, f) in [("cpu", &cpu), ("gpu", &gpu)] {
+                                let mut rgba = f.bgra.clone();
+                                rgba.chunks_exact_mut(4).for_each(|p| p.swap(0, 2));
+                                image::save_buffer(
+                                    format!("{dir}/{label}-{tag}.png"),
+                                    &rgba, w as u32, h as u32, image::ColorType::Rgba8,
+                                )
+                                .unwrap();
+                            }
+                        }
+                        assert!(frac < 0.01, "{label}: {:.2}% of pixels differ", frac * 100.0);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

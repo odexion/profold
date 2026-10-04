@@ -7,6 +7,7 @@ mod dssp;
 mod elements;
 mod fetch;
 mod formats;
+mod gpu;
 mod job;
 mod plugins;
 mod protein;
@@ -24,6 +25,9 @@ use gpui::{
 actions!(profold, [Quit]);
 
 fn main() {
+    // Setting up the graphics card takes a moment; do it while the window
+    // opens rather than on the first frame.
+    std::thread::spawn(|| gpu::get());
     Application::new().run(|cx: &mut App| {
         #[cfg(target_os = "macos")]
         set_dock_icon();
