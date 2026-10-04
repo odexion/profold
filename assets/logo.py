@@ -9,7 +9,7 @@ PAPER = '#ffffff'
 # the ramp along the chain, start to end
 RAMP = [(0x43, 0x38, 0xca), (0x7c, 0x3a, 0xed), (0xc0, 0x26, 0xd3), (0xf4, 0x3f, 0x5e), (0xfb, 0x92, 0x3c)]
 TURNS, H = 2.18, 4.1              # helix turns and length, in radii
-LINE = 0.22                       # strand width, in radii
+LINE = 0.30                       # strand width, in radii
 GAP = 0.08                        # paper either side of a strand that passes over
 BOX = 690.0
 
