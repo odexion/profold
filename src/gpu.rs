@@ -258,7 +258,15 @@ impl Gpu {
                     compilation_options: Default::default(),
                     targets,
                 }),
-                primitive: wgpu::PrimitiveState::default(),
+                // An impostor is one quad, four corners as a strip.
+                primitive: wgpu::PrimitiveState {
+                    topology: if vs == "imp_vs" {
+                        wgpu::PrimitiveTopology::TriangleStrip
+                    } else {
+                        wgpu::PrimitiveTopology::TriangleList
+                    },
+                    ..Default::default()
+                },
                 depth_stencil,
                 multisample: Default::default(),
                 multiview_mask: None,
@@ -283,7 +291,7 @@ impl Gpu {
             Some(depth(true)),
         );
         let glass = pipeline(
-            "imp_vs",
+            "glass_vs",
             "glass_fs",
             &impostor_buffers,
             &scene_layout,
@@ -519,7 +527,7 @@ impl Gpu {
             if let Some((buffer, n)) = &state.opaque {
                 pass.set_pipeline(&self.impostors);
                 pass.set_vertex_buffer(0, buffer.slice(..));
-                pass.draw(0..6, 0..*n);
+                pass.draw(0..4, 0..*n);
             }
         }
         // Only heavy lines need their edges found in a pass of their own.
@@ -584,7 +592,7 @@ impl Gpu {
             pass.set_pipeline(&self.glass);
             pass.set_bind_group(0, &t.uniform, &[]);
             pass.set_vertex_buffer(0, buffer.slice(..));
-            pass.draw(0..6, 0..state.glass.len() as u32);
+            pass.draw(0..18, 0..state.glass.len() as u32);
         }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {

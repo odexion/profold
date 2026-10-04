@@ -26,6 +26,7 @@ struct U {
 const LIGHT = vec3f(-0.4082, 0.5585, 0.7226);
 const HALF = vec3f(-0.2225, 0.3044, 0.9262);
 const INK = vec3f(0.07, 0.07, 0.09);
+const PI = 3.14159265;
 // The z target's clear value, read as "nothing here".
 const EMPTY = -1e30;
 
@@ -135,6 +136,47 @@ struct ImpOut {
     @location(3) @interpolate(flat) cb: vec4f,
 }
 
+// The outline an impostor is drawn over, in view space: its ends, the
+// direction from one to the other and across it.
+struct Outline {
+    a: vec3f,
+    b: vec3f,
+    dir: vec2f,
+    perp: vec2f,
+}
+
+fn outline(ar: vec4f, bk: vec4f) -> Outline {
+    let a = to_view(ar.xyz);
+    let b = to_view(bk.xyz);
+    let d = b.xy - a.xy;
+    let len = length(d);
+    var dir = vec2f(1.0, 0.0);
+    if len > 1e-6 {
+        dir = d / len;
+    }
+    return Outline(a, b, dir, vec2f(-dir.y, dir.x));
+}
+
+fn impostor(o: Outline, xy: vec2f, ar: vec4f, bk: vec4f, ca: vec4f, cb: vec4f) -> ImpOut {
+    var out: ImpOut;
+    out.pos = clip(vec3f(xy, 0.0));
+    out.pos.z = 0.5;
+    out.a = vec4f(o.a, ar.w);
+    out.b = vec4f(o.b, bk.w);
+    out.ca = ca;
+    out.cb = cb;
+    return out;
+}
+
+// A quarter pixel of slack keeps every pixel centre on the rim. No more:
+// writing its own depth, an impostor cannot be culled before it is shaded, so
+// every fragment it covers counts.
+fn reach(r: f32) -> f32 {
+    return r + 0.25 / u.view.z;
+}
+
+// Opaque impostors are many and cheap per pixel, so they take the fewest
+// corners: a rectangle, as a strip of four.
 @vertex
 fn imp_vs(
     @builtin(vertex_index) vi: u32,
@@ -143,33 +185,40 @@ fn imp_vs(
     @location(2) ca: vec4f,
     @location(3) cb: vec4f,
 ) -> ImpOut {
-    let a = to_view(ar.xyz);
-    let b = to_view(bk.xyz);
-    let r = ar.w;
-    // A pixel of slack, so every pixel centre on the rim is reached.
-    let pad = r + 1.5 / u.view.z;
-    let d = b.xy - a.xy;
-    let len = length(d);
-    var dir = vec2f(1.0, 0.0);
-    if len > 1e-6 {
-        dir = d / len;
-    }
-    let perp = vec2f(-dir.y, dir.x);
-    var corners = array<vec2f, 6>(
-        vec2f(0.0, -1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),
-        vec2f(0.0, -1.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0),
-    );
-    let c = corners[vi];
-    let xy = mix(a.xy - dir * pad, b.xy + dir * pad, c.x) + perp * pad * c.y;
+    let o = outline(ar, bk);
+    let pad = reach(ar.w);
+    // x runs from `a` to `b`, y across.
+    let c = vec2f(f32(vi & 1u), f32(vi >> 1u) * 2.0 - 1.0);
+    let xy = mix(o.a.xy - o.dir * pad, o.b.xy + o.dir * pad, c.x) + o.perp * pad * c.y;
+    return impostor(o, xy, ar, bk, ca, cb);
+}
 
-    var out: ImpOut;
-    out.pos = clip(vec3f(xy, 0.0));
-    out.pos.z = 0.5;
-    out.a = vec4f(a, r);
-    out.b = vec4f(b, bk.w);
-    out.ca = ca;
-    out.cb = cb;
-    return out;
+// Glass is blended, so every pixel costs more than a corner does: an octagon
+// round each end, joined into one, hugs the outline closer. Eight corners
+// fanned from the first, the first four round `b`, the rest round `a`.
+@vertex
+fn glass_vs(
+    @builtin(vertex_index) vi: u32,
+    @location(0) ar: vec4f,
+    @location(1) bk: vec4f,
+    @location(2) ca: vec4f,
+    @location(3) cb: vec4f,
+) -> ImpOut {
+    let o = outline(ar, bk);
+    let pad = reach(ar.w) / cos(PI / 8.0);
+    let tri = vi / 3u;
+    let corner = vi % 3u;
+    var k = 0u;
+    if corner > 0u {
+        k = tri + corner;
+    }
+    let angle = (f32(k) - 1.5) * PI / 4.0;
+    var centre = o.b.xy;
+    if k >= 4u {
+        centre = o.a.xy;
+    }
+    let xy = centre + (o.dir * cos(angle) + o.perp * sin(angle)) * pad;
+    return impostor(o, xy, ar, bk, ca, cb);
 }
 
 fn trace(in: ImpOut) -> Hit {

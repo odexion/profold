@@ -15,6 +15,7 @@ dirs = "6"
 flate2 = "1"
 wgpu = { version = "29", default-features = false, features = ["std", "parking_lot", "wgsl", "metal", "vulkan", "dx12", "gles"] }
 pollster = "0.4"
+rayon = "1"
 bytemuck = { version = "1", features = ["derive"] }
 
 [features]

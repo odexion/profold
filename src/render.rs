@@ -1335,15 +1335,21 @@ fn shade(n: [f32; 3], base: [f32; 3], style: Style) -> [f32; 3] {
     [base[0] * k + spec, base[1] * k + spec, base[2] * k + spec]
 }
 
-struct Target {
-    color: Vec<f32>,
-    depth: Vec<f32>,
+/// One horizontal band of the frame: its slices of the colour and depth
+/// buffers, from row `top`. Bands are drawn in parallel, each with only the
+/// primitives that reach into it.
+struct Band<'a> {
+    /// Index of the band's first pixel in the frame.
+    offset: usize,
+    color: &'a mut [f32],
+    depth: &'a mut [f32],
     style: Style,
 }
 
-impl Target {
+impl Band<'_> {
     #[inline]
     fn plot(&mut self, idx: usize, z: f32, n: [f32; 3], base: [f32; 3]) {
+        let idx = idx - self.offset;
         if z <= self.depth[idx] {
             return;
         }
@@ -1353,6 +1359,67 @@ impl Target {
         self.color[o] = c[0];
         self.color[o + 1] = c[1];
         self.color[o + 2] = c[2];
+    }
+
+    /// A ribbon triangle, in view space with its vertex normals.
+    fn tri(&mut self, grid: &Grid, v: &[[f32; 3]; 3], nv: &[[f32; 3]; 3], color: [f32; 3]) {
+        let sx: [f32; 3] = std::array::from_fn(|i| grid.cx + v[i][0] * grid.scale);
+        let sy: [f32; 3] = std::array::from_fn(|i| grid.cy - v[i][1] * grid.scale);
+
+        let d = (sy[1] - sy[2]) * (sx[0] - sx[2]) + (sx[2] - sx[1]) * (sy[0] - sy[2]);
+        if d.abs() < 1e-9 {
+            return;
+        }
+        let inv = 1.0 / d;
+
+        let Some((x0, x1, y0, y1)) = grid.clip(
+            sx[0].min(sx[1]).min(sx[2]),
+            sx[0].max(sx[1]).max(sx[2]),
+            sy[0].min(sy[1]).min(sy[2]),
+            sy[0].max(sy[1]).max(sy[2]),
+        ) else {
+            return;
+        };
+
+        for py in y0..y1 {
+            let fy = py as f32 + 0.5;
+            let row = py * grid.width;
+            for px in x0..x1 {
+                let fx = px as f32 + 0.5;
+                // Barycentric coordinates; dividing by the signed area keeps
+                // them correct whichever way the triangle winds.
+                let l0 = ((sy[1] - sy[2]) * (fx - sx[2]) + (sx[2] - sx[1]) * (fy - sy[2])) * inv;
+                let l1 = ((sy[2] - sy[0]) * (fx - sx[2]) + (sx[0] - sx[2]) * (fy - sy[2])) * inv;
+                let l2 = 1.0 - l0 - l1;
+                if l0 < 0.0 || l1 < 0.0 || l2 < 0.0 {
+                    continue;
+                }
+
+                // Orthographic projection is affine, so depth interpolates
+                // linearly and exactly.
+                let z = l0 * v[0][2] + l1 * v[1][2] + l2 * v[2][2];
+                let idx = row + px;
+                if z <= self.depth[idx - self.offset] {
+                    continue;
+                }
+
+                let mut n = [
+                    l0 * nv[0][0] + l1 * nv[1][0] + l2 * nv[2][0],
+                    l0 * nv[0][1] + l1 * nv[1][1] + l2 * nv[2][1],
+                    l0 * nv[0][2] + l1 * nv[1][2] + l2 * nv[2][2],
+                ];
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                if len < 1e-6 {
+                    continue;
+                }
+                n = [n[0] / len, n[1] / len, n[2] / len];
+                // A ribbon is seen from both sides; light whichever faces us.
+                if n[2] < 0.0 {
+                    n = [-n[0], -n[1], -n[2]];
+                }
+                self.plot(idx, z, n, color);
+            }
+        }
     }
 }
 
@@ -1398,21 +1465,15 @@ pub fn render_cpu(
     page: [f32; 3],
     style: Style,
 ) -> Frame {
-    let n = width * height;
-    let mut t = Target {
-        color: vec![0.0; n * 3],
-        depth: vec![f32::NEG_INFINITY; n],
-        style,
-    };
+    use rayon::prelude::*;
 
-    for o in (0..n * 3).step_by(3) {
-        t.color[o] = page[0];
-        t.color[o + 1] = page[1];
-        t.color[o + 2] = page[2];
-    }
+    let n = width * height;
+    let mut color = vec![0.0; n * 3];
+    let mut depth = vec![f32::NEG_INFINITY; n];
+    color.par_chunks_mut(3).for_each(|c| c.copy_from_slice(&page));
 
     if scene.is_empty() || width == 0 || height == 0 {
-        return to_bgra(t.color, width, height);
+        return to_bgra(&color, width, height);
     }
 
     let m = cam.basis();
@@ -1437,16 +1498,6 @@ pub fn render_cpu(
         ]
     };
 
-    let mut zmin = f32::MAX;
-    let mut zmax = f32::MIN;
-    let mut track = |lo: f32, hi: f32| {
-        if lo < zmin {
-            zmin = lo;
-        }
-        if hi > zmax {
-            zmax = hi;
-        }
-    };
     let grid = Grid {
         cx,
         cy,
@@ -1454,27 +1505,36 @@ pub fn render_cpu(
         inv,
         width,
         height,
+        top: 0,
+        bottom: height,
     };
 
-    // Translucent atoms and bonds wait until the opaque scene, its fog and
-    // its outlines are down, and are then laid over it back to front.
-    let mut translucent: Vec<(f32, Layer)> = Vec::new();
-
-    // -- spheres ----------------------------------------------------------
+    // Everything in view space, with the rows it covers, opaque in the
+    // order it was built and translucent held back to be laid over the
+    // finished opaque frame back to front.
+    let mut zmin = f32::MAX;
+    let mut zmax = f32::MIN;
+    let mut track = |lo: f32, hi: f32| {
+        zmin = zmin.min(lo);
+        zmax = zmax.max(hi);
+    };
+    let mut opaque: Vec<(Prim, (usize, usize))> = Vec::new();
+    let mut translucent: Vec<(f32, Prim, (usize, usize))> = Vec::new();
     for (k, s) in scene.spheres.iter().enumerate() {
         if s.alpha <= 0.0 || s.r <= 0.0 {
             continue;
         }
         let v = to_view(s.c);
         track(v[2] - s.r, v[2] + s.r);
-        if s.alpha < OPAQUE {
-            translucent.push((v[2], Layer::Sphere(k, v)));
+        let Some(rows) = grid.sphere_rows(v, s.r) else {
             continue;
+        };
+        if s.alpha < OPAQUE {
+            translucent.push((v[2], Prim::Sphere(k, v), rows));
+        } else {
+            opaque.push((Prim::Sphere(k, v), rows));
         }
-        grid.sphere(v, s.r, |idx, z, n, _| t.plot(idx, z, n, s.color));
     }
-
-    // -- capsules ---------------------------------------------------------
     for (k, c) in scene.capsules.iter().enumerate() {
         if c.alpha <= 0.0 {
             continue;
@@ -1482,82 +1542,78 @@ pub fn render_cpu(
         let a = to_view(c.a);
         let b = to_view(c.b);
         track(a[2].min(b[2]) - c.r, a[2].max(b[2]) + c.r);
-        if c.alpha < OPAQUE {
-            translucent.push(((a[2] + b[2]) * 0.5, Layer::Capsule(k, a, b)));
+        let Some(rows) = grid.capsule_rows(a, b, c.r) else {
             continue;
+        };
+        if c.alpha < OPAQUE {
+            translucent.push(((a[2] + b[2]) * 0.5, Prim::Capsule(k, a, b), rows));
+        } else {
+            opaque.push((Prim::Capsule(k, a, b), rows));
         }
-        grid.capsule(a, b, c.r, |idx, z, n, f| t.plot(idx, z, n, mix(c.ca, c.cb, f)));
     }
-
-    // -- ribbon meshes ----------------------------------------------------
-    for tri in &scene.tris {
+    for (k, tri) in scene.tris.iter().enumerate() {
         let v = [to_view(tri.p[0]), to_view(tri.p[1]), to_view(tri.p[2])];
-        let nv = [rot(tri.n[0]), rot(tri.n[1]), rot(tri.n[2])];
         track(
             v[0][2].min(v[1][2]).min(v[2][2]),
             v[0][2].max(v[1][2]).max(v[2][2]),
         );
-
-        let sx: [f32; 3] = std::array::from_fn(|i| cx + v[i][0] * scale);
-        let sy: [f32; 3] = std::array::from_fn(|i| cy - v[i][1] * scale);
-
-        let d = (sy[1] - sy[2]) * (sx[0] - sx[2]) + (sx[2] - sx[1]) * (sy[0] - sy[2]);
-        if d.abs() < 1e-9 {
-            continue;
-        }
-        let inv = 1.0 / d;
-
-        let Some((x0, x1, y0, y1)) = bbox(
-            sx[0].min(sx[1]).min(sx[2]),
-            sx[0].max(sx[1]).max(sx[2]),
-            sy[0].min(sy[1]).min(sy[2]),
-            sy[0].max(sy[1]).max(sy[2]),
-            width,
-            height,
-        ) else {
-            continue;
-        };
-
-        for py in y0..y1 {
-            let fy = py as f32 + 0.5;
-            let row = py * width;
-            for px in x0..x1 {
-                let fx = px as f32 + 0.5;
-                // Barycentric coordinates; dividing by the signed area keeps
-                // them correct whichever way the triangle winds.
-                let l0 = ((sy[1] - sy[2]) * (fx - sx[2]) + (sx[2] - sx[1]) * (fy - sy[2])) * inv;
-                let l1 = ((sy[2] - sy[0]) * (fx - sx[2]) + (sx[0] - sx[2]) * (fy - sy[2])) * inv;
-                let l2 = 1.0 - l0 - l1;
-                if l0 < 0.0 || l1 < 0.0 || l2 < 0.0 {
-                    continue;
-                }
-
-                // Orthographic projection is affine, so depth interpolates
-                // linearly and exactly.
-                let z = l0 * v[0][2] + l1 * v[1][2] + l2 * v[2][2];
-                let idx = row + px;
-                if z <= t.depth[idx] {
-                    continue;
-                }
-
-                let mut n = [
-                    l0 * nv[0][0] + l1 * nv[1][0] + l2 * nv[2][0],
-                    l0 * nv[0][1] + l1 * nv[1][1] + l2 * nv[2][1],
-                    l0 * nv[0][2] + l1 * nv[1][2] + l2 * nv[2][2],
-                ];
-                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-                if len < 1e-6 {
-                    continue;
-                }
-                n = [n[0] / len, n[1] / len, n[2] / len];
-                // A ribbon is seen from both sides; light whichever faces us.
-                if n[2] < 0.0 {
-                    n = [-n[0], -n[1], -n[2]];
-                }
-                t.plot(idx, z, n, tri.c);
-            }
+        let top = cy - v[0][1].max(v[1][1]).max(v[2][1]) * scale;
+        let bottom = cy - v[0][1].min(v[1][1]).min(v[2][1]) * scale;
+        let y0 = top.floor().max(0.0) as usize;
+        let y1 = (bottom.ceil().max(0.0) as usize).min(height);
+        if y0 < y1 {
+            let nv = [rot(tri.n[0]), rot(tri.n[1]), rot(tri.n[2])];
+            opaque.push((Prim::Tri(k, v, nv), (y0, y1)));
         }
     }
+    translucent.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    // Bands a few to a thread, so a band crowded with atoms does not hold
+    // the rest up.
+    let bands = (rayon::current_num_threads() * 4).clamp(1, height);
+    let rows = height.div_ceil(bands);
+    let bin = |prims: &mut dyn Iterator<Item = (usize, (usize, usize))>| {
+        let mut bins: Vec<Vec<u32>> = vec![Vec::new(); height.div_ceil(rows)];
+        for (i, (y0, y1)) in prims {
+            for b in bins.iter_mut().take((y1 - 1) / rows + 1).skip(y0 / rows) {
+                b.push(i as u32);
+            }
+        }
+        bins
+    };
+    let opaque_bins = bin(&mut opaque.iter().map(|p| p.1).enumerate());
+    let translucent_bins = bin(&mut translucent.iter().map(|p| p.2).enumerate());
+
+    color
+        .par_chunks_mut(rows * width * 3)
+        .zip(depth.par_chunks_mut(rows * width))
+        .zip(&opaque_bins)
+        .enumerate()
+        .for_each(|(b, ((color, depth), bin))| {
+            let top = b * rows;
+            let grid = grid.rows(top, (top + rows).min(height));
+            let mut t = Band {
+                offset: top * width,
+                color,
+                depth,
+                style,
+            };
+            for &i in bin {
+                match &opaque[i as usize].0 {
+                    Prim::Sphere(k, v) => {
+                        let s = &scene.spheres[*k];
+                        grid.sphere(*v, s.r, |idx, z, n, _| t.plot(idx, z, n, s.color));
+                    }
+                    Prim::Capsule(k, a, b) => {
+                        let c = &scene.capsules[*k];
+                        grid.capsule(*a, *b, c.r, |idx, z, n, f| {
+                            t.plot(idx, z, n, mix(c.ca, c.cb, f))
+                        });
+                    }
+                    Prim::Tri(k, v, nv) => t.tri(&grid, v, nv, scene.tris[*k].c),
+                }
+            }
+        });
 
     let span = (zmax - zmin).max(1e-3);
 
@@ -1567,16 +1623,18 @@ pub fn render_cpu(
         Style::Soft => 0.42,
         Style::Illustrative => 0.0,
     };
-    for idx in 0..width * height {
-        if t.depth[idx] == f32::NEG_INFINITY {
-            continue;
-        }
-        let d = ((t.depth[idx] - zmin) / span).clamp(0.0, 1.0);
-        let fog = (1.0 - d) * fog_strength;
-        let o = idx * 3;
-        for k in 0..3 {
-            t.color[o + k] += (page[k] - t.color[o + k]) * fog;
-        }
+    if fog_strength > 0.0 {
+        color
+            .par_chunks_mut(3)
+            .zip(&depth)
+            .filter(|(_, z)| **z != f32::NEG_INFINITY)
+            .for_each(|(c, z)| {
+                let d = ((z - zmin) / span).clamp(0.0, 1.0);
+                let fog = (1.0 - d) * fog_strength;
+                for k in 0..3 {
+                    c[k] += (page[k] - c[k]) * fog;
+                }
+            });
     }
 
     // Outline. Soft darkens what sits behind a depth jump and the rim of the
@@ -1585,85 +1643,88 @@ pub fn render_cpu(
     let jump = (span * 0.012).max(0.45);
     match style {
         Style::Soft => {
-            let src = t.color.clone();
-            for y in 0..height {
-                for x in 0..width {
-                    let idx = y * width + x;
-                    let z = t.depth[idx];
-                    if z == f32::NEG_INFINITY {
-                        continue;
-                    }
-                    let mut behind = false;
-                    let mut open = false;
-                    for nb in neighbours(idx, x, y, width, height).into_iter().flatten() {
-                        let nz = t.depth[nb];
-                        if nz == f32::NEG_INFINITY {
-                            open = true;
-                        } else if nz - z > jump {
-                            behind = true;
+            let src = color.clone();
+            color
+                .par_chunks_mut(width * 3)
+                .enumerate()
+                .for_each(|(y, row)| {
+                    for x in 0..width {
+                        let idx = y * width + x;
+                        let z = depth[idx];
+                        if z == f32::NEG_INFINITY {
+                            continue;
+                        }
+                        let mut behind = false;
+                        let mut open = false;
+                        for nb in neighbours(idx, x, y, width, height).into_iter().flatten() {
+                            let nz = depth[nb];
+                            if nz == f32::NEG_INFINITY {
+                                open = true;
+                            } else if nz - z > jump {
+                                behind = true;
+                            }
+                        }
+                        let k = if behind {
+                            0.62
+                        } else if open {
+                            0.80
+                        } else {
+                            continue;
+                        };
+                        for i in 0..3 {
+                            row[x * 3 + i] = src[idx * 3 + i] * k;
                         }
                     }
-                    let k = if behind {
-                        0.62
-                    } else if open {
-                        0.80
-                    } else {
-                        continue;
-                    };
-                    let o = idx * 3;
-                    for i in 0..3 {
-                        t.color[o + i] = src[o + i] * k;
-                    }
-                }
-            }
+                });
         }
         Style::Illustrative => {
             const INK: [f32; 3] = [0.07, 0.07, 0.09];
             let mut edge = vec![false; n];
-            for y in 0..height {
-                for x in 0..width {
+            edge.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
+                for (x, e) in row.iter_mut().enumerate() {
                     let idx = y * width + x;
-                    let z = t.depth[idx];
-                    for nb in neighbours(idx, x, y, width, height).into_iter().flatten() {
-                        let nz = t.depth[nb];
-                        // The silhouette is inked from both sides, so the line
-                        // reads the same against the page and against the body.
-                        let silhouette = (z == f32::NEG_INFINITY) != (nz == f32::NEG_INFINITY);
-                        let overlap =
-                            z != f32::NEG_INFINITY && nz != f32::NEG_INFINITY && nz - z > jump;
-                        if silhouette || overlap {
-                            edge[idx] = true;
-                            break;
-                        }
-                    }
+                    let z = depth[idx];
+                    *e = neighbours(idx, x, y, width, height)
+                        .into_iter()
+                        .flatten()
+                        .any(|nb| {
+                            let nz = depth[nb];
+                            // The silhouette is inked from both sides, so the
+                            // line reads the same against the page and
+                            // against the body.
+                            let silhouette =
+                                (z == f32::NEG_INFINITY) != (nz == f32::NEG_INFINITY);
+                            let overlap = z != f32::NEG_INFINITY
+                                && nz != f32::NEG_INFINITY
+                                && nz - z > jump;
+                            silhouette || overlap
+                        });
                 }
-            }
+            });
 
             // One pixel of line per ~700 of frame, so the weight is the same
             // whether or not the display is retina.
             let weight = (width.min(height) / 700).max(1);
             for _ in 1..weight {
                 let src = edge.clone();
-                for y in 0..height {
-                    for x in 0..width {
+                edge.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
+                    for (x, e) in row.iter_mut().enumerate() {
                         let idx = y * width + x;
-                        if src[idx] {
-                            continue;
+                        if !src[idx] {
+                            *e = neighbours(idx, x, y, width, height)
+                                .into_iter()
+                                .flatten()
+                                .any(|nb| src[nb]);
                         }
-                        edge[idx] = neighbours(idx, x, y, width, height)
-                            .into_iter()
-                            .flatten()
-                            .any(|nb| src[nb]);
                     }
-                }
+                });
             }
 
-            for (idx, _) in edge.iter().enumerate().filter(|(_, e)| **e) {
-                let o = idx * 3;
-                t.color[o] = INK[0];
-                t.color[o + 1] = INK[1];
-                t.color[o + 2] = INK[2];
-            }
+            color
+                .par_chunks_mut(3)
+                .zip(&edge)
+                .filter(|(_, e)| **e)
+                .for_each(|(c, _)| c.copy_from_slice(&INK));
         }
     }
 
@@ -1671,61 +1732,81 @@ pub fn render_cpu(
     // Painter's order, farthest first, each blended where it is in front of
     // the opaque scene. They take the same fog, and a sphere keeps an ink
     // rim in the illustrative style so it still reads as drawn.
-    translucent.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let rim = (width.min(height) / 700).max(1) as f32 + 0.5;
-    for (_, layer) in &translucent {
-        let mut blend = |idx: usize, z: f32, n: [f32; 3], base: [f32; 3], alpha: f32, edge: bool| {
-            if z <= t.depth[idx] {
-                return;
-            }
-            let mut c = shade(n, base, style);
-            let d = ((z - zmin) / span).clamp(0.0, 1.0);
-            let fog = (1.0 - d) * fog_strength;
-            for k in 0..3 {
-                c[k] += (page[k] - c[k]) * fog;
-            }
-            let (c, alpha) = match (edge, style) {
-                (true, Style::Illustrative) => ([0.07, 0.07, 0.09], alpha.max(0.45)),
-                (true, Style::Soft) => (c.map(|x| x * 0.8), alpha),
-                _ => (c, alpha),
-            };
-            let o = idx * 3;
-            for k in 0..3 {
-                t.color[o + k] = c[k] * alpha + t.color[o + k] * (1.0 - alpha);
-            }
-        };
-        match *layer {
-            Layer::Sphere(k, v) => {
-                let s = &scene.spheres[k];
-                let inner = (s.r * scale - rim).max(0.0);
-                grid.sphere(v, s.r, |idx, z, n, from_centre| {
-                    blend(idx, z, n, s.color, s.alpha, from_centre > inner)
-                });
-            }
-            Layer::Capsule(k, a, b) => {
-                let c = &scene.capsules[k];
-                grid.capsule(a, b, c.r, |idx, z, n, f| {
-                    blend(idx, z, n, mix(c.ca, c.cb, f), c.alpha, false)
-                });
-            }
-        }
+    if !translucent.is_empty() {
+        let rim = (width.min(height) / 700).max(1) as f32 + 0.5;
+        color
+            .par_chunks_mut(rows * width * 3)
+            .zip(depth.par_chunks(rows * width))
+            .zip(&translucent_bins)
+            .enumerate()
+            .for_each(|(b, ((color, depth), bin))| {
+                let top = b * rows;
+                let offset = top * width;
+                let grid = grid.rows(top, (top + rows).min(height));
+                let mut blend = |idx: usize,
+                                 z: f32,
+                                 n: [f32; 3],
+                                 base: [f32; 3],
+                                 alpha: f32,
+                                 edge: bool| {
+                    let idx = idx - offset;
+                    if z <= depth[idx] {
+                        return;
+                    }
+                    let mut c = shade(n, base, style);
+                    let d = ((z - zmin) / span).clamp(0.0, 1.0);
+                    let fog = (1.0 - d) * fog_strength;
+                    for k in 0..3 {
+                        c[k] += (page[k] - c[k]) * fog;
+                    }
+                    let (c, alpha) = match (edge, style) {
+                        (true, Style::Illustrative) => ([0.07, 0.07, 0.09], alpha.max(0.45)),
+                        (true, Style::Soft) => (c.map(|x| x * 0.8), alpha),
+                        _ => (c, alpha),
+                    };
+                    let o = idx * 3;
+                    for k in 0..3 {
+                        color[o + k] = c[k] * alpha + color[o + k] * (1.0 - alpha);
+                    }
+                };
+                for &i in bin {
+                    match &translucent[i as usize].1 {
+                        Prim::Sphere(k, v) => {
+                            let s = &scene.spheres[*k];
+                            let inner = (s.r * scale - rim).max(0.0);
+                            grid.sphere(*v, s.r, |idx, z, n, from_centre| {
+                                blend(idx, z, n, s.color, s.alpha, from_centre > inner)
+                            });
+                        }
+                        Prim::Capsule(k, a, b) => {
+                            let c = &scene.capsules[*k];
+                            grid.capsule(*a, *b, c.r, |idx, z, n, f| {
+                                blend(idx, z, n, mix(c.ca, c.cb, f), c.alpha, false)
+                            });
+                        }
+                        Prim::Tri(..) => {}
+                    }
+                }
+            });
     }
 
-    to_bgra(t.color, width, height)
+    to_bgra(&color, width, height)
 }
 
 /// Below this an atom is drawn as see-through.
 pub(crate) const OPAQUE: f32 = 0.999;
 
-/// A translucent primitive held back for the second pass: its index, and
-/// where it sits in view space.
-enum Layer {
+/// A primitive in view space, with its index in the scene.
+enum Prim {
     Sphere(usize, [f32; 3]),
     Capsule(usize, [f32; 3], [f32; 3]),
+    /// The corners and their normals.
+    Tri(usize, [[f32; 3]; 3], [[f32; 3]; 3]),
 }
 
 /// The mapping between view space and the frame's pixels, and the two
 /// impostor shapes resolved against it.
+#[derive(Clone, Copy)]
 struct Grid {
     cx: f32,
     cy: f32,
@@ -1733,9 +1814,66 @@ struct Grid {
     inv: f32,
     width: usize,
     height: usize,
+    /// The rows drawn to, for drawing one band.
+    top: usize,
+    bottom: usize,
 }
 
 impl Grid {
+    fn rows(&self, top: usize, bottom: usize) -> Grid {
+        Grid {
+            top,
+            bottom,
+            ..*self
+        }
+    }
+
+    /// A rectangle clamped to the frame and to the band's rows.
+    #[inline]
+    fn clip(
+        &self,
+        left: f32,
+        right: f32,
+        top: f32,
+        bottom: f32,
+    ) -> Option<(usize, usize, usize, usize)> {
+        let (x0, x1, y0, y1) = bbox(left, right, top, bottom, self.width, self.height)?;
+        let (y0, y1) = (y0.max(self.top), y1.min(self.bottom));
+        (y0 < y1).then_some((x0, x1, y0, y1))
+    }
+
+    fn sphere_bounds(&self, v: [f32; 3], r: f32) -> [f32; 4] {
+        let sx = self.cx + v[0] * self.scale;
+        let sy = self.cy - v[1] * self.scale;
+        let rp = r * self.scale;
+        [sx - rp, sx + rp, sy - rp, sy + rp]
+    }
+
+    fn capsule_bounds(&self, a: [f32; 3], b: [f32; 3], r: f32) -> [f32; 4] {
+        let sax = self.cx + a[0] * self.scale;
+        let say = self.cy - a[1] * self.scale;
+        let sbx = self.cx + b[0] * self.scale;
+        let sby = self.cy - b[1] * self.scale;
+        let rp = r * self.scale;
+        [
+            sax.min(sbx) - rp,
+            sax.max(sbx) + rp,
+            say.min(sby) - rp,
+            say.max(sby) + rp,
+        ]
+    }
+
+    /// The rows a sphere covers, or `None` if it is off the frame.
+    fn sphere_rows(&self, v: [f32; 3], r: f32) -> Option<(usize, usize)> {
+        let [l, r, t, b] = self.sphere_bounds(v, r);
+        self.clip(l, r, t, b).map(|(_, _, y0, y1)| (y0, y1))
+    }
+
+    fn capsule_rows(&self, a: [f32; 3], b: [f32; 3], r: f32) -> Option<(usize, usize)> {
+        let [l, r, t, b] = self.capsule_bounds(a, b, r);
+        self.clip(l, r, t, b).map(|(_, _, y0, y1)| (y0, y1))
+    }
+
     #[inline]
     fn view_x(&self, px: usize) -> f32 {
         (px as f32 + 0.5 - self.cx) * self.inv
@@ -1749,12 +1887,8 @@ impl Grid {
     /// Every pixel the sphere covers, with its depth, normal, and distance
     /// from the centre in pixels.
     fn sphere(&self, v: [f32; 3], r: f32, mut f: impl FnMut(usize, f32, [f32; 3], f32)) {
-        let sx = self.cx + v[0] * self.scale;
-        let sy = self.cy - v[1] * self.scale;
-        let rp = r * self.scale;
-        let Some((x0, x1, y0, y1)) =
-            bbox(sx - rp, sx + rp, sy - rp, sy + rp, self.width, self.height)
-        else {
+        let [l, rt, t, b] = self.sphere_bounds(v, r);
+        let Some((x0, x1, y0, y1)) = self.clip(l, rt, t, b) else {
             return;
         };
         for py in y0..y1 {
@@ -1787,19 +1921,8 @@ impl Grid {
             [0.0, 0.0, 1.0]
         };
 
-        let sax = self.cx + a[0] * self.scale;
-        let say = self.cy - a[1] * self.scale;
-        let sbx = self.cx + b[0] * self.scale;
-        let sby = self.cy - b[1] * self.scale;
-        let rp = r * self.scale;
-        let Some((x0, x1, y0, y1)) = bbox(
-            sax.min(sbx) - rp,
-            sax.max(sbx) + rp,
-            say.min(sby) - rp,
-            say.max(sby) + rp,
-            self.width,
-            self.height,
-        ) else {
+        let [l, rt, t, bt] = self.capsule_bounds(a, b, r);
+        let Some((x0, x1, y0, y1)) = self.clip(l, rt, t, bt) else {
             return;
         };
 
@@ -1895,16 +2018,15 @@ fn bbox(
     }
 }
 
-fn to_bgra(color: Vec<f32>, width: usize, height: usize) -> Frame {
+fn to_bgra(color: &[f32], width: usize, height: usize) -> Frame {
+    use rayon::prelude::*;
     let mut bgra = vec![0u8; width * height * 4];
-    for i in 0..width * height {
-        let o = i * 3;
-        let q = i * 4;
-        bgra[q] = (color[o + 2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        bgra[q + 1] = (color[o + 1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        bgra[q + 2] = (color[o].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        bgra[q + 3] = 255;
-    }
+    bgra.par_chunks_mut(4).zip(color.par_chunks(3)).for_each(|(q, c)| {
+        q[0] = (c[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        q[1] = (c[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        q[2] = (c[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        q[3] = 255;
+    });
     Frame {
         width,
         height,
@@ -2013,6 +2135,42 @@ mod tests {
 mod bench {
     use super::*;
     use std::time::Instant;
+
+    /// The card alone, long enough for its clocks to settle, at the size of
+    /// the app's viewport on a retina screen.
+    #[test]
+    #[ignore]
+    fn bench_gpu() {
+        let path = std::env::var("PROFOLD_BENCH").expect("PROFOLD_BENCH names a structure");
+        let s = crate::formats::load_path(std::path::Path::new(&path)).unwrap();
+        let mut glass = Appearance::default();
+        if let Some(kind) = s.kinds.iter().find(|k| k.as_str() == "6") {
+            glass.set(Species::Kind(kind.clone()), Look { alpha: 0.02, ..Look::default() });
+        }
+        for (label, repr, appearance) in [
+            ("spacefill", Repr::Spacefill, &Appearance::default()),
+            ("spacefill+glass", Repr::Spacefill, &glass),
+            ("ball&stick", Repr::BallAndStick, &Appearance::default()),
+        ] {
+            let scene = build_scene(
+                &s, repr, Coloring::Element, 1.0, Style::Illustrative, Palette::Spectrum,
+                false, true, appearance,
+            )
+            .stamp();
+            let mut cam = Camera::frame(&s);
+            let n = 300;
+            for _ in 0..30 {
+                render(&scene, &cam, 1616, 1436, [1.0; 3], Style::Illustrative);
+            }
+            let t = Instant::now();
+            for _ in 0..n {
+                cam.yaw += 0.02;
+                let frame = render(&scene, &cam, 1616, 1436, [1.0; 3], Style::Illustrative);
+                std::hint::black_box(frame);
+            }
+            println!("{label}: {:.2?}/frame", t.elapsed() / n);
+        }
+    }
 
     #[test]
     #[ignore]
