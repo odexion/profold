@@ -2313,3 +2313,70 @@ mod gpu_tests {
         }
     }
 }
+
+/// The pictures in the README, redrawn with
+/// `cargo test --release readme_gallery -- --ignored`; they land in `docs/`.
+#[cfg(test)]
+mod gallery {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn readme_gallery() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let shots: [(&str, &str, Repr, Coloring, Style, Palette, f32, bool); 14] = [
+            ("haemoglobin", "4hhb.pdb.gz", Repr::Cartoon, Coloring::Chain, Style::Illustrative, Palette::Spectrum, 0.0, false),
+            ("gfp", "1ema.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Style::Illustrative, Palette::Spectrum, 0.0, false),
+            ("ubiquitin-soft", "1ubq.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Style::Soft, Palette::Spectrum, 0.0, false),
+            ("crambin-tube", "1crn.pdb.gz", Repr::Tube, Coloring::Rainbow, Style::Illustrative, Palette::Viridis, 0.0, false),
+            ("crambin-ballstick", "1crn.pdb.gz", Repr::BallAndStick, Coloring::Element, Style::Illustrative, Palette::Spectrum, 0.0, false),
+            ("haemoglobin-spacefill", "4hhb.pdb.gz", Repr::Spacefill, Coloring::Chain, Style::Soft, Palette::Spectrum, 0.0, false),
+            ("caffeine", "caffeine.sdf", Repr::BallAndStick, Coloring::Element, Style::Illustrative, Palette::Spectrum, 0.0, false),
+            ("c60", "c60.xyz", Repr::Licorice, Coloring::Element, Style::Soft, Palette::Plasma, 0.0, false),
+            ("rocksalt", "rocksalt.cif", Repr::BallAndStick, Coloring::Element, Style::Illustrative, Palette::Spectrum, 0.0, true),
+            ("silicon", "silicon.vasp", Repr::BallAndStick, Coloring::Element, Style::Soft, Palette::Ice, 0.0, true),
+            ("melt", "lj-melt.lammpstrj.gz", Repr::Spacefill, Coloring::Element, Style::Illustrative, Palette::Spectrum, 1.0, true),
+            ("ubiquitin-viridis", "1ubq.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Style::Illustrative, Palette::Viridis, 0.0, false),
+            ("ubiquitin-magma", "1ubq.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Style::Illustrative, Palette::Magma, 0.0, false),
+            ("ubiquitin-mako", "1ubq.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Style::Illustrative, Palette::Mako, 0.0, false),
+        ];
+        for (name, file, repr, coloring, style, palette, at, cell) in shots {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(file);
+            let mut s = crate::formats::load_path(&path).unwrap();
+            // `at` is how far through a trajectory to draw it, 0..=1.
+            let last = s.frame_count() - 1;
+            s.set_frame((at * last as f32).round() as usize);
+            let scene = build_scene(
+                &s, repr, coloring, 1.0, style, palette, false, cell, &Appearance::default(),
+            )
+            .stamp();
+            let cam = Camera::frame(&s);
+            // Drawn large, then cut to what was drawn and centred on a 4:3
+            // page of its own, so every picture sits the same way.
+            let (w, h) = (2000, 2000);
+            let frame = render(&scene, &cam, w, h, crate::theme::VIEW, style);
+            let mut rgba = frame.bgra;
+            for px in rgba.chunks_exact_mut(4) {
+                px.swap(0, 2);
+            }
+            let img = image::RgbaImage::from_raw(w as u32, h as u32, rgba).unwrap();
+            let paper = *img.get_pixel(0, 0);
+            let (mut x0, mut y0, mut x1, mut y1) = (w as u32, h as u32, 0, 0);
+            for (x, y, p) in img.enumerate_pixels() {
+                if p.0.iter().zip(paper.0).any(|(a, b)| a.abs_diff(b) > 4) {
+                    (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                }
+            }
+            let (cw, ch) = (x1 - x0 + 1, y1 - y0 + 1);
+            let side = ((cw as f32 * 1.12).max(ch as f32 * 1.12 * 4.0 / 3.0)) as u32;
+            let (pw, ph) = (side, side * 3 / 4);
+            let mut page = image::RgbaImage::from_pixel(pw, ph, paper);
+            let cut = image::imageops::crop_imm(&img, x0, y0, cw, ch).to_image();
+            image::imageops::overlay(&mut page, &cut, ((pw - cw) / 2) as i64, ((ph - ch) / 2) as i64);
+            image::imageops::resize(&page, 1200, 900, image::imageops::FilterType::Lanczos3)
+                .save(dir.join(format!("{name}.png")))
+                .unwrap();
+        }
+    }
+}
