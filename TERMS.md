@@ -32,7 +32,7 @@ profold is a research and education tool.
 
 ## 4. Third-party services
 
-To fetch structures or set up the folding plugin, profold contacts services
+To fetch structures, check for updates or set up the folding plugin, profold contacts services
 that profold's authors do not run. Your use of each is governed by that
 provider's own terms:
 
@@ -42,7 +42,7 @@ provider's own terms:
 | AlphaFold Protein Structure Database (`alphafold.ebi.ac.uk`) | Downloading predicted models | [AlphaFold DB terms](https://alphafold.ebi.ac.uk/faq), [EMBL-EBI terms of use](https://www.ebi.ac.uk/about/terms-of-use) |
 | UniProt (`rest.uniprot.org`) | Searching proteins, downloading sequences | [UniProt license and disclaimer](https://www.uniprot.org/help/license) |
 | PubChem and NCBI E-utilities (`pubchem.ncbi.nlm.nih.gov`, `eutils.ncbi.nlm.nih.gov`) | Searching and downloading molecules | [NCBI policies](https://www.ncbi.nlm.nih.gov/home/about/policies/), [PubChem usage policy](https://pubchem.ncbi.nlm.nih.gov/docs/programmatic-access) |
-| GitHub (`github.com`) | Cloning SimpleFold and ESM (plugin) | [GitHub Terms of Service](https://docs.github.com/site-policy/github-terms/github-terms-of-service) |
+| GitHub (`github.com`, `api.github.com`) | Checking for, and downloading, new profold releases; cloning SimpleFold and ESM (plugin) | [GitHub Terms of Service](https://docs.github.com/site-policy/github-terms/github-terms-of-service) |
 | Python Package Index, through `uv` | Installing Python dependencies (plugin) | [PyPI terms](https://policies.python.org/pypi.org/Terms-of-Service/) |
 | Apple and Meta model hosting | Downloading SimpleFold and ESM2 weights (plugin) | The licenses shipped with each model |
 
@@ -68,7 +68,8 @@ cargo build --release --no-default-features
 
 - profold has **no telemetry, analytics, accounts or crash reporting**.
 - Files you open are read on your computer and never uploaded.
-- Network requests happen only when you ask for something that needs them:
+- Apart from the update check below, network requests happen only when you
+  ask for something that needs them:
   - fetching a PDB ID, UniProt accession or PubChem CID sends that identifier
     to the services above;
   - typing a name in a viewer's search field sends what you typed, once you
@@ -77,6 +78,10 @@ cargo build --release --no-default-features
     RCSB PDB's sequence search. To keep a sequence private, fold it in a fold
     tab instead, which never searches;
   - setting up the folding plugin downloads its code and weights.
+- Once a day at most, on starting, profold asks GitHub for its latest release
+  and, if there is a newer one, downloads it. The request carries nothing but
+  profold's version in its user agent. Turn it off from the version at the
+  right of the tab bar (*Check automatically*).
 
   Like any web request, these reveal your IP address to the provider.
 - Sequences you fold are processed **locally** by SimpleFold. They are not sent

@@ -50,8 +50,58 @@ pub const ON_INK: Hsla = Hsla { h: 0.1250, s: 0.3333, l: 0.9765, a: 1.00 };
 /// and nothing else.
 pub const VIEW: [f32; 3] = [0.992, 0.992, 0.988];
 
-/// Monospace family, used for sequences and identifiers.
+/// Monospace family, used for sequences and identifiers: one that ships
+/// with each system.
+#[cfg(target_os = "macos")]
 pub const MONO: &str = "Menlo";
+#[cfg(windows)]
+pub const MONO: &str = "Consolas";
+#[cfg(not(any(target_os = "macos", windows)))]
+pub const MONO: &str = "DejaVu Sans Mono";
 
 /// Display serif, used only for the name of the structure on screen.
+#[cfg(target_os = "macos")]
 pub const SERIF: &str = "Charter";
+#[cfg(windows)]
+pub const SERIF: &str = "Cambria";
+#[cfg(not(any(target_os = "macos", windows)))]
+pub const SERIF: &str = "DejaVu Serif";
+
+/// A shortcut as this system writes it: `⇧⌘T` on a Mac, `Ctrl+Shift+T`
+/// elsewhere. Written the Mac way, with ⇧ before ⌘.
+pub fn keys(mac: &str) -> String {
+    if cfg!(target_os = "macos") {
+        mac.to_string()
+    } else {
+        spelled_out(mac)
+    }
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn spelled_out(mac: &str) -> String {
+    let mut parts = Vec::new();
+    let mut rest = mac;
+    for (glyph, name) in [("⌃", "Ctrl"), ("⌥", "Alt"), ("⇧", "Shift"), ("⌘", "Ctrl")] {
+        if let Some(r) = rest.strip_prefix(glyph) {
+            parts.push(name);
+            rest = r;
+        }
+    }
+    // ⌘ comes last on a Mac but Ctrl comes first elsewhere.
+    if parts.last() == Some(&"Ctrl") && parts.len() > 1 {
+        parts.pop();
+        parts.insert(0, "Ctrl");
+    }
+    parts.push(rest);
+    parts.join("+")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn shortcuts_are_spelled_out_off_a_mac() {
+        assert_eq!(super::spelled_out("⌘T"), "Ctrl+T");
+        assert_eq!(super::spelled_out("⇧⌘T"), "Ctrl+Shift+T");
+        assert_eq!(super::spelled_out("⌘O"), "Ctrl+O");
+    }
+}

@@ -15,7 +15,8 @@ use gpui::{
 
 use crate::settings;
 use crate::theme;
-use crate::ui::app::{menu, swallow, Mode, Viewer};
+use crate::ui::app::{divide, item, menu, swallow, Mode, Viewer};
+use crate::update::{self, Status};
 
 actions!(
     profold,
@@ -35,33 +36,35 @@ actions!(
         Tab7,
         Tab8,
         Tab9,
+        CheckForUpdates,
     ]
 );
 
 /// Height of the tab row, which is also the window's title bar.
 const TAB_BAR: f32 = 40.0;
-/// Room for the traffic lights at the left of the bar.
-const LIGHTS: f32 = 80.0;
+/// Room for the traffic lights at the left of the bar. Elsewhere the
+/// window's buttons are at the right, drawn by the bar itself.
+const LIGHTS: f32 = if cfg!(target_os = "macos") { 80.0 } else { 8.0 };
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        gpui::KeyBinding::new("cmd-o", OpenFile, None),
-        gpui::KeyBinding::new("cmd-t", NewTab, None),
-        gpui::KeyBinding::new("cmd-shift-t", NewFoldTab, None),
-        gpui::KeyBinding::new("cmd-w", CloseTab, None),
+        gpui::KeyBinding::new("secondary-o", OpenFile, None),
+        gpui::KeyBinding::new("secondary-t", NewTab, None),
+        gpui::KeyBinding::new("secondary-shift-t", NewFoldTab, None),
+        gpui::KeyBinding::new("secondary-w", CloseTab, None),
         gpui::KeyBinding::new("ctrl-tab", NextTab, None),
         gpui::KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
-        gpui::KeyBinding::new("cmd-}", NextTab, None),
-        gpui::KeyBinding::new("cmd-{", PreviousTab, None),
-        gpui::KeyBinding::new("cmd-1", Tab1, None),
-        gpui::KeyBinding::new("cmd-2", Tab2, None),
-        gpui::KeyBinding::new("cmd-3", Tab3, None),
-        gpui::KeyBinding::new("cmd-4", Tab4, None),
-        gpui::KeyBinding::new("cmd-5", Tab5, None),
-        gpui::KeyBinding::new("cmd-6", Tab6, None),
-        gpui::KeyBinding::new("cmd-7", Tab7, None),
-        gpui::KeyBinding::new("cmd-8", Tab8, None),
-        gpui::KeyBinding::new("cmd-9", Tab9, None),
+        gpui::KeyBinding::new("secondary-}", NextTab, None),
+        gpui::KeyBinding::new("secondary-{", PreviousTab, None),
+        gpui::KeyBinding::new("secondary-1", Tab1, None),
+        gpui::KeyBinding::new("secondary-2", Tab2, None),
+        gpui::KeyBinding::new("secondary-3", Tab3, None),
+        gpui::KeyBinding::new("secondary-4", Tab4, None),
+        gpui::KeyBinding::new("secondary-5", Tab5, None),
+        gpui::KeyBinding::new("secondary-6", Tab6, None),
+        gpui::KeyBinding::new("secondary-7", Tab7, None),
+        gpui::KeyBinding::new("secondary-8", Tab8, None),
+        gpui::KeyBinding::new("secondary-9", Tab9, None),
     ]);
 }
 
@@ -76,6 +79,12 @@ pub struct Workspace {
     /// The tabs as last written to `session.json`, so it is written only
     /// when they change.
     saved: String,
+    /// Where the updater has got to, written from its own thread.
+    update: update::Shared,
+    /// Whether the version menu is open.
+    about: bool,
+    /// Redraws the bar while the updater works.
+    update_poll: Option<Task<()>>,
 }
 
 /// A tab being dragged along the bar, by where it was.
@@ -110,9 +119,39 @@ impl Workspace {
             focus: cx.focus_handle(),
             prompt: None,
             saved: String::new(),
+            update: std::sync::Arc::new(std::sync::Mutex::new(Status::Idle)),
+            about: false,
+            update_poll: None,
         };
         this.add(Mode::View, window, cx);
+        if update::due() {
+            this.check_for_updates(cx);
+        }
         this
+    }
+
+    /// Look for a new release, and install it where this build can. It runs
+    /// on a thread of its own; the bar is redrawn until it is done.
+    pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        {
+            let mut status = self.update.lock().unwrap();
+            // Installed already: only a restart is wanted.
+            if status.busy() || matches!(*status, Status::Ready { .. }) {
+                return;
+            }
+            *status = Status::Checking;
+        }
+        let status = self.update.clone();
+        std::thread::spawn(move || update::run(status));
+        let status = self.update.clone();
+        self.update_poll = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(120)).await;
+            let busy = status.lock().unwrap().busy();
+            if this.update(cx, |_, cx| cx.notify()).is_err() || !busy {
+                return;
+            }
+        }));
+        cx.notify();
     }
 
     /// Open a new tab beside the one in front, and bring it forward.
@@ -327,7 +366,7 @@ impl Focusable for Workspace {
 // ---------------------------------------------------------------------------
 
 impl Workspace {
-    fn tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn tab_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.tabs.len();
         div()
             .id("tab-bar")
@@ -350,7 +389,170 @@ impl Workspace {
                     .map(|(i, tab)| self.tab(i, tab, count, cx).into_any_element()),
             )
             .child(self.add_button(cx))
-            .child(div().flex_1().h_full())
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .window_control_area(gpui::WindowControlArea::Drag),
+            )
+            .child(self.version_button(cx))
+            .when(cfg!(not(target_os = "macos")), |d| d.children(window_buttons(window)))
+    }
+
+    /// The version, at the right of the bar, and the update when there is
+    /// one waiting for a restart.
+    fn version_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let status = self.update.lock().unwrap().clone();
+        let open = self.about;
+        let label = match &status {
+            Status::Checking => "Checking…".to_string(),
+            Status::Downloading { fraction: Some(f), .. } => format!("Updating {:.0}%", f * 100.0),
+            Status::Downloading { .. } | Status::Installing { .. } => "Updating…".to_string(),
+            _ => format!("v{}", update::VERSION),
+        };
+        div()
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(px(6.))
+            .mb(px(6.))
+            .when(matches!(status, Status::Ready { .. }), |d| {
+                d.child(
+                    div()
+                        .id("restart-to-update")
+                        .debug_selector(|| "restart-to-update".into())
+                        .px(px(10.))
+                        .py(px(3.))
+                        .rounded(px(6.))
+                        .bg(theme::INK)
+                        .text_color(theme::ON_INK)
+                        .text_size(px(11.))
+                        .cursor_pointer()
+                        .hover(|s| s.opacity(0.85))
+                        .on_mouse_down(MouseButton::Left, swallow)
+                        .on_click(|_, _, cx| update::restart(cx))
+                        .child("Restart to update"),
+                )
+            })
+            .when(matches!(status, Status::Available { .. }), |d| {
+                d.child(div().size(px(6.)).rounded_full().bg(theme::INK))
+            })
+            .child(
+                div()
+                    .id("version")
+                    .debug_selector(|| "version".into())
+                    .px(px(7.))
+                    .py(px(3.))
+                    .rounded(px(5.))
+                    .text_size(px(10.5))
+                    .text_color(theme::FAINT)
+                    .cursor_pointer()
+                    .when(open, |d| d.bg(theme::BORDER).text_color(theme::INK))
+                    .hover(|s| s.bg(theme::BORDER).text_color(theme::INK))
+                    .on_mouse_down(MouseButton::Left, swallow)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.about = !this.about;
+                        cx.notify();
+                    }))
+                    .child(label),
+            )
+            .when(open, |d| d.child(deferred(self.about_menu(&status, cx)).with_priority(3)))
+    }
+
+    fn about_menu(&self, status: &Status, cx: &mut Context<Self>) -> impl IntoElement {
+        let line = |text: String, color| {
+            div().px(px(8.)).text_size(px(10.5)).text_color(color).child(text)
+        };
+        let (note, color) = match status {
+            Status::Idle => (None, theme::MUTED),
+            Status::Checking => (Some("Checking for updates…".to_string()), theme::MUTED),
+            Status::UpToDate => (Some("You have the latest version.".to_string()), theme::MUTED),
+            Status::Available { version, .. } => (
+                Some(if update::TARGET.is_none() {
+                    format!("{version} is out. This build is from source, so it is not replaced.")
+                } else {
+                    format!("{version} is out, but this copy cannot be replaced; use the installer.")
+                }),
+                theme::INK,
+            ),
+            Status::Downloading { version, fraction } => (
+                Some(match fraction {
+                    Some(f) => format!("Downloading {version}… {:.0}%", f * 100.0),
+                    None => format!("Downloading {version}…"),
+                }),
+                theme::MUTED,
+            ),
+            Status::Installing { version } => (Some(format!("Installing {version}…")), theme::MUTED),
+            Status::Ready { version } => (
+                Some(format!("{version} is installed and starts next time.")),
+                theme::INK,
+            ),
+            Status::Failed(e) => (Some(format!("Could not update: {e}")), theme::DANGER),
+        };
+        let busy = status.busy();
+        let automatic = update::automatic();
+        menu(270.)
+            .top(px(26.))
+            .left_auto()
+            .right(px(0.))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.about = false;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .px(px(8.))
+                    .pt(px(5.))
+                    .flex()
+                    .items_baseline()
+                    .gap(px(6.))
+                    .child(div().text_size(px(13.)).text_color(theme::INK).child("profold"))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(theme::MUTED)
+                            .child(format!("version {}", update::VERSION)),
+                    ),
+            )
+            .child(line(
+                update::TARGET.unwrap_or("built from source").to_string(),
+                theme::FAINT,
+            ))
+            .when_some(note, |d, note| d.child(div().pt(px(4.)).child(line(note, color))))
+            .child(divide())
+            .when(matches!(status, Status::Ready { .. }), |d| {
+                d.child(
+                    item("about-restart", "Restart to update".into(), false)
+                        .on_click(|_, _, cx| update::restart(cx)),
+                )
+            })
+            .when_some(
+                match status {
+                    Status::Available { page, .. } => Some(page.clone()),
+                    _ => None,
+                },
+                |d, page| {
+                    d.child(
+                        item("about-release", "Open the release page".into(), false)
+                            .on_click(move |_, _, cx| cx.open_url(&page)),
+                    )
+                },
+            )
+            .child(
+                item("check-for-updates", "Check for updates".into(), false)
+                    .debug_selector(|| "check-for-updates".into())
+                    .when(busy, |d| d.opacity(0.4))
+                    .on_click(cx.listener(|this, _, _, cx| this.check_for_updates(cx))),
+            )
+            .child(
+                item("check-automatically", "Check automatically".into(), automatic).on_click(
+                    cx.listener(move |_, _, _, cx| {
+                        update::set_automatic(!automatic);
+                        cx.notify();
+                    }),
+                ),
+            )
     }
 
     fn tab(&self, i: usize, tab: &Entity<Viewer>, count: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -482,7 +684,7 @@ impl Workspace {
                     .cursor_pointer()
                     .when(open, |d| d.bg(theme::BORDER).text_color(theme::INK))
                     .hover(|s| s.bg(theme::BORDER).text_color(theme::INK))
-                    .tooltip(|_, cx| cx.new(|_| crate::ui::app::Tip("New tab  ⌘T".into())).into())
+                    .tooltip(|_, cx| cx.new(|_| crate::ui::app::Tip(format!("New tab  {}", theme::keys("⌘T")).into())).into())
                     .on_mouse_down(MouseButton::Left, swallow)
                     .on_click(cx.listener(|this, _, window, cx| {
                         if cfg!(feature = "simplefold") {
@@ -498,7 +700,7 @@ impl Workspace {
     }
 
     fn add_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let entry = |id: &'static str, name: &'static str, note: &'static str, keys: &'static str| {
+        let entry = |id: &'static str, name: &'static str, note: &'static str, keys: String| {
             div()
                 .id(id)
                 .debug_selector(move || id.into())
@@ -534,18 +736,89 @@ impl Workspace {
                 cx.notify();
             }))
             .child(
-                entry("new-viewer", "Viewer", "search, fetch and open structures", "⌘T")
+                entry("new-viewer", "Viewer", "search, fetch and open structures", theme::keys("⌘T"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.add(Mode::View, window, cx);
                     })),
             )
             .child(
-                entry("new-fold", "Fold a protein", "predict a structure with SimpleFold", "⇧⌘T")
+                entry("new-fold", "Fold a protein", "predict a structure with SimpleFold", theme::keys("⇧⌘T"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.add(Mode::Fold, window, cx);
                     })),
             )
     }
+}
+
+/// Minimise, maximise and close, where the system does not draw them: always
+/// on Windows, whose title bar the tab bar replaces, and on Linux when the
+/// compositor leaves the frame to the app.
+fn window_buttons(window: &Window) -> Option<impl IntoElement> {
+    let drawn_here = cfg!(windows)
+        || (cfg!(target_os = "linux")
+            && matches!(window.window_decorations(), gpui::Decorations::Client { .. }));
+    if !drawn_here {
+        return None;
+    }
+    use gpui::WindowControlArea as Area;
+    let button = |id: &'static str, glyph: &'static str, area: Area| {
+        div()
+            .id(id)
+            .w(px(40.))
+            .h(px(TAB_BAR))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(12.))
+            .text_color(theme::MUTED)
+            .window_control_area(area)
+            .when(area == Area::Close, |d| {
+                d.hover(|s| s.bg(theme::DANGER).text_color(theme::ON_INK))
+            })
+            .when(area != Area::Close, |d| d.hover(|s| s.bg(theme::BORDER).text_color(theme::INK)))
+            .on_mouse_down(MouseButton::Left, swallow)
+            // Windows acts on these areas itself; Linux needs telling.
+            .when(cfg!(target_os = "linux"), |d| {
+                d.on_click(move |_, window, _| match area {
+                    Area::Min => window.minimize_window(),
+                    Area::Max => window.zoom_window(),
+                    _ => window.remove_window(),
+                })
+            })
+            .child(glyph)
+    };
+    let maximized = window.is_maximized();
+    Some(
+        div()
+            .flex()
+            .flex_none()
+            .ml(px(6.))
+            .mr(px(-12.))
+            .child(button("window-min", "─", Area::Min))
+            .child(button("window-max", if maximized { "❐" } else { "□" }, Area::Max))
+            .child(button("window-close", "✕", Area::Close)),
+    )
+}
+
+/// Which edge of the window a press at `p` is on, for a window that draws
+/// its own frame.
+fn resize_edge(p: gpui::Point<gpui::Pixels>, size: gpui::Size<gpui::Pixels>) -> Option<gpui::ResizeEdge> {
+    use gpui::ResizeEdge as E;
+    const GRIP: f32 = 6.0;
+    let (x, y) = (f32::from(p.x), f32::from(p.y));
+    let (w, h) = (f32::from(size.width), f32::from(size.height));
+    let (left, right, top, bottom) = (x < GRIP, x > w - GRIP, y < GRIP, y > h - GRIP);
+    Some(match (left, right, top, bottom) {
+        (true, _, true, _) => E::TopLeft,
+        (_, true, true, _) => E::TopRight,
+        (true, _, _, true) => E::BottomLeft,
+        (_, true, _, true) => E::BottomRight,
+        (true, ..) => E::Left,
+        (_, true, ..) => E::Right,
+        (_, _, true, _) => E::Top,
+        (.., true) => E::Bottom,
+        _ => return None,
+    })
 }
 
 /// A job's progress on its tab: a bar filling where the job knows how far it
@@ -577,7 +850,8 @@ fn spinner(i: usize, fraction: Option<f32>) -> gpui::AnyElement {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let client_side = matches!(window.window_decorations(), gpui::Decorations::Client { .. });
         div()
             .flex()
             .flex_col()
@@ -608,11 +882,27 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &Tab7, window, cx| this.go_to(7, window, cx)))
             .on_action(cx.listener(|this, _: &Tab8, window, cx| this.go_to(8, window, cx)))
             .on_action(cx.listener(|this, _: &Tab9, window, cx| this.go_to(9, window, cx)))
+            .on_action(cx.listener(|this, _: &CheckForUpdates, _, cx| {
+                this.about = true;
+                this.check_for_updates(cx);
+            }))
+            // A window that draws its own frame is resized from its edges.
+            .when(client_side, |d| {
+                d.capture_any_mouse_down(|e, window, cx| {
+                    if e.button != MouseButton::Left {
+                        return;
+                    }
+                    if let Some(edge) = resize_edge(e.position, window.viewport_size()) {
+                        cx.stop_propagation();
+                        window.start_window_resize(edge);
+                    }
+                })
+            })
             // Files dropped anywhere on the window are opened.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.open_paths(paths.paths().to_vec(), window, cx);
             }))
-            .child(self.tab_bar(cx))
+            .child(self.tab_bar(window, cx))
             .child(
                 div()
                     .flex_1()
@@ -646,6 +936,26 @@ mod tests {
         (view, cx)
     }
 
+    #[gpui::test]
+    fn the_version_opens_a_menu_to_check_for_updates(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        // Tests never check on their own.
+        assert_eq!(*view.read_with(cx, |w, _| w.update.clone()).lock().unwrap(), Status::Idle);
+        assert!(cx.debug_bounds("restart-to-update").is_none());
+
+        click(cx, "version");
+        assert!(view.read_with(cx, |w, _| w.about));
+        assert!(cx.debug_bounds("check-for-updates").is_some());
+
+        // Once an update is in place, the bar offers the restart.
+        view.update(cx, |w, cx| {
+            *w.update.lock().unwrap() = Status::Ready { version: "9.9.9".into() };
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("restart-to-update").is_some());
+    }
+
     fn tabs(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> (usize, usize) {
         view.update(cx, |this, _| (this.tabs.len(), this.active))
     }
@@ -655,8 +965,8 @@ mod tests {
         let (view, cx) = open(cx);
         assert_eq!(tabs(&view, cx), (1, 0));
 
-        cx.simulate_keystrokes("cmd-t");
-        cx.simulate_keystrokes("cmd-t");
+        cx.simulate_keystrokes("secondary-t");
+        cx.simulate_keystrokes("secondary-t");
         assert_eq!(tabs(&view, cx), (3, 2));
 
         // Each tab holds its own structure.
@@ -668,17 +978,17 @@ mod tests {
 
         click(cx, "tab-0");
         assert_eq!(tabs(&view, cx), (3, 0));
-        cx.simulate_keystrokes("cmd-}");
+        cx.simulate_keystrokes("secondary-}");
         assert_eq!(tabs(&view, cx), (3, 1));
-        cx.simulate_keystrokes("cmd-9");
+        cx.simulate_keystrokes("secondary-9");
         assert_eq!(tabs(&view, cx), (3, 2));
-        cx.simulate_keystrokes("cmd-1");
+        cx.simulate_keystrokes("secondary-1");
         assert_eq!(tabs(&view, cx), (3, 0));
 
         click(cx, "close-tab-0");
         assert_eq!(tabs(&view, cx), (2, 0));
-        cx.simulate_keystrokes("cmd-w");
-        cx.simulate_keystrokes("cmd-w");
+        cx.simulate_keystrokes("secondary-w");
+        cx.simulate_keystrokes("secondary-w");
         // The last tab is emptied rather than closed.
         assert_eq!(tabs(&view, cx), (1, 0));
     }
@@ -686,7 +996,7 @@ mod tests {
     #[gpui::test]
     fn tabs_reorder_and_describe_the_session(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
-        cx.simulate_keystrokes("cmd-t cmd-t");
+        cx.simulate_keystrokes("secondary-t secondary-t");
         view.update(cx, |this, cx| {
             this.tabs[0].update(cx, |tab, cx| tab.reopen("sample:caffeine.sdf", cx));
         });

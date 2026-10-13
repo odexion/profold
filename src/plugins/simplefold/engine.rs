@@ -36,30 +36,42 @@ pub struct Engine {
 }
 
 fn which(bin: &str) -> Option<PathBuf> {
+    if let Ok(p) = ::which::which(bin) {
+        return Some(p);
+    }
     // A GUI process does not inherit a login shell's PATH, so check the usual
     // install locations too.
-    if let Ok(out) = Command::new("/usr/bin/which").arg(bin).output() {
-        if out.status.success() {
-            let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
     let home = dirs::home_dir().unwrap_or_default();
-    for dir in [
-        home.join(".local/bin"),
-        home.join(".cargo/bin"),
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-        PathBuf::from("/usr/bin"),
-    ] {
-        let p = dir.join(bin);
-        if p.exists() {
-            return Some(p);
+    let mut dirs = vec![home.join(".local/bin"), home.join(".cargo/bin")];
+    if cfg!(windows) {
+        if let Some(local) = dirs::data_local_dir() {
+            dirs.push(local.join("Programs").join("uv"));
+            dirs.push(local.join("Microsoft").join("WinGet").join("Links"));
         }
+        dirs.push(PathBuf::from(r"C:\Program Files\Git\cmd"));
+    } else {
+        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(PathBuf::from));
     }
-    None
+    let name = format!("{bin}{}", std::env::consts::EXE_SUFFIX);
+    dirs.into_iter().map(|d| d.join(&name)).find(|p| p.exists())
+}
+
+/// How to get `uv` on this system.
+const UV_HINT: &str = if cfg!(target_os = "macos") {
+    "Install it with `brew install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`"
+} else if cfg!(windows) {
+    "Install it with `winget install astral-sh.uv` or `powershell -c \"irm https://astral.sh/uv/install.ps1 | iex\"`"
+} else {
+    "Install it with `curl -LsSf https://astral.sh/uv/install.sh | sh`"
+};
+
+/// Where a virtualenv keeps its programs.
+fn venv_bin(venv: &Path, name: &str) -> PathBuf {
+    if cfg!(windows) {
+        venv.join("Scripts").join(format!("{name}.exe"))
+    } else {
+        venv.join("bin").join(name)
+    }
 }
 
 impl Engine {
@@ -81,10 +93,10 @@ impl Engine {
         self.root.join("venv")
     }
     pub fn python(&self) -> PathBuf {
-        self.venv().join("bin/python")
+        venv_bin(&self.venv(), "python")
     }
     pub fn cli(&self) -> PathBuf {
-        self.venv().join("bin/simplefold")
+        venv_bin(&self.venv(), "simplefold")
     }
     pub fn checkpoints(&self) -> PathBuf {
         self.root.join("checkpoints")
@@ -192,7 +204,7 @@ impl Engine {
         std::fs::create_dir_all(&self.root)?;
 
         let uv = which("uv").ok_or_else(|| {
-            anyhow!("`uv` was not found. Install it with `brew install uv`, then try again.")
+            anyhow!("`uv` was not found. {UV_HINT}, then try again.")
         })?;
         let git = which("git").ok_or_else(|| anyhow!("`git` was not found."))?;
 
@@ -237,6 +249,15 @@ impl Engine {
 
         let py = self.python().to_string_lossy().to_string();
 
+        // Off a Mac, uv picks the torch build for the graphics card it
+        // finds: CUDA for an NVIDIA card, CPU otherwise. PyPI's own torch is
+        // CPU-only on Windows, and gigabytes of unused CUDA without a card.
+        let torch: &[(&str, &str)] = if cfg!(target_os = "macos") {
+            &[]
+        } else {
+            &[("UV_TORCH_BACKEND", "auto")]
+        };
+
         stage(tx, "Installing simplefold (this downloads a lot; be patient)…");
         run(
             &uv,
@@ -249,7 +270,7 @@ impl Engine {
                 &self.repo().to_string_lossy(),
             ],
             &self.root,
-            &[],
+            torch,
             tx,
         )?;
 
@@ -262,21 +283,22 @@ impl Engine {
                 &[],
                 tx,
             )?;
-            stage(tx, "Installing ESM…");
-            run(
-                &uv,
-                &[
-                    "pip",
-                    "install",
-                    "--python",
-                    &py,
-                    "git+https://github.com/facebookresearch/esm.git",
-                ],
-                &self.root,
-                &[],
-                tx,
-            )?;
         }
+        // Both backends embed sequences with ESM2.
+        stage(tx, "Installing ESM…");
+        run(
+            &uv,
+            &[
+                "pip",
+                "install",
+                "--python",
+                &py,
+                "git+https://github.com/facebookresearch/esm.git",
+            ],
+            &self.root,
+            torch,
+            tx,
+        )?;
 
         if !self.cli().exists() {
             return Err(anyhow!("installation finished but `simplefold` is missing"));

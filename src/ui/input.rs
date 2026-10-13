@@ -667,16 +667,17 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("right", Right, Some("Input")),
         KeyBinding::new("shift-left", SelectLeft, Some("Input")),
         KeyBinding::new("shift-right", SelectRight, Some("Input")),
-        KeyBinding::new("cmd-a", SelectAll, Some("Input")),
-        KeyBinding::new("cmd-v", Paste, Some("Input")),
-        KeyBinding::new("cmd-c", Copy, Some("Input")),
-        KeyBinding::new("cmd-x", Cut, Some("Input")),
+        KeyBinding::new("secondary-a", SelectAll, Some("Input")),
+        KeyBinding::new("secondary-v", Paste, Some("Input")),
+        KeyBinding::new("secondary-c", Copy, Some("Input")),
+        KeyBinding::new("secondary-x", Cut, Some("Input")),
         KeyBinding::new("home", Home, Some("Input")),
         KeyBinding::new("end", End, Some("Input")),
         KeyBinding::new("enter", Submit, Some("Input")),
         KeyBinding::new("escape", Cancel, Some("Input")),
         KeyBinding::new("up", Up, Some("Input")),
         KeyBinding::new("down", Down, Some("Input")),
+        #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some("Input")),
     ]);
 }

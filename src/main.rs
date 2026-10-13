@@ -1,6 +1,9 @@
 //! profold — a molecular viewer for proteins, molecules, crystals and
 //! simulation trajectories, with structure prediction as a plugin.
 
+// A release build on Windows is a window, not a console program.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod align;
 mod bonds;
 mod dssp;
@@ -17,6 +20,7 @@ mod search;
 mod settings;
 mod theme;
 mod ui;
+mod update;
 
 use gpui::{
     actions, AppContext, point, px, size, App, Application, Bounds, Menu, MenuItem, TitlebarOptions,
@@ -26,6 +30,17 @@ use gpui::{
 actions!(profold, [Quit]);
 
 fn main() {
+    if std::env::args().nth(1).is_some_and(|a| a == "--version" || a == "-V") {
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::Console::AttachConsole(
+                windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
+            );
+        }
+        println!("profold {}", update::VERSION);
+        return;
+    }
+    update::tidy();
     // Setting up the graphics card takes a moment; do it while the window
     // opens rather than on the first frame.
     std::thread::spawn(|| gpu::get());
@@ -34,12 +49,29 @@ fn main() {
         set_dock_icon();
         ui::input::bind_keys(cx);
         ui::workspace::bind_keys(cx);
-        cx.bind_keys([gpui::KeyBinding::new("cmd-q", Quit, None)]);
+        cx.bind_keys([
+            gpui::KeyBinding::new("secondary-q", Quit, None),
+            #[cfg(not(target_os = "macos"))]
+            gpui::KeyBinding::new("alt-f4", Quit, None),
+        ]);
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+        // Closing the window quits, except on a Mac, where the app stays in
+        // the Dock as Mac apps do.
+        #[cfg(not(target_os = "macos"))]
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         cx.set_menus(vec![
             Menu {
                 name: "profold".into(),
-                items: vec![MenuItem::action("Quit", Quit)],
+                items: vec![
+                    MenuItem::action("Check for Updates…", ui::workspace::CheckForUpdates),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit", Quit),
+                ],
             },
             Menu {
                 name: "File".into(),
@@ -74,6 +106,12 @@ fn main() {
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(16.), px(15.))),
                 }),
+                // Linux asks the compositor for its own title bar; where it
+                // has none to give (GNOME on Wayland), the tab bar draws the
+                // window's buttons itself.
+                #[cfg(target_os = "linux")]
+                window_decorations: Some(gpui::WindowDecorations::Server),
+                app_id: Some("dev.profold".into()),
                 focus: true,
                 ..Default::default()
             },

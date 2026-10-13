@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-22.04, ubuntu-22.04-arm, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo bash scripts/linux-deps.sh
+
+      - name: Metal toolchain
+        if: runner.os == 'macOS'
+        run: xcrun -f metal || xcodebuild -downloadComponent MetalToolchain
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Viewer without the folding plugin
+        run: cargo build --locked --no-default-features
+
+  installers:
+    name: installer scripts
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: POSIX sh
+        run: |
+          sh -n install.sh
+          dash -n install.sh 2>/dev/null || true
+          shellcheck -s sh install.sh
+      - name: PowerShell
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors; exit 1 }

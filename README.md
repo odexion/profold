@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  <b><a href="#install">Install</a></b> · macOS · Linux · Windows · Apple silicon, Intel/AMD and ARM
+</p>
+
+<p align="center">
   <img src="docs/app-haemoglobin.png" alt="profold showing human deoxyhaemoglobin (4HHB) as a cartoon coloured by chain">
 </p>
 
@@ -20,6 +24,56 @@ Each tab holds its own, so a protein, a trajectory and caffeine can be open side
 by side. With the SimpleFold plugin, a fold tab folds a sequence with
 [Apple's SimpleFold](https://github.com/apple/ml-simplefold), then lays the
 prediction over the experiment and tells you how close it came.
+
+## Install
+
+**macOS and Linux**, in a terminal:
+
+```bash
+curl -LsSf https://github.com/odexion/profold/releases/latest/download/install.sh | sh
+```
+
+**Windows**, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/odexion/profold/releases/latest/download/install.ps1 | iex"
+```
+
+That's all. The installer picks the right build for your machine, shows a
+progress bar while it downloads, checks the download against its SHA-256 and
+installs profold for your user only, with no `sudo` and no administrator rights:
+
+| | Installs to | Start it from |
+| --- | --- | --- |
+| macOS | `~/Applications/profold.app`, plus `profold` in `~/.local/bin` | Applications, Spotlight, or `profold` |
+| Linux | `~/.local/bin/profold`, plus a launcher and icon | the applications menu, or `profold` |
+| Windows | `%LOCALAPPDATA%\Programs\profold`, on your `PATH` | the Start menu, or `profold` |
+
+Builds are made for **Apple silicon and Intel Macs**, **x86-64 and ARM64
+Linux** (glibc 2.35 or newer, such as Ubuntu 22.04+, Debian 12+, Fedora 36+)
+and **x86-64 and ARM64 Windows 10/11**. On a Mac, installing this way never
+shows the "unidentified developer" warning, because nothing downloaded by
+`curl` is quarantined.
+
+**Updates.** profold checks for a new release when it starts (at most once a
+day), downloads it in the background and shows **Restart to update** in the tab
+bar. The version is at the right of the tab bar; click it to check for updates
+yourself or to turn the automatic check off. To install a particular version,
+set `PROFOLD_VERSION=0.2.0` before running the installer.
+
+<details>
+<summary>Uninstalling</summary>
+
+- **macOS:** delete `~/Applications/profold.app` and `~/.local/bin/profold`.
+- **Linux:** delete `~/.local/bin/profold`,
+  `~/.local/share/applications/dev.profold.desktop` and
+  `~/.local/share/icons/hicolor/256x256/apps/dev.profold.png`.
+- **Windows:** delete `%LOCALAPPDATA%\Programs\profold` and the *profold*
+  shortcut in the Start menu, and remove that folder from your user `PATH`.
+
+Settings, the folding environment and its weights live in `~/.profold` (and
+`~/.cache/torch`); delete those too to remove everything.
+</details>
 
 ## Highlights
 
@@ -240,9 +294,21 @@ by default. `cargo build --no-default-features` builds the viewer on its own.
 
 SimpleFold is a Python package, so the first fold sets up a private environment
 under `~/.profold`: a shallow clone of `apple/ml-simplefold`, a Python 3.11
-virtualenv, and on Apple silicon the MLX backend and ESM. It needs
-[`uv`](https://docs.astral.sh/uv/) on the system (`brew install uv`) and it
-downloads several gigabytes, once. Progress streams into the left panel.
+virtualenv, ESM, and on Apple silicon the MLX backend. It downloads several
+gigabytes, once, and progress streams into the left panel. It needs `git` and
+[`uv`](https://docs.astral.sh/uv/) on the system:
+
+| | Install uv with |
+| --- | --- |
+| macOS | `brew install uv`, or `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Linux | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| Windows | `winget install astral-sh.uv` (and `winget install Git.Git` for git) |
+
+Where it runs depends on the machine. On Apple silicon it runs on the GPU
+through MLX. On Linux and Windows with an NVIDIA card it runs on CUDA, since
+uv picks the matching PyTorch build for the driver it finds. Anywhere else (an
+Intel Mac, an AMD or Intel GPU, no GPU at all) it runs on the CPU, which works
+but is slow. Pick the 100M model there.
 
 Model size (100M through 3B), step count and pLDDT are on the fold tab's panel.
 100M at 200 steps is the quick setting. Larger models are slower and better.
@@ -301,11 +367,46 @@ Without the folding plugin:
 cargo run --release --no-default-features
 ```
 
-Requires the Xcode Metal toolchain, which GPUI compiles shaders with:
+On **macOS** it needs the Xcode Metal toolchain, which GPUI compiles shaders
+with:
 
 ```bash
 xcodebuild -downloadComponent MetalToolchain
 ```
+
+On **Linux** it needs the development packages GPUI builds against. For
+Debian and Ubuntu, [`scripts/linux-deps.sh`](scripts/linux-deps.sh) installs
+them (`sudo bash scripts/linux-deps.sh`). On Fedora:
+
+```bash
+sudo dnf install gcc clang pkg-config libxkbcommon-x11-devel wayland-devel libxcb-devel fontconfig-devel freetype-devel vulkan-loader alsa-lib-devel openssl-devel
+```
+
+On **Windows** it needs the MSVC build tools (Visual Studio's *Desktop
+development with C++*), and on Windows on ARM also LLVM (`winget install
+LLVM.LLVM`).
+
+`scripts/package.sh <target>` builds the archive a release ships for one
+platform, such as `scripts/package.sh aarch64-apple-darwin`.
+
+## Releasing
+
+Releases are built by GitHub Actions
+([`.github/workflows/release.yml`](.github/workflows/release.yml)) for six
+targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+`x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc`. To make one, set the
+version in `Cargo.toml`, commit, and push a matching tag:
+
+```bash
+git tag v0.2.0 && git push origin main v0.2.0
+```
+
+The workflow checks that the tag matches `Cargo.toml`, builds and smoke-tests
+every target, and publishes the release with the archives, their `.sha256`
+files, `install.sh` and `install.ps1`. Installed copies see it the next time
+they check. Only these builds update themselves: a build from source shows its
+version and says when a release is out, but never overwrites itself.
 
 The pictures in this README are drawn by the renderer itself. To redraw them
 into `docs/`:
@@ -328,6 +429,7 @@ cargo test --release readme_gallery -- --ignored
 | [`render.rs`](src/render.rs) | Scene building, camera, and the software rasterizer |
 | [`gpu.rs`](src/gpu.rs), [`gpu.wgsl`](src/gpu.wgsl) | The same drawing on the graphics card, with wgpu |
 | [`settings.rs`](src/settings.rs) | Preferences kept between sessions |
+| [`update.rs`](src/update.rs) | Checking GitHub releases, and replacing the app with a new one |
 | [`fetch.rs`](src/fetch.rs) | Input classification, RCSB / AlphaFold / UniProt / PubChem |
 | [`search.rs`](src/search.rs) | Search by name across the PDB, UniProt and PubChem, and the ranking |
 | [`plugins/simplefold/`](src/plugins/simplefold/) | The folding plugin: jobs, settings, and the SimpleFold subprocess |

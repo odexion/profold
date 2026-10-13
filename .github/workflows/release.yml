@@ -1,0 +1,121 @@
+# Push a tag `vX.Y.Z` matching the version in Cargo.toml and this builds
+# profold for every platform and publishes a GitHub release with the
+# archives, their checksums and the two installers. Installed copies find it
+# through the GitHub API and offer to restart into it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-14 }
+          # Built on Apple silicon too; the Intel runners are going away.
+          - { target: x86_64-apple-darwin, os: macos-14 }
+          # 22.04's glibc 2.35, so the binary runs on older distributions too.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-2022 }
+          - { target: aarch64-pc-windows-msvc, os: windows-11-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: The tag matches Cargo.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo bash scripts/linux-deps.sh
+
+      - name: Metal toolchain
+        if: runner.os == 'macOS'
+        run: xcrun -f metal || xcodebuild -downloadComponent MetalToolchain
+
+      # ring compiles its assembly with clang on Windows on ARM.
+      - name: LLVM on the path
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: bash
+        run: echo "C:\\Program Files\\LLVM\\bin" >> "$GITHUB_PATH"
+
+      - name: Package
+        shell: bash
+        run: bash scripts/package.sh ${{ matrix.target }}
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            *apple-darwin) bin=profold.app/Contents/MacOS/profold ;;
+            *windows*) bin=profold.exe ;;
+            *) bin=profold ;;
+          esac
+          mkdir smoke && tar -xzf dist/profold-${{ matrix.target }}.tar.gz -C smoke
+          # An Intel binary runs under Rosetta on the Apple silicon runner.
+          ./smoke/$bin --version | tee version.txt
+          grep -q "profold ${TAG#v}" version.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: profold-${{ matrix.target }}
+          path: dist/profold-${{ matrix.target }}.tar.gz*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp install.sh install.ps1 dist/
+          ls -l dist
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "profold ${TAG#v}" --generate-notes --verify-tag
+          fi

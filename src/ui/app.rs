@@ -3767,7 +3767,11 @@ impl Viewer {
             Mode::View => [
                 "Nothing loaded",
                 "Search for a protein or molecule by name, paste an identifier,",
-                "drop a structure file here, or open one with ⌘O",
+                if cfg!(target_os = "macos") {
+                    "drop a structure file here, or open one with ⌘O"
+                } else {
+                    "drop a structure file here, or open one with Ctrl+O"
+                },
             ],
             Mode::Fold => [
                 "Nothing folded yet",
