@@ -830,7 +830,13 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel::<Event>();
         drop(rx);
         let started = std::time::Instant::now();
-        let result = run(Path::new("/bin/sleep"), &["30"], Path::new("/"), &[], &tx);
+        // Something that runs for half a minute, on each system.
+        let (program, args): (&str, &[&str]) = if cfg!(windows) {
+            (r"C:\Windows\System32\PING.EXE", &["-n", "30", "127.0.0.1"])
+        } else {
+            ("/bin/sleep", &["30"])
+        };
+        let result = run(Path::new(program), args, &std::env::temp_dir(), &[], &tx);
         assert!(result.is_err_and(|e| e.to_string() == "cancelled"));
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }

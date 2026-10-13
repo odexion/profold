@@ -24,10 +24,10 @@ REPO="odexion/profold"
 if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
     BOLD=$(printf '\033[1m'); DIM=$(printf '\033[2m'); RESET=$(printf '\033[0m')
     RED=$(printf '\033[31m'); GREEN=$(printf '\033[32m'); YELLOW=$(printf '\033[33m')
-    BLUE=$(printf '\033[34m'); MAGENTA=$(printf '\033[35m'); CYAN=$(printf '\033[36m')
+    MAGENTA=$(printf '\033[35m'); CYAN=$(printf '\033[36m')
     FANCY=1
 else
-    BOLD=""; DIM=""; RESET=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; MAGENTA=""; CYAN=""
+    BOLD=""; DIM=""; RESET=""; RED=""; GREEN=""; YELLOW=""; MAGENTA=""; CYAN=""
     FANCY=""
 fi
 
@@ -196,7 +196,9 @@ install_macos() {
     xattr -dr com.apple.quarantine "$app" 2>/dev/null || true
     # So Spotlight and Launchpad find it straight away.
     lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-    [ -x "$lsregister" ] && "$lsregister" -f "$app" >/dev/null 2>&1 || true
+    if [ -x "$lsregister" ]; then
+        "$lsregister" -f "$app" >/dev/null 2>&1 || true
+    fi
     ok "installed ${BOLD}$app${RESET}"
 
     cat >"$bin_dir/profold" <<EOF
@@ -243,8 +245,9 @@ Categories=Science;Chemistry;Biology;Education;
 Keywords=protein;molecule;PDB;structure;crystal;trajectory;
 StartupWMClass=dev.profold
 EOF
-    command -v update-desktop-database >/dev/null 2>&1 &&
+    if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database -q "$data/applications" 2>/dev/null || true
+    fi
     ok "added profold to the applications menu"
 
     # GPUI loads these at run time; say which are missing rather than
