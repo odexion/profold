@@ -37,6 +37,9 @@ pub enum Event {
     /// Transient status, replacing whatever came before it.
     Progress(Progress),
     Finished(anyhow::Result<Outcome>),
+    /// Nothing to report: sent only to find out whether anyone still listens.
+    #[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
+    Heartbeat,
 }
 
 impl Progress {

@@ -219,8 +219,9 @@ fn search_pdb(query: &str) -> Result<Vec<Hit>> {
                 .iter()
                 .position(|id| *id == e.id)
                 .map_or(0.0, |rank| 0.6 * (1.0 - rank as f32 / n));
-            let classic = if earliest.contains(&e.id) { 0.7 } else { 0.0 };
+            let classic = if earliest.contains(&e.id) { 1.0 } else { 0.0 };
             let score = title_score + name_score + relevance + classic + e.quality
+                - variation(&e.title)
                 // Most who ask for a protein by name mean the human one.
                 + if e.detail.starts_with("Homo sapiens") { 0.25 } else { 0.0 };
             e.hit(score, title_exact || name_exact)
@@ -553,10 +554,18 @@ pub fn compound_title(cid: u64) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Words that say nothing about which molecule is meant.
-const STOP: [&str; 22] = [
+const STOP: [&str; 33] = [
     "a", "an", "the", "of", "in", "from", "with", "and", "for", "by", "to", "at",
     "structure", "structures", "crystal", "crystallographic", "solution", "nmr",
-    "x", "ray", "chain", "subunit",
+    "x", "ray", "chain", "subunit", "refinement", "refined", "resolution",
+    "angstrom", "angstroms", "analysis", "determination", "three", "dimensional",
+    "high", "form",
+];
+
+/// Words that name a chain or a state of the molecule rather than another
+/// molecule: haemoglobin's alpha chain or its deoxy form is still haemoglobin.
+const NEUTRAL: [&str; 10] = [
+    "alpha", "beta", "gamma", "delta", "deoxy", "oxy", "apo", "holo", "native", "wild",
 ];
 
 /// The databases index American spellings, and the PDB's text search finds
@@ -599,6 +608,22 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// How much a title says the entry is a variation on the molecule rather
+/// than the molecule: a mutant, a complex, a fragment. Asked for by name,
+/// the plain one is wanted.
+fn variation(title: &str) -> f32 {
+    const MARKS: [&str; 12] = [
+        "mutant", "variant", "complex", "complexed", "inhibitor", "bound",
+        "fragment", "domain", "analog", "analogue", "fusion", "engineered",
+    ];
+    let lower = title.to_lowercase();
+    let found = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| MARKS.contains(w))
+        .count();
+    0.35 * found.min(2) as f32
+}
+
 /// The words of a PDB title, after the experiment and the conditions are
 /// taken off: "Crystal structure of X in complex with Y at 2 Å" is about X.
 fn subject_words(title: &str) -> Vec<String> {
@@ -626,7 +651,7 @@ fn matching(wanted: &[String], name: &[String]) -> (f32, bool) {
         // molecule; a letter asked for ("vitamin C") still has to be there.
         let extra = name
             .iter()
-            .filter(|n| n.chars().count() > 1 && !wanted.contains(n))
+            .filter(|n| n.chars().count() > 1 && !wanted.contains(n) && !NEUTRAL.contains(&n.as_str()))
             .count();
         if extra == 0 {
             return (3.0, true);

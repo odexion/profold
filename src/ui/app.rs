@@ -144,6 +144,12 @@ pub struct Viewer {
     input: Entity<TextInput>,
     /// The text `detected` was worked out from.
     typed: String,
+    /// How what is loaded was opened, as something `reopen` takes: a path,
+    /// an identifier, or `sample:` and a sample's file name. The window
+    /// keeps these to reopen its tabs at the next launch.
+    origin: Option<String>,
+    /// The same for the job under way, until it succeeds.
+    opening: Option<String>,
     detected: Input,
 
     /// Search results for what is in the field, while it holds a name or a
@@ -159,6 +165,8 @@ pub struct Viewer {
     highlight: usize,
     /// Whether the results list is showing.
     dropdown: bool,
+    /// The results list's scroll, so the highlighted row stays in view.
+    results_scroll: gpui::ScrollHandle,
     /// Return was pressed before the results came; the best is opened once
     /// they do.
     open_when_found: bool,
@@ -276,6 +284,8 @@ impl Viewer {
             focus,
             input,
             typed: String::new(),
+            origin: None,
+            opening: None,
             detected: Input::Empty,
             hits: Vec::new(),
             hits_for: String::new(),
@@ -284,6 +294,7 @@ impl Viewer {
             search_error: None,
             highlight: 0,
             dropdown: false,
+            results_scroll: gpui::ScrollHandle::new(),
             open_when_found: false,
             structure: None,
             compare: None,
@@ -449,6 +460,13 @@ impl Viewer {
             let last = self.hits.len() as isize - 1;
             self.highlight = (self.highlight as isize + by).clamp(0, last) as usize;
         }
+        // The list's children are the rows with a heading before each
+        // group, so the row's place counts the headings above it.
+        let i = self.highlight;
+        let headings = (0..=i)
+            .filter(|&k| k == 0 || self.hits[k].kind != self.hits[k - 1].kind)
+            .count();
+        self.results_scroll.scroll_to_item(i + headings);
         cx.notify();
     }
 
@@ -504,6 +522,7 @@ impl Viewer {
         matched: usize,
         cx: &mut Context<Self>,
     ) {
+        self.origin = None;
         reference.tint = Some(align::REFERENCE_TINT);
         prediction.tint = Some(align::PREDICTION_TINT);
         self.coloring = Coloring::Pair;
@@ -566,6 +585,7 @@ impl Viewer {
         self.progress = None;
         match result {
             Ok(s) => {
+                self.origin = self.opening.take();
                 let frames = s.frame_count();
                 self.note(format!(
                     "{} · {} atoms{}",
@@ -580,6 +600,7 @@ impl Viewer {
                 self.show(s, cx);
             }
             Err(e) => {
+                self.opening = None;
                 self.error = Some(format!("{e:#}").into());
                 cx.notify();
             }
@@ -717,6 +738,7 @@ impl Viewer {
                             let _ = this.update(cx, |this, _| this.progress = Some(p));
                             dirty = true;
                         }
+                        Ok(Event::Heartbeat) => {}
                         Ok(Event::Finished(result)) => {
                             done = Some(result);
                             break;
@@ -765,6 +787,10 @@ impl Viewer {
             return;
         }
         self.error = None;
+        self.opening = Some(match &what {
+            Retrieval::Pdb(id) | Retrieval::AlphaFold(id) => id.clone(),
+            Retrieval::PubChem(cid) => format!("CID {cid}"),
+        });
         // Without a model, an accession can still be predicted; say where.
         let hint = cfg!(feature = "simplefold") && matches!(what, Retrieval::AlphaFold(_));
         self.run_job(
@@ -791,6 +817,8 @@ impl Viewer {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let absolute = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        self.opening = Some(absolute.to_string_lossy().into_owned());
         self.run_job(
             "Opening",
             move |tx| {
@@ -810,6 +838,7 @@ impl Viewer {
             return;
         };
         self.error = None;
+        self.opening = Some(format!("sample:{}", sample.file));
         self.run_job(
             "Opening",
             move |_| {
@@ -1157,6 +1186,34 @@ impl Viewer {
                 cx.notify();
             });
         }));
+    }
+
+    /// How what is loaded was opened, for reopening it at the next launch.
+    pub fn origin(&self) -> Option<&str> {
+        // What is still being opened counts: a session saved mid-download
+        // should not forget the tab.
+        match &self.opening {
+            Some(opening) if self.busy.is_some() => Some(opening),
+            _ => self.origin.as_deref().filter(|_| self.structure.is_some()),
+        }
+    }
+
+    /// Open again what `origin` described.
+    pub fn reopen(&mut self, origin: &str, cx: &mut Context<Self>) {
+        if let Some(file) = origin.strip_prefix("sample:") {
+            if let Some(i) = SAMPLES.iter().position(|s| s.file == file) {
+                self.open_sample(i, cx);
+            }
+            return;
+        }
+        let path = PathBuf::from(origin);
+        if path.is_absolute() {
+            if path.is_file() {
+                self.open_path(path, cx);
+            }
+            return;
+        }
+        self.open(origin, cx);
     }
 
     /// Put text in the field as though it had been typed.
@@ -1579,6 +1636,17 @@ fn spec(field: &str, value: String, mono: bool) -> impl IntoElement {
                 .text_color(theme::INK)
                 .child(value),
         )
+}
+
+/// Text cut to a number of characters with an ellipsis. gpui measures a
+/// line that does not wrap once, at its full width, and keeps that size, so
+/// its own ellipsis never appears in a flexible row; this does it by count.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 /// 12 as ₁₂, for chemical formulae.
@@ -2445,13 +2513,14 @@ impl Viewer {
                                     .child(hit.label()),
                             )
                             .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(12.))
-                                    .text_color(theme::INK)
-                                    .child(hit.title.clone()),
+                                div().flex_1().min_w_0().overflow_hidden().child(
+                                    div()
+                                        .w_full()
+                                        .truncate()
+                                        .text_size(px(12.))
+                                        .text_color(theme::INK)
+                                        .child(clip(&hit.title, if i == 0 { 50 } else { 62 })),
+                                ),
                             )
                             .when(i == 0, |d| {
                                 d.child(
@@ -2464,12 +2533,14 @@ impl Viewer {
                             }),
                     )
                     .child(
-                        div()
-                            .pl(px(104.))
-                            .truncate()
-                            .text_size(px(10.5))
-                            .text_color(theme::FAINT)
-                            .child(hit.detail.clone()),
+                        div().pl(px(104.)).w_full().overflow_hidden().child(
+                            div()
+                                .w_full()
+                                .truncate()
+                                .text_size(px(10.5))
+                                .text_color(theme::FAINT)
+                                .child(clip(&hit.detail, 72)),
+                        ),
                     )
                     .on_mouse_move(cx.listener(move |this, _, _, cx| {
                         if this.highlight != i {
@@ -2495,6 +2566,7 @@ impl Viewer {
             .top(px(44.))
             .left(px(20.))
             .id("results")
+            .track_scroll(&self.results_scroll)
             .w(px(520.))
             .max_h(px(560.))
             .p(px(4.))
@@ -3704,6 +3776,15 @@ impl Viewer {
                 "Paste a protein sequence, or a PDB ID or UniProt accession",
                 "to fold its chains. The prediction appears here.",
             ],
+        }
+    }
+
+    /// Stop trajectory playback, as when the tab goes behind another: a
+    /// hidden tab has no one to play to.
+    pub fn pause(&mut self, cx: &mut Context<Self>) {
+        if self.playing {
+            self.stop_playing();
+            cx.notify();
         }
     }
 

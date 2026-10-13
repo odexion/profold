@@ -26,6 +26,10 @@ pub fn model_label(name: &str) -> &str {
     name.trim_start_matches("simplefold_")
 }
 
+/// The Python the folding environment is built on. SimpleFold asks for 3.10
+/// or later; 3.11 is the oldest whose SciPy wheels load on current macOS.
+const PYTHON: &str = "3.11";
+
 pub struct Engine {
     pub root: PathBuf,
 }
@@ -93,7 +97,22 @@ impl Engine {
     }
 
     pub fn is_installed(&self) -> bool {
-        self.cli().exists()
+        self.cli().exists() && self.venv_is_current()
+    }
+
+    /// Whether the environment runs the Python this version of profold sets
+    /// up. Early versions used 3.10, whose last SciPy no longer loads on
+    /// recent macOS (dyld rejects how its extensions lay out thread-local
+    /// storage), so a 3.10 environment is rebuilt.
+    fn venv_is_current(&self) -> bool {
+        let Ok(cfg) = std::fs::read_to_string(self.venv().join("pyvenv.cfg")) else {
+            return false;
+        };
+        cfg.lines()
+            .filter_map(|l| l.split_once('='))
+            .filter(|(k, _)| matches!(k.trim(), "version_info" | "version"))
+            .map(|(_, v)| v.trim())
+            .any(|v| v == PYTHON || v.starts_with(&format!("{PYTHON}.")))
     }
 
     /// Clone the repository and build the virtualenv. Blocking; run off the
@@ -124,14 +143,19 @@ impl Engine {
             )?;
         }
 
+        if self.python().exists() && !self.venv_is_current() {
+            stage(tx, &format!("Rebuilding the Python environment on {PYTHON}…"));
+            std::fs::remove_dir_all(self.venv())
+                .with_context(|| format!("removing {}", self.venv().display()))?;
+        }
         if !self.python().exists() {
-            stage(tx, "Creating a Python 3.10 environment…");
+            stage(tx, &format!("Creating a Python {PYTHON} environment…"));
             run(
                 &uv,
                 &[
                     "venv",
                     "--python",
-                    "3.10",
+                    PYTHON,
                     &self.venv().to_string_lossy(),
                 ],
                 &self.root,
@@ -528,7 +552,20 @@ fn run(
     let h1 = std::thread::spawn(move || pump(out, tx_out));
     let h2 = std::thread::spawn(move || pump(err, tx_err));
 
-    let status = child.wait()?;
+    // Wait, asking now and then whether anyone is still listening: when the
+    // tab that started the job is closed, its end of the channel goes, and
+    // a fold nobody will see is stopped rather than left to run for minutes.
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if tx.send(Event::Heartbeat).is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!("cancelled"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
     let _ = h1.join();
     let _ = h2.join();
 
@@ -571,5 +608,22 @@ fn pump<R: Read + Send + 'static>(r: R, tx: Sender<Event>) {
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cancel_tests {
+    use super::*;
+
+    /// A closed tab drops its end of the channel; the job's subprocess must
+    /// be stopped then, not left running.
+    #[test]
+    fn a_job_nobody_listens_to_is_stopped() {
+        let (tx, rx) = std::sync::mpsc::channel::<Event>();
+        drop(rx);
+        let started = std::time::Instant::now();
+        let result = run(Path::new("/bin/sleep"), &["30"], Path::new("/"), &[], &tx);
+        assert!(result.is_err_and(|e| e.to_string() == "cancelled"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

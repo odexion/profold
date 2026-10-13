@@ -93,6 +93,10 @@ fn main() {
                     if verb.as_deref() == Some("--fold") && targets.is_empty() {
                         this.add(ui::app::Mode::Fold, window, cx);
                     }
+                    // With nothing named, the tabs of last time come back.
+                    if targets.is_empty() && verb.is_none() {
+                        this.restore(window, cx);
+                    }
                     for (n, target) in targets.iter().enumerate() {
                         let path = std::path::PathBuf::from(target);
                         match verb.as_deref() {

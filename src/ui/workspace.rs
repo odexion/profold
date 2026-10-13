@@ -13,6 +13,7 @@ use gpui::{
     Task, Window,
 };
 
+use crate::settings;
 use crate::theme;
 use crate::ui::app::{menu, swallow, Mode, Viewer};
 
@@ -46,6 +47,7 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("cmd-o", OpenFile, None),
         gpui::KeyBinding::new("cmd-t", NewTab, None),
+        gpui::KeyBinding::new("cmd-shift-t", NewFoldTab, None),
         gpui::KeyBinding::new("cmd-w", CloseTab, None),
         gpui::KeyBinding::new("ctrl-tab", NextTab, None),
         gpui::KeyBinding::new("ctrl-shift-tab", PreviousTab, None),
@@ -71,6 +73,32 @@ pub struct Workspace {
     focus: FocusHandle,
     /// The open dialog, while it is up.
     prompt: Option<Task<()>>,
+    /// The tabs as last written to `session.json`, so it is written only
+    /// when they change.
+    saved: String,
+}
+
+/// A tab being dragged along the bar, by where it was.
+#[derive(Clone, Copy)]
+struct DraggedTab(usize);
+
+/// What follows the pointer while a tab is dragged: its name on a card.
+struct TabGhost(SharedString);
+
+impl Render for TabGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(12.))
+            .py(px(6.))
+            .rounded(px(7.))
+            .bg(theme::SURFACE)
+            .border_1()
+            .border_color(theme::BORDER)
+            .shadow_md()
+            .text_size(px(11.5))
+            .text_color(theme::INK)
+            .child(self.0.clone())
+    }
 }
 
 impl Workspace {
@@ -81,6 +109,7 @@ impl Workspace {
             adding: false,
             focus: cx.focus_handle(),
             prompt: None,
+            saved: String::new(),
         };
         this.add(Mode::View, window, cx);
         this
@@ -89,8 +118,16 @@ impl Workspace {
     /// Open a new tab beside the one in front, and bring it forward.
     pub fn add(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) -> Entity<Viewer> {
         let tab = cx.new(|cx| Viewer::new(mode, window, cx));
-        // The tab's name and activity show in the bar, which is drawn here.
-        cx.observe(&tab, |_, _, cx| cx.notify()).detach();
+        // The tab's name and activity show in the bar, which is drawn here,
+        // and what it has open goes into the session.
+        cx.observe(&tab, |this, _, cx| {
+            this.save(cx);
+            cx.notify();
+        })
+        .detach();
+        if let Some(behind) = self.tabs.get(self.active).cloned() {
+            behind.update(cx, |tab, cx| tab.pause(cx));
+        }
         let at = if self.tabs.is_empty() { 0 } else { self.active + 1 };
         self.tabs.insert(at, tab.clone());
         self.active = at;
@@ -98,6 +135,83 @@ impl Workspace {
         tab.update(cx, |tab, cx| tab.focus_input(window, cx));
         cx.notify();
         tab
+    }
+
+    /// Move a tab to another place in the bar, keeping the one in front.
+    fn move_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return;
+        }
+        let front = self.tabs[self.active].clone();
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        self.active = self.tabs.iter().position(|t| *t == front).unwrap_or(0);
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// What each tab has open, as JSON for `session.json`.
+    fn session(&self, cx: &App) -> String {
+        let tabs: Vec<serde_json::Value> = self
+            .tabs
+            .iter()
+            .map(|tab| {
+                let tab = tab.read(cx);
+                serde_json::json!({
+                    "mode": match tab.mode() { Mode::View => "view", Mode::Fold => "fold" },
+                    "open": tab.origin(),
+                })
+            })
+            .collect();
+        serde_json::to_string_pretty(&serde_json::json!({ "tabs": tabs, "active": self.active }))
+            .unwrap_or_default()
+    }
+
+    /// Write the tabs out if they have changed, to be reopened next launch.
+    fn save(&mut self, cx: &App) {
+        let json = self.session(cx);
+        if json == self.saved {
+            return;
+        }
+        if let Some(path) = settings::file("session.json") {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(path, &json);
+        }
+        self.saved = json;
+    }
+
+    /// Reopen the tabs of the last session. A tab whose file has gone, or
+    /// whose download fails, opens empty. Returns whether there was one.
+    pub fn restore(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(json) = settings::file("session.json")
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        else {
+            return false;
+        };
+        let entries = json.get("tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+        // A lone empty tab is what a new window has anyway.
+        if entries.is_empty() || (entries.len() == 1 && entries[0].get("open").is_none_or(|o| o.is_null())) {
+            return false;
+        }
+        self.tabs.clear();
+        self.active = 0;
+        for entry in &entries {
+            let mode = match entry.get("mode").and_then(|m| m.as_str()) {
+                Some("fold") if cfg!(feature = "simplefold") => Mode::Fold,
+                _ => Mode::View,
+            };
+            let tab = self.add(mode, window, cx);
+            if let Some(origin) = entry.get("open").and_then(|o| o.as_str()) {
+                let origin = origin.to_string();
+                tab.update(cx, |tab, cx| tab.reopen(&origin, cx));
+            }
+        }
+        let active = json.get("active").and_then(|a| a.as_u64()).unwrap_or(0) as usize;
+        self.activate(active.min(self.tabs.len() - 1), window, cx);
+        true
     }
 
     /// The tab in front.
@@ -109,8 +223,14 @@ impl Workspace {
         if i >= self.tabs.len() {
             return;
         }
+        if i != self.active {
+            if let Some(behind) = self.tabs.get(self.active).cloned() {
+                behind.update(cx, |tab, cx| tab.pause(cx));
+            }
+        }
         self.active = i;
         self.adding = false;
+        self.save(cx);
         let tab = self.tabs[i].clone();
         // An empty tab is there to be typed into; a full one, to be looked at.
         tab.update(cx, |tab, cx| {
@@ -130,6 +250,7 @@ impl Workspace {
             return;
         }
         self.tabs.remove(i);
+        self.save(cx);
         if self.tabs.is_empty() {
             self.add(Mode::View, window, cx);
             return;
@@ -266,6 +387,16 @@ impl Workspace {
                     .border_color(theme::BORDER)
             })
             .when(!front, |d| d.hover(|s| s.bg(theme::PAPER)))
+            // Dragged along the bar to reorder; dropped on another tab, it
+            // takes that tab's place.
+            .on_drag(DraggedTab(i), {
+                let title = title.clone();
+                move |_, _, _, cx| cx.new(|_| TabGhost(title.clone()))
+            })
+            .drag_over::<DraggedTab>(|style, _, _, _| style.bg(theme::BORDER))
+            .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
+                this.move_tab(dragged.0, i, cx);
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
@@ -409,7 +540,7 @@ impl Workspace {
                     })),
             )
             .child(
-                entry("new-fold", "Fold a protein", "predict a structure with SimpleFold", "")
+                entry("new-fold", "Fold a protein", "predict a structure with SimpleFold", "⇧⌘T")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.add(Mode::Fold, window, cx);
                     })),
@@ -550,6 +681,31 @@ mod tests {
         cx.simulate_keystrokes("cmd-w");
         // The last tab is emptied rather than closed.
         assert_eq!(tabs(&view, cx), (1, 0));
+    }
+
+    #[gpui::test]
+    fn tabs_reorder_and_describe_the_session(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        cx.simulate_keystrokes("cmd-t cmd-t");
+        view.update(cx, |this, cx| {
+            this.tabs[0].update(cx, |tab, cx| tab.reopen("sample:caffeine.sdf", cx));
+        });
+        cx.run_until_parked();
+        let first = view.update(cx, |this, _| this.tabs[0].clone());
+
+        // Drag the first tab onto the last.
+        let from = cx.debug_bounds("tab-0").unwrap().center();
+        let to = cx.debug_bounds("tab-2").unwrap().center();
+        cx.simulate_mouse_down(from, gpui::MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(from + gpui::point(px(12.), px(0.)), gpui::MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(to, gpui::MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(to, gpui::MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        let moved = view.update(cx, |this, _| this.tabs[2].clone());
+        assert_eq!(moved, first, "the dragged tab did not move");
+
+        let session = view.update(cx, |this, cx| this.session(cx));
+        assert!(session.contains("sample:caffeine.sdf"), "{session}");
     }
 
     #[cfg(feature = "simplefold")]

@@ -95,6 +95,8 @@ One field takes everything, and the app works out what you gave it:
 | `CID 2519`: a PubChem compound | Downloads its 3D conformer from PubChem |
 | `MVLSPADKTNVK…`: residue letters, FASTA and all | Finds PDB entries with that sequence |
 
+<img src="docs/app-search.png" alt="Searching for green fluorescent protein: PDB structures, AlphaFold models and PubChem molecules, best match first">
+
 A search lists what it finds as you type, grouped by database: experimental
 structures, predicted models, and molecules. Return opens the best match, the
 arrow keys or a click another one. The databases rank by their own relevance,
@@ -105,11 +107,15 @@ human proteins. A name that is a molecule's, like *caffeine* or *aspirin*, puts
 PubChem first. A compound without a 3D conformer, a peptide drug say, opens as
 PubChem's flat drawing.
 
-**Tabs.** ⌘T opens a tab, ⌘W closes it, ⌘1 to ⌘9 and ⌃Tab move between them.
+**Tabs.** ⌘T opens a tab, ⇧⌘T a fold tab, ⌘W closes one, and ⌘1 to ⌘9 and
+⌃Tab move between them. Drag a tab along the bar to reorder it. The tabs you
+had open come back at the next launch, reopened from their files and
+identifiers (a prediction is not kept, so a fold tab comes back empty).
 Whatever is opened, searched or dropped on the window goes into the tab in front
 and replaces what was there, as in a browser. Each tab keeps its own camera and
-trajectory playback, and a job in one tab carries on while you use another; its
-tab shows the progress.
+trajectory, which pauses when the tab goes behind another. A job in one tab
+carries on while you use another, and its tab shows the progress; closing the
+tab stops it.
 
 In the viewport: drag to orbit, shift-drag to pan, scroll to zoom, double-click
 to reframe. The molecule follows the pointer, so dragging right brings the near
@@ -233,7 +239,7 @@ Folding is a plugin, compiled in by the `simplefold` Cargo feature, which is on
 by default. `cargo build --no-default-features` builds the viewer on its own.
 
 SimpleFold is a Python package, so the first fold sets up a private environment
-under `~/.profold`: a shallow clone of `apple/ml-simplefold`, a Python 3.10
+under `~/.profold`: a shallow clone of `apple/ml-simplefold`, a Python 3.11
 virtualenv, and on Apple silicon the MLX backend and ESM. It needs
 [`uv`](https://docs.astral.sh/uv/) on the system (`brew install uv`) and it
 downloads several gigabytes, once. Progress streams into the left panel.

@@ -35,11 +35,16 @@ impl Default for Settings {
 }
 
 fn path() -> Option<PathBuf> {
+    file("settings.json")
+}
+
+/// A file of profold's own under `~/.profold`.
+pub fn file(name: &str) -> Option<PathBuf> {
     // Tests run the real app, and must not read or overwrite the real file.
     if cfg!(test) {
         return None;
     }
-    Some(dirs::home_dir()?.join(".profold").join("settings.json"))
+    Some(dirs::home_dir()?.join(".profold").join(name))
 }
 
 impl Settings {
