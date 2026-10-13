@@ -2035,22 +2035,20 @@ impl Viewer {
             .child(group(
                 options
                     .iter()
+                    // pLDDT means nothing without a predicted model, so it
+                    // is offered only for one.
+                    .filter(|c| **c != Coloring::Confidence || has_confidence)
                     .map(|c| {
                         let c = *c;
-                        // pLDDT means nothing without a predicted model.
-                        let enabled = c != Coloring::Confidence || has_confidence;
                         let name = match c {
                             Coloring::Chain if !polymer => "Molecule",
                             _ => c.label(),
                         };
                         pill_keyed(("colour", c as usize), name, c == coloring)
-                            .when(!enabled, |d| d.text_color(theme::FAINT))
-                            .when(enabled, |d| d.cursor_pointer())
+                            .cursor_pointer()
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                if enabled {
-                                    this.coloring = c;
-                                    this.rebuild(cx);
-                                }
+                                this.coloring = c;
+                                this.rebuild(cx);
                             }))
                             .into_any_element()
                     })

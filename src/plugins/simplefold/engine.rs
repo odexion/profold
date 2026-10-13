@@ -6,7 +6,7 @@
 //! streams its output back so the UI can show what is happening.
 
 use anyhow::{anyhow, Context, Result};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
@@ -520,7 +520,34 @@ fn newest_structure(dir: &Path, since: std::time::SystemTime) -> Option<PathBuf>
 
 /// Announce a phase in our own words, rather than the subprocess's.
 fn stage(tx: &Sender<Event>, msg: &str) {
+    STAGE.with_borrow_mut(|s| *s = msg.to_string());
     let _ = tx.send(Event::Stage(msg.to_string()));
+}
+
+thread_local! {
+    /// The stage the job on this thread last announced, to go back to once a
+    /// download inside a step is over.
+    static STAGE: std::cell::RefCell<String> = Default::default();
+}
+
+/// The total size, when a progress line is a download rather than work:
+/// curl's transfer table, or a tqdm bar counting bytes ("31M/5.29G").
+fn download_size(line: &str) -> Option<String> {
+    let f: Vec<&str> = line.split_whitespace().collect();
+    if f.len() >= 10
+        && f[f.len() - 2].matches(':').count() == 2
+        && f[f.len() - 3].matches(':').count() == 2
+        && f[0].parse::<f32>().is_ok()
+    {
+        return Some(f[1].to_string());
+    }
+    let bytes = |s: &str| {
+        let s = s.trim_end_matches('B');
+        s.ends_with(['k', 'K', 'M', 'G', 'T']) && s[..s.len() - 1].parse::<f32>().is_ok()
+    };
+    let counts = line.rsplit('|').next()?.split_whitespace().next()?;
+    let (done, total) = counts.split_once('/')?;
+    (bytes(done) && bytes(total)).then(|| total.trim_end_matches('B').to_string() + "B")
 }
 
 /// Run a command, streaming stdout and stderr as events.
@@ -549,8 +576,10 @@ fn run(
     let err = child.stderr.take().unwrap();
     let tx_out = tx.clone();
     let tx_err = tx.clone();
-    let h1 = std::thread::spawn(move || pump(out, tx_out));
-    let h2 = std::thread::spawn(move || pump(err, tx_err));
+    let label = STAGE.with_borrow(|s| s.clone());
+    let label_err = label.clone();
+    let h1 = std::thread::spawn(move || pump(out, tx_out, label));
+    let h2 = std::thread::spawn(move || pump(err, tx_err, label_err));
 
     // Wait, asking now and then whether anyone is still listening: when the
     // tab that started the job is closed, its end of the channel goes, and
@@ -581,39 +610,108 @@ fn run(
 
 /// Split on both newlines and carriage returns so that progress bars, which
 /// rewrite a single line, arrive as `Progress` rather than flooding the log.
-fn pump<R: Read + Send + 'static>(r: R, tx: Sender<Event>) {
-    let mut reader = BufReader::new(r);
-    let mut chunk: Vec<u8> = Vec::new();
+///
+/// A step can stop to download what it needs (SimpleFold fetches ESM2's
+/// weights, 5.3 GB, the first time it folds), and saying "Folding" through
+/// hours of that would be untrue. So a bar that counts bytes changes the
+/// stage to a download, and the first bar after it that does not puts back
+/// `label`, what the step was announced as.
+fn pump<R: Read + Send + 'static>(mut r: R, tx: Sender<Event>, label: String) {
+    let mut downloading = false;
+    // A bar rewrites its line with carriage returns and may never end one
+    // with a newline until it finishes, so the output is cut at either as it
+    // arrives rather than read a line at a time.
+    let mut line: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 8192];
+    // Whether the line under way has been rewritten, which makes it a bar.
+    let mut rewritten = false;
     loop {
-        chunk.clear();
-        match reader.read_until(b'\n', &mut chunk) {
+        let n = match r.read(&mut buf) {
             Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        let text = String::from_utf8_lossy(&chunk);
-        // A progress bar rewrites one line with carriage returns; only the last
-        // segment of such a chunk is current, and none of it belongs in the log.
-        let rewritten = text.trim_end_matches('\n').contains('\r');
-        for part in text.split('\r') {
-            let line = part.trim_end();
-            if line.trim().is_empty() {
+            Ok(n) => n,
+        };
+        for &b in &buf[..n] {
+            if b != b'\r' && b != b'\n' {
+                line.push(b);
                 continue;
             }
-            let event = if rewritten {
-                Event::Progress(job::parse(line))
+            let bar = rewritten || b == b'\r';
+            let text = String::from_utf8_lossy(&line).trim_end().to_string();
+            line.clear();
+            rewritten = b == b'\r';
+            if text.trim().is_empty() {
+                continue;
+            }
+            if bar {
+                match download_size(&text) {
+                    Some(size) if !downloading => {
+                        downloading = true;
+                        let _ = tx.send(Event::Stage(format!(
+                            "Downloading model weights ({size}), needed once"
+                        )));
+                    }
+                    None if downloading => {
+                        downloading = false;
+                        if !label.is_empty() {
+                            let _ = tx.send(Event::Stage(label.clone()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let event = if bar {
+                Event::Progress(job::parse(&text))
             } else {
-                Event::Log(line.to_string())
+                Event::Log(text)
             };
             if tx.send(event).is_err() {
                 return;
             }
         }
     }
+    let rest = String::from_utf8_lossy(&line).trim().to_string();
+    if !rest.is_empty() {
+        let _ = tx.send(Event::Log(rest));
+    }
 }
 
 #[cfg(test)]
-mod cancel_tests {
+mod tests {
     use super::*;
+
+    /// tqdm rewrites one line with carriage returns and ends it only when
+    /// done; each rewrite must arrive as it happens, and a download must say
+    /// it is one.
+    #[test]
+    fn bars_arrive_without_newlines() {
+        let out = "Loading\n  1%|  | 30.8M/5.29G [01:03<4:31:57, 346kB/s]\r  2%|  | 61.0M/5.29G [01:30<4:00:00, 350kB/s]\r";
+        let (tx, rx) = std::sync::mpsc::channel::<Event>();
+        pump(out.as_bytes(), tx, "Folding".into());
+        let events: Vec<String> = rx
+            .try_iter()
+            .map(|e| match e {
+                Event::Stage(s) => format!("stage {s}"),
+                Event::Log(l) => format!("log {l}"),
+                Event::Progress(p) => format!("progress {:?}", p.fraction),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(events[0], "log Loading");
+        assert_eq!(events[1], "stage Downloading model weights (5.29GB), needed once");
+        assert_eq!(events[2], "progress Some(0.01)");
+        assert_eq!(events[3], "progress Some(0.02)");
+        assert_eq!(events.len(), 4, "{events:?}");
+    }
+
+    #[test]
+    fn downloads_are_told_from_work() {
+        let esm = "  1%|          | 30.8M/5.29G [01:03<4:31:57, 346kB/s]";
+        assert_eq!(download_size(esm).as_deref(), Some("5.29GB"));
+        let curl = " 42  400M   42  168M    0     0  12.1M      0  0:00:33  0:00:13  0:00:20 12.5M";
+        assert_eq!(download_size(curl).as_deref(), Some("400M"));
+        let fold = " 30%|###       | 60/200 [00:07<00:16,  8.43it/s]";
+        assert_eq!(download_size(fold), None);
+    }
 
     /// A closed tab drops its end of the channel; the job's subprocess must
     /// be stopped then, not left running.
