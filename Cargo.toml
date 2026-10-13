@@ -2,6 +2,9 @@
 name = "profold"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "A molecular viewer for proteins, molecules, crystals and simulations, with structure prediction as a plugin"
+repository = "https://github.com/odexion/profold"
 
 [dependencies]
 gpui = "0.2.2"

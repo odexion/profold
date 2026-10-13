@@ -305,3 +305,12 @@ helices and its hairpin, ubiquitin's β-grasp, and porin's barrel at 55% sheet.
 
 The text field is adapted from GPUI's own `input.rs` example, with horizontal
 scrolling and change events added.
+
+## License
+
+profold is released under the [MIT License](LICENSE). Use of the app and the
+services it talks to is covered by the [Terms of Use](TERMS.md), which include
+how it handles your data (no telemetry; files stay on your machine). Credits
+for bundled data and dependencies, and the **research-only** license on
+SimpleFold's model weights, are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
