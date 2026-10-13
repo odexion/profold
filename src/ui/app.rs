@@ -1,4 +1,9 @@
-//! The root view: one input on the left, the molecule on the right.
+//! One tab: a search field and what is loaded on the left, the molecule on
+//! the right.
+//!
+//! A tab is a viewer, or, with the SimpleFold plugin, a place to fold a
+//! protein. The two share everything but the left panel: a viewer searches
+//! and fetches, a fold tab takes a sequence and shows the prediction.
 
 use std::cell::{Cell as Shared, RefCell};
 use std::collections::HashMap;
@@ -9,8 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, canvas, deferred, div, prelude::*, px, relative, Animation, AnimationExt, App,
-    Bounds, ClipboardItem, Context, Entity, ExternalPaths, FocusHandle, Focusable, MouseButton,
+    canvas, deferred, div, prelude::*, px, relative, Animation, AnimationExt, App,
+    Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, ScrollDelta,
     ScrollWheelEvent, SharedString, Task, Window,
 };
@@ -22,6 +27,7 @@ use crate::job::{self, Event, Outcome};
 use crate::protein::Structure;
 use crate::render::{self, Appearance, Camera, Coloring, Look, Palette, Repr, Scene, Species, Style};
 use crate::samples::SAMPLES;
+use crate::search::{self, Hit, Kind};
 use crate::settings::{self, Settings};
 use crate::theme;
 use crate::ui::input::{InputEvent, TextInput};
@@ -30,10 +36,20 @@ use crate::ui::viewer;
 #[cfg(feature = "simplefold")]
 use crate::plugins::simplefold::{self, SimpleFold};
 
-actions!(profold, [OpenFile]);
-
 const PANEL_WIDTH: f32 = 372.0;
-const TITLEBAR: f32 = 42.0;
+const TOOLBAR: f32 = 36.0;
+/// How long typing must pause before a search goes out.
+const SEARCH_DELAY: Duration = Duration::from_millis(320);
+
+/// What a tab is for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// Search, fetch and open structures, and look at them.
+    View,
+    /// Fold a sequence with the SimpleFold plugin and look at the result.
+    #[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
+    Fold,
+}
 /// Trajectory playback rate. Big systems play slower, at whatever pace the
 /// rasterizer keeps up with.
 const FRAME_INTERVAL: Duration = Duration::from_millis(60);
@@ -122,10 +138,30 @@ enum Dropdown {
     Image,
 }
 
-pub struct Profold {
+pub struct Viewer {
+    mode: Mode,
     focus: FocusHandle,
     input: Entity<TextInput>,
+    /// The text `detected` was worked out from.
+    typed: String,
     detected: Input,
+
+    /// Search results for what is in the field, while it holds a name or a
+    /// sequence.
+    hits: Vec<Hit>,
+    /// The text the hits answer.
+    hits_for: String,
+    /// The text being searched for, while a search runs.
+    searching: Option<String>,
+    search_task: Option<Task<()>>,
+    search_error: Option<SharedString>,
+    /// The row Return opens.
+    highlight: usize,
+    /// Whether the results list is showing.
+    dropdown: bool,
+    /// Return was pressed before the results came; the best is opened once
+    /// they do.
+    open_when_found: bool,
 
     structure: Option<Arc<Structure>>,
     /// The prediction laid over `structure`, when comparing.
@@ -193,18 +229,22 @@ pub struct Profold {
     task: Option<Task<()>>,
 }
 
-impl Profold {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let placeholder = if cfg!(feature = "simplefold") {
-            "PDB ID, UniProt accession, file path, or a sequence"
-        } else {
-            "PDB ID, UniProt accession, or file path"
+impl Viewer {
+    pub fn new(mode: Mode, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let placeholder = match mode {
+            Mode::View => "Search by name, or paste an ID",
+            Mode::Fold => "Sequence, PDB ID or accession",
         };
         let input = cx.new(|cx| TextInput::new(placeholder, cx));
         cx.subscribe_in(&input, window, |this, _, event, _window, cx| match event {
             InputEvent::Changed => this.reclassify(cx),
             InputEvent::Submit => this.submit(cx),
-            InputEvent::Cancel => {}
+            InputEvent::Cancel => {
+                this.dropdown = false;
+                cx.notify();
+            }
+            InputEvent::Up => this.step_highlight(-1, cx),
+            InputEvent::Down => this.step_highlight(1, cx),
         })
         .detach();
 
@@ -219,7 +259,7 @@ impl Profold {
                 window.focus(&this.focus);
                 cx.notify();
             }
-            InputEvent::Changed => {}
+            InputEvent::Changed | InputEvent::Up | InputEvent::Down => {}
         })
         .detach();
         // Clicking away from a field takes what was typed, as Return does.
@@ -232,9 +272,19 @@ impl Profold {
         let settings = Settings::load();
 
         Self {
+            mode,
             focus,
             input,
+            typed: String::new(),
             detected: Input::Empty,
+            hits: Vec::new(),
+            hits_for: String::new(),
+            searching: None,
+            search_task: None,
+            search_error: None,
+            highlight: 0,
+            dropdown: false,
+            open_when_found: false,
             structure: None,
             compare: None,
             fit: None,
@@ -295,9 +345,123 @@ impl Profold {
     // -- state ------------------------------------------------------------
 
     fn reclassify(&mut self, cx: &mut Context<Self>) {
-        self.detected = fetch::classify(self.input.read(cx).text());
+        let text = self.input.read(cx).text().to_string();
+        // Setting the text in code reports a change of its own afterwards.
+        if text == self.typed {
+            return;
+        }
+        self.typed = text.clone();
+        self.detected = fetch::classify(&text);
+        // A fold tab has nothing to search, so words that could be residues
+        // are residues there.
+        if self.mode == Mode::Fold {
+            if let Input::Query(_) | Input::Unknown = self.detected {
+                if let Some(seq) = fetch::as_sequence(&text, true) {
+                    self.detected = Input::Sequence(seq);
+                }
+            }
+        }
         self.error = None;
+        self.open_when_found = false;
+        match self.search_text() {
+            Some(query) if query == self.hits_for => self.dropdown = true,
+            Some(query) => self.schedule_search(query, SEARCH_DELAY, cx),
+            None => {
+                self.search_task = None;
+                self.searching = None;
+                self.dropdown = false;
+            }
+        }
         cx.notify();
+    }
+
+    /// What there is to search for in the field: words, or a sequence to
+    /// find in the PDB. Only a viewer searches.
+    fn search_text(&self) -> Option<String> {
+        if self.mode != Mode::View {
+            return None;
+        }
+        match &self.detected {
+            Input::Query(q) if q.chars().filter(|c| c.is_alphanumeric()).count() >= 3 => {
+                Some(q.clone())
+            }
+            Input::Sequence(seq) => Some(seq.clone()),
+            _ => None,
+        }
+    }
+
+    /// Search once typing has paused for `delay`. A newer search replaces
+    /// this one, and results for text no longer in the field are dropped.
+    fn schedule_search(&mut self, query: String, delay: Duration, cx: &mut Context<Self>) {
+        self.searching = Some(query.clone());
+        self.search_error = None;
+        let sequence = matches!(self.detected, Input::Sequence(_));
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let asked = query.clone();
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    if sequence {
+                        search::search_sequence(&asked)
+                    } else {
+                        search::search(&asked)
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.searching.as_deref() != Some(query.as_str()) {
+                    return;
+                }
+                this.searching = None;
+                match found {
+                    Ok(hits) => {
+                        this.hits = hits;
+                        this.hits_for = query;
+                        this.highlight = 0;
+                        this.dropdown = true;
+                        if std::mem::take(&mut this.open_when_found) && !this.hits.is_empty() {
+                            this.pick(0, cx);
+                        }
+                    }
+                    Err(e) => {
+                        this.hits.clear();
+                        this.hits_for = query;
+                        this.dropdown = true;
+                        this.open_when_found = false;
+                        this.search_error = Some(format!("{e:#}").into());
+                    }
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Move the highlighted result up or down, opening the list if it was
+    /// put away.
+    fn step_highlight(&mut self, by: isize, cx: &mut Context<Self>) {
+        if self.hits.is_empty() || self.search_text().as_deref() != Some(self.hits_for.as_str()) {
+            return;
+        }
+        if !self.dropdown {
+            self.dropdown = true;
+        } else {
+            let last = self.hits.len() as isize - 1;
+            self.highlight = (self.highlight as isize + by).clamp(0, last) as usize;
+        }
+        cx.notify();
+    }
+
+    /// Open a search result in this tab. What was typed stays in the field,
+    /// so another result is a click away.
+    fn pick(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(hit) = self.hits.get(i).cloned() else {
+            return;
+        };
+        self.highlight = i;
+        self.dropdown = false;
+        self.note(format!("{} · {}", hit.label(), hit.title));
+        self.retrieve(hit.retrieval(), cx);
     }
 
     fn note(&mut self, line: impl Into<SharedString>) {
@@ -429,12 +593,37 @@ impl Profold {
             return;
         }
         self.error = None;
+        if self.mode == Mode::Fold {
+            self.submit_fold(cx);
+            return;
+        }
         match self.detected.clone() {
             Input::Empty | Input::Unknown => {}
+            Input::Missing(path) => {
+                self.error = Some(format!("No file at {path}").into());
+                cx.notify();
+            }
             Input::File(path) => self.open_path(path, cx),
             Input::Pdb(id) => self.retrieve(Retrieval::Pdb(id), cx),
             Input::UniProt(acc) => self.retrieve(Retrieval::AlphaFold(acc), cx),
-            Input::Sequence(seq) => self.fold(seq, cx),
+            Input::Cid(cid) => self.retrieve(Retrieval::PubChem(cid), cx),
+            Input::Query(_) | Input::Sequence(_) => {
+                let Some(query) = self.search_text() else { return };
+                if query == self.hits_for && self.searching.is_none() {
+                    if self.hits.is_empty() {
+                        self.dropdown = true;
+                        cx.notify();
+                    } else {
+                        self.pick(self.highlight.min(self.hits.len() - 1), cx);
+                    }
+                } else {
+                    // Not back yet, or still waiting out the typing pause:
+                    // go now, and open the best when it comes.
+                    self.open_when_found = true;
+                    self.schedule_search(query, Duration::ZERO, cx);
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -444,20 +633,6 @@ impl Profold {
             self.note(note);
         }
         self.run_job(job.stage, job.work, cx);
-    }
-
-    #[cfg(feature = "simplefold")]
-    fn fold(&mut self, sequence: String, cx: &mut Context<Self>) {
-        let job = self.simplefold.fold(sequence);
-        self.start(job, cx);
-    }
-
-    #[cfg(not(feature = "simplefold"))]
-    fn fold(&mut self, _sequence: String, cx: &mut Context<Self>) {
-        self.busy = None;
-        self.progress = None;
-        self.error = Some("Folding needs the SimpleFold plugin (build with --features simplefold).".into());
-        cx.notify();
     }
 
     /// Fold what is in the box, whatever it is. A pasted sequence goes
@@ -474,10 +649,21 @@ impl Profold {
             Input::UniProt(acc) => {
                 self.simplefold.fold_entry(Retrieval::AlphaFold(acc.clone()), acc)
             }
-            _ => return,
+            Input::Empty => return,
+            _ => {
+                self.error = Some(
+                    "Folding takes a protein sequence, or a PDB ID or UniProt accession to fold the chains of."
+                        .into(),
+                );
+                cx.notify();
+                return;
+            }
         };
         self.start(job, cx);
     }
+
+    #[cfg(not(feature = "simplefold"))]
+    fn submit_fold(&mut self, _: &mut Context<Self>) {}
 
     #[cfg(feature = "simplefold")]
     fn submit_comparison(&mut self, cx: &mut Context<Self>) {
@@ -559,14 +745,6 @@ impl Profold {
     fn settle(&mut self, result: anyhow::Result<Outcome>, cx: &mut Context<Self>) {
         match result {
             Ok(Outcome::Structure(s)) => self.finish(Ok(s), cx),
-            Ok(Outcome::Sequence(seq)) => {
-                if cfg!(feature = "simplefold") {
-                    self.note("No AlphaFold model; folding the UniProt sequence instead.");
-                    self.fold(seq, cx);
-                } else {
-                    self.finish(Err(anyhow::anyhow!("no AlphaFold model for this accession")), cx);
-                }
-            }
             Ok(Outcome::Comparison {
                 reference,
                 prediction,
@@ -583,7 +761,25 @@ impl Profold {
     }
 
     fn retrieve(&mut self, what: Retrieval, cx: &mut Context<Self>) {
-        self.run_job("Fetching", move |tx| what.run(tx), cx);
+        if self.busy.is_some() {
+            return;
+        }
+        self.error = None;
+        // Without a model, an accession can still be predicted; say where.
+        let hint = cfg!(feature = "simplefold") && matches!(what, Retrieval::AlphaFold(_));
+        self.run_job(
+            "Fetching",
+            move |tx| {
+                what.run(tx).map_err(|e| {
+                    if hint {
+                        anyhow::anyhow!("{e:#}. A Fold tab (+ in the tab bar) can predict it.")
+                    } else {
+                        e
+                    }
+                })
+            },
+            cx,
+        );
     }
 
     /// Read a structure or trajectory from disk.
@@ -627,7 +823,7 @@ impl Profold {
     }
 
     /// The system's open dialog.
-    fn prompt_open(&mut self, cx: &mut Context<Self>) {
+    pub fn prompt_open(&mut self, cx: &mut Context<Self>) {
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -963,6 +1159,13 @@ impl Profold {
         }));
     }
 
+    /// Put text in the field as though it had been typed.
+    pub fn type_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        let text = text.to_string();
+        self.input.update(cx, |input, cx| input.set_text(text, cx));
+        self.reclassify(cx);
+    }
+
     /// Load an identifier or sequence as though it had been typed.
     pub fn open(&mut self, text: &str, cx: &mut Context<Self>) {
         let text = text.to_string();
@@ -1096,7 +1299,7 @@ impl Profold {
     }
 }
 
-impl Focusable for Profold {
+impl Focusable for Viewer {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
@@ -1106,19 +1309,24 @@ impl Focusable for Profold {
 // View
 // ---------------------------------------------------------------------------
 
-const EXAMPLES: [(&str, &str); 3] = [
-    ("1CRN", "crambin, 46 aa"),
-    ("P69905", "human haemoglobin α"),
-    ("4HHB", "haemoglobin with its haems"),
+/// Things to type, listed on an empty viewer.
+const EXAMPLES: [(&str, &str); 5] = [
+    ("green fluorescent protein", "search by name"),
+    ("caffeine", "a molecule from PubChem"),
+    ("4HHB", "haemoglobin, by PDB ID"),
+    ("P69905", "an AlphaFold model, by accession"),
+    ("CID 2244", "aspirin, by PubChem CID"),
 ];
 
-fn examples() -> Vec<(&'static str, &'static str)> {
-    #[cfg_attr(not(feature = "simplefold"), allow(unused_mut))]
-    let mut out = EXAMPLES.to_vec();
-    #[cfg(feature = "simplefold")]
-    out.push(simplefold::EXAMPLE);
-    out
-}
+/// Things to fold, listed on an empty fold tab.
+#[cfg(feature = "simplefold")]
+const FOLD_EXAMPLES: [(&str, &str); 3] = [
+    simplefold::EXAMPLE,
+    ("1CRN", "crambin's chain, 46 aa"),
+    ("P69905", "human haemoglobin α"),
+];
+#[cfg(not(feature = "simplefold"))]
+const FOLD_EXAMPLES: [(&str, &str); 0] = [];
 
 pub(crate) fn pill(id: &'static str, label: impl Into<SharedString>, active: bool) -> gpui::Stateful<gpui::Div> {
     div()
@@ -1156,7 +1364,7 @@ fn pill_keyed(
 }
 
 /// A one-line label on a dark ground, for hover hints.
-struct Tip(SharedString);
+pub(crate) struct Tip(pub(crate) SharedString);
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -1192,7 +1400,7 @@ fn tab(id: &'static str, text: &'static str, open: bool) -> gpui::Stateful<gpui:
 }
 
 /// The card a menu is drawn on, hanging under its title.
-fn menu(width: f32) -> gpui::Div {
+pub(crate) fn menu(width: f32) -> gpui::Div {
     div()
         .absolute()
         .top(px(24.))
@@ -1213,12 +1421,12 @@ fn menu(width: f32) -> gpui::Div {
 /// Keep a press on a floating card to itself. A menu hangs out over the
 /// viewport, which closes menus on mouse down; without this the menu would
 /// be gone before the click on its item finished.
-fn swallow(_: &MouseDownEvent, _: &mut Window, cx: &mut App) {
+pub(crate) fn swallow(_: &MouseDownEvent, _: &mut Window, cx: &mut App) {
     cx.stop_propagation();
 }
 
 /// One line of a menu: a name, a tick when it is the one in use.
-fn item(id: impl Into<gpui::ElementId>, text: String, chosen: bool) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn item(id: impl Into<gpui::ElementId>, text: String, chosen: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id.into())
         .flex()
@@ -1242,7 +1450,7 @@ fn item(id: impl Into<gpui::ElementId>, text: String, chosen: bool) -> gpui::Sta
 }
 
 /// The hairline between groups of menu items.
-fn divide() -> impl IntoElement {
+pub(crate) fn divide() -> impl IntoElement {
     div().my(px(3.)).h(px(1.)).bg(theme::BORDER)
 }
 
@@ -1497,15 +1705,16 @@ fn sentence_case(text: &str) -> String {
     }
 }
 
-impl Profold {
+impl Viewer {
     fn toggle(&mut self, which: Dropdown, cx: &mut Context<Self>) {
         self.open = (self.open != Some(which)).then_some(which);
         cx.notify();
     }
 
-    /// The bar across the top: the name, the menus that govern the viewport,
-    /// and what is loaded. It is also the window's drag handle.
-    fn topbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The bar across the top of the tab: the menus that govern the
+    /// viewport, and what is loaded.
+    fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewing = self.mode == Mode::View;
         let loaded = self.structure.is_some();
         let badge = self.structure.as_ref().map(|s| match s.format {
             Some(format) if s.source.is_local() => {
@@ -1515,28 +1724,30 @@ impl Profold {
         });
 
         div()
-            .id("topbar")
+            .id("toolbar")
             .flex()
+            .flex_none()
             .items_center()
             .gap(px(2.))
-            .h(px(TITLEBAR))
-            .pl(px(84.))
+            .h(px(TOOLBAR))
+            .pl(px(12.))
             .pr(px(16.))
             .bg(theme::SURFACE)
             .border_b_1()
             .border_color(theme::BORDER)
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
-            .child(
-                tab("open-file", "Open", false)
-                    .on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))),
-            )
-            .child(self.tab_with_menu(
-                Dropdown::Samples,
-                "samples",
-                "Samples",
-                self.samples_menu(cx).into_any_element(),
-                cx,
-            ))
+            .when(viewing, |d| {
+                d.child(
+                    tab("open-file", "Open", false)
+                        .on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))),
+                )
+                .child(self.tab_with_menu(
+                    Dropdown::Samples,
+                    "samples",
+                    "Samples",
+                    self.samples_menu(cx).into_any_element(),
+                    cx,
+                ))
+            })
             .when(loaded, |d| {
                 d                .child(self.tab_with_menu(
                     Dropdown::Camera,
@@ -1997,8 +2208,12 @@ impl Profold {
             }))
     }
 
-    /// The logo and what the app is for, at the head of the panel.
+    /// The logo and what the tab is for, at the head of the panel.
     fn masthead(&self) -> impl IntoElement {
+        let (name, purpose) = match self.mode {
+            Mode::View => ("profold", "proteins, molecules and crystals"),
+            Mode::Fold => ("Fold a protein", "structure prediction with Apple's SimpleFold"),
+        };
         div()
             .flex()
             .items_center()
@@ -2010,28 +2225,37 @@ impl Profold {
                     .flex()
                     .flex_col()
                     .gap(px(1.))
-                    .child(div().text_size(px(17.)).text_color(theme::INK).child("profold"))
+                    .child(div().text_size(px(17.)).text_color(theme::INK).child(name))
                     .child(
                         div()
                             .text_size(px(10.5))
                             .text_color(theme::FAINT)
-                            .child("proteins, molecules and crystals"),
+                            .child(purpose),
                     ),
             )
     }
 
     fn search(&self, focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let detected = self.detected.clone();
-        let ready = !matches!(detected, Input::Empty | Input::Unknown)
-            && (cfg!(feature = "simplefold") || !matches!(detected, Input::Sequence(_)));
-        // An identifier can be fetched, folded from its own sequences, or both
-        // at once. A pasted sequence can only be folded, and Fold is then the
-        // primary action rather than one of three.
-        let identifier = matches!(detected, Input::Pdb(_) | Input::UniProt(_));
+        let folding = self.mode == Mode::Fold;
+        let ready = if folding {
+            matches!(detected, Input::Sequence(_) | Input::Pdb(_) | Input::UniProt(_))
+        } else {
+            match &detected {
+                Input::Empty | Input::Unknown | Input::Missing(_) => false,
+                Input::Query(_) => self.search_text().is_some(),
+                _ => true,
+            }
+        };
+        // An identifier in a fold tab can be folded, or folded and laid over
+        // the deposited structure.
+        let comparable = folding && matches!(detected, Input::Pdb(_) | Input::UniProt(_));
         let busy = self.busy.is_some();
+        let action = if folding { "Fold" } else { detected.action() };
 
         let run = div()
             .id("run")
+            .debug_selector(|| "run".into())
             .flex_none()
             .h(px(38.))
             .min_w(px(68.))
@@ -2048,10 +2272,67 @@ impl Profold {
                     .cursor_pointer()
             })
             .when(!ready || busy, |d| d.bg(theme::SUNKEN).text_color(theme::FAINT))
-            .child(detected.action())
+            .child(action)
             .on_click(cx.listener(|this, _, _, cx| this.submit(cx)));
 
+        let status = match &detected {
+            Input::Empty => None,
+            Input::Unknown => Some(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(theme::FAINT)
+                    .child(detected.detail())
+                    .into_any_element(),
+            ),
+            Input::Query(_) if folding => Some(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(theme::FAINT)
+                    .child("not a sequence, PDB ID or accession")
+                    .into_any_element(),
+            ),
+            other => Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .min_w_0()
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(9.))
+                            .text_color(theme::MUTED)
+                            .child(match other {
+                                Input::Sequence(_) if !folding => "SEQUENCE SEARCH",
+                                _ => other.kind(),
+                            }),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme::MONO)
+                            .text_size(px(11.))
+                            .text_color(theme::TEXT)
+                            .truncate()
+                            .child(match other {
+                                Input::Sequence(s) if !folding => format!("{} aa in the PDB", s.len()),
+                                _ => other.detail(),
+                            }),
+                    )
+                    .when(self.searching.is_some(), |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_size(px(10.))
+                                .text_color(theme::FAINT)
+                                .child("searching…"),
+                        )
+                    })
+                    .into_any_element(),
+            ),
+        };
+
         div()
+            .relative()
             .flex()
             .flex_col()
             .gap(px(10.))
@@ -2063,6 +2344,7 @@ impl Profold {
                     .gap(px(8.))
                     .child(
                         div()
+                            .id("search-field")
                             .flex_1()
                             .min_w_0()
                             .flex()
@@ -2080,13 +2362,25 @@ impl Profold {
                             .text_size(px(12.5))
                             .text_color(theme::TEXT)
                             .font_family(theme::MONO)
+                            // Back into the field, the list comes back with it.
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    if !this.hits.is_empty()
+                                        && this.search_text().as_deref() == Some(this.hits_for.as_str())
+                                    {
+                                        this.dropdown = true;
+                                        cx.notify();
+                                    }
+                                }),
+                            )
                             .child(self.input.clone()),
                     )
                     .child(run),
             )
             // What the field holds, and what else can be done with it; only
             // once there is something in it.
-            .when(!matches!(detected, Input::Empty), |d| {
+            .when_some(status, |d, status| {
                 d.child(
                     div()
                         .flex()
@@ -2094,48 +2388,164 @@ impl Profold {
                         .justify_between()
                         .gap(px(8.))
                         .h(px(22.))
-                        .child(match &detected {
-                            Input::Unknown => div()
-                                .text_size(px(10.5))
-                                .text_color(theme::FAINT)
-                                .child(detected.detail()),
-                            other => div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .child(
+                        .child(status)
+                        .when(comparable && !busy, |d| self.plugin_actions(d, cx)),
+                )
+            })
+            .when(self.dropdown && !folding && !busy, |d| {
+                d.child(deferred(self.results(cx)).with_priority(2))
+            })
+    }
+
+    /// The search results, hanging under the field and out over the
+    /// viewport, grouped by where they come from.
+    fn results(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        let mut last: Option<Kind> = None;
+        for (i, hit) in self.hits.iter().enumerate() {
+            if last != Some(hit.kind) {
+                rows.push(
+                    div()
+                        .px(px(10.))
+                        .pt(px(if last.is_none() { 6. } else { 10. }))
+                        .pb(px(3.))
+                        .child(label(spaced(&hit.kind.heading().to_uppercase())))
+                        .into_any_element(),
+                );
+                last = Some(hit.kind);
+            }
+            let chosen = i == self.highlight;
+            rows.push(
+                div()
+                    .id(("hit", i))
+                    .debug_selector(move || format!("hit-{i}"))
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .flex_none()
+                    .px(px(10.))
+                    .py(px(4.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .when(chosen, |d| d.bg(theme::SUNKEN))
+                    .hover(|s| s.bg(theme::SUNKEN))
+                    .child(
+                        div()
+                            .flex()
+                            .items_baseline()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(px(96.))
+                                    .whitespace_nowrap()
+                                    .font_family(theme::MONO)
+                                    .text_size(px(10.5))
+                                    .text_color(theme::MUTED)
+                                    .child(hit.label()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(12.))
+                                    .text_color(theme::INK)
+                                    .child(hit.title.clone()),
+                            )
+                            .when(i == 0, |d| {
+                                d.child(
                                     div()
-                                        .text_size(px(9.))
-                                        .text_color(theme::MUTED)
-                                        .child(other.kind()),
+                                        .flex_none()
+                                        .text_size(px(9.5))
+                                        .text_color(theme::FAINT)
+                                        .child("best match ↵"),
                                 )
-                                .child(
-                                    div()
-                                        .font_family(theme::MONO)
-                                        .text_size(px(11.))
-                                        .text_color(theme::TEXT)
-                                        .child(other.detail()),
-                                ),
+                            }),
+                    )
+                    .child(
+                        div()
+                            .pl(px(104.))
+                            .truncate()
+                            .text_size(px(10.5))
+                            .text_color(theme::FAINT)
+                            .child(hit.detail.clone()),
+                    )
+                    .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                        if this.highlight != i {
+                            this.highlight = i;
+                            cx.notify();
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| this.pick(i, cx)))
+                    .into_any_element(),
+            );
+        }
+
+        let empty = self.hits.is_empty();
+        let note = match (&self.search_error, empty, self.searching.is_some()) {
+            (Some(err), _, _) => Some(err.clone()),
+            (None, true, true) => Some("Searching…".into()),
+            (None, true, false) => Some(format!("No matches for “{}”", self.hits_for).into()),
+            _ => None,
+        };
+
+        div()
+            .absolute()
+            .top(px(44.))
+            .left(px(20.))
+            .id("results")
+            .w(px(520.))
+            .max_h(px(560.))
+            .p(px(4.))
+            .rounded(px(9.))
+            .bg(theme::SURFACE)
+            .border_1()
+            .border_color(theme::BORDER)
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .overflow_y_scroll()
+            .on_mouse_down(MouseButton::Left, swallow)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.dropdown = false;
+                cx.notify();
+            }))
+            .children(rows)
+            .when_some(note, |d, note| {
+                d.child(
+                    div()
+                        .px(px(10.))
+                        .py(px(8.))
+                        .text_size(px(11.))
+                        .text_color(if self.search_error.is_some() {
+                            theme::DANGER
+                        } else {
+                            theme::FAINT
                         })
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.))
-                                .when(identifier && !busy, |d| self.plugin_actions(d, cx)),
-                        ),
+                        .child(note),
+                )
+            })
+            .when(!empty, |d| {
+                d.child(
+                    div()
+                        .px(px(10.))
+                        .pt(px(6.))
+                        .pb(px(4.))
+                        .text_size(px(9.5))
+                        .text_color(theme::FAINT)
+                        .child("↑↓ to choose · ↵ to open · esc to close"),
                 )
             })
     }
 
-    /// Buttons a plugin puts beside the primary action for an identifier.
+    /// Compare beside Fold, for an identifier: fold its own sequence and lay
+    /// the prediction over the deposited structure.
     #[cfg(feature = "simplefold")]
     fn plugin_actions(&self, d: gpui::Div, cx: &mut Context<Self>) -> gpui::Div {
         d.child(
-            secondary("fold", "Fold").on_click(cx.listener(|this, _, _, cx| this.submit_fold(cx))),
-        )
-        .child(
             secondary("compare", "Compare")
+                .debug_selector(|| "compare".into())
                 .on_click(cx.listener(|this, _, _, cx| this.submit_comparison(cx))),
         )
     }
@@ -2281,11 +2691,55 @@ impl Profold {
     }
 
     fn examples(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let folding = self.mode == Mode::Fold;
+        let (heading, examples) = if folding {
+            ("TRY", &FOLD_EXAMPLES[..])
+        } else {
+            ("SEARCH OR FETCH", &EXAMPLES[..])
+        };
         div()
             .flex()
             .flex_col()
             .gap(px(7.))
             .px(px(20.))
+            .when(!folding, |d| d.child(self.sample_list(cx)).child(div().h(px(8.))))
+            .child(label(heading))
+            .children(examples.iter().enumerate().map(|(i, (value, note))| {
+                let value = value.to_string();
+                let shown = if value.len() > 26 {
+                    format!("{}…", &value[..14])
+                } else {
+                    value.clone()
+                };
+                div()
+                    .id(("example", i))
+                    .flex()
+                    .items_baseline()
+                    .gap(px(8.))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .font_family(theme::MONO)
+                            .text_size(px(11.))
+                            .text_color(theme::TEXT)
+                            .hover(|s| s.text_color(theme::INK))
+                            .child(shown),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(theme::FAINT)
+                            .child(*note),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| this.open(&value, cx)))
+            }))
+    }
+
+    fn sample_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(7.))
             .child(label("SAMPLES"))
             .children(SAMPLES.iter().enumerate().map(|(i, sample)| {
                 div()
@@ -2308,38 +2762,6 @@ impl Profold {
                             .child(sample.note),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.open_sample(i, cx)))
-            }))
-            .child(div().h(px(8.)))
-            .child(label("FETCH"))
-            .children(examples().into_iter().enumerate().map(|(i, (value, note))| {
-                let value = value.to_string();
-                let shown = if value.len() > 16 {
-                    format!("{}…", &value[..14])
-                } else {
-                    value.clone()
-                };
-                div()
-                    .id(("example", i))
-                    .flex()
-                    .items_baseline()
-                    .gap(px(8.))
-                    .cursor_pointer()
-                    .child(
-                        div()
-                            .font_family(theme::MONO)
-                            .text_size(px(11.))
-                            .text_color(theme::TEXT)
-                            .child(shown),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.5))
-                            .text_color(theme::FAINT)
-                            .child(note),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open(&value, cx)
-                    }))
             }))
     }
 
@@ -3220,24 +3642,12 @@ impl Profold {
                         .items_center()
                         .justify_center()
                         .gap(px(6.))
-                        .child(
+                        .children(self.empty_message().into_iter().enumerate().map(|(i, line)| {
                             div()
-                                .text_size(px(12.))
+                                .text_size(px(if i == 0 { 12. } else { 10.5 }))
                                 .text_color(theme::FAINT)
-                                .child("Nothing loaded"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(theme::FAINT)
-                                .child("Drop a structure file here, open one with ⌘O,"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(theme::FAINT)
-                                .child("or paste an identifier to fetch it"),
-                        ),
+                                .child(line)
+                        })),
                 )
             })
             .when(self.busy.is_some(), |d| d.child(self.working(busy.clone())))
@@ -3280,7 +3690,66 @@ impl Profold {
     }
 }
 
-impl Profold {
+impl Viewer {
+    /// What an empty viewport says.
+    fn empty_message(&self) -> [&'static str; 3] {
+        match self.mode {
+            Mode::View => [
+                "Nothing loaded",
+                "Search for a protein or molecule by name, paste an identifier,",
+                "drop a structure file here, or open one with ⌘O",
+            ],
+            Mode::Fold => [
+                "Nothing folded yet",
+                "Paste a protein sequence, or a PDB ID or UniProt accession",
+                "to fold its chains. The prediction appears here.",
+            ],
+        }
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Whether the tab has nothing in it and is doing nothing, so that
+    /// opening something can use it rather than a new one.
+    pub fn is_blank(&self) -> bool {
+        self.structure.is_none() && self.busy.is_none()
+    }
+
+    /// Whether a job is running, and how far along it is when it knows.
+    pub fn activity(&self) -> Option<Option<f32>> {
+        self.busy
+            .as_ref()
+            .map(|_| self.progress.as_ref().and_then(|p| p.fraction))
+    }
+
+    /// The tab's name: what is loaded, or what the tab is for.
+    pub fn title(&self) -> String {
+        let loaded = self.structure.as_ref().map(|s| match s.source {
+            crate::protein::Source::File | crate::protein::Source::Sample
+                if !s.has_polymer() && s.title.trim().is_empty() =>
+            {
+                s.id.clone()
+            }
+            _ if s.has_polymer() => headline(s).0,
+            _ if s.title.trim().is_empty() => s.id.clone(),
+            _ => s.title.trim().to_string(),
+        });
+        match (self.mode, loaded) {
+            (Mode::View, Some(name)) => name,
+            (Mode::View, None) if self.busy.is_some() => "Loading…".into(),
+            (Mode::View, None) => "New tab".into(),
+            (Mode::Fold, Some(name)) => format!("Fold · {name}"),
+            (Mode::Fold, None) => "Fold".into(),
+        }
+    }
+
+    /// Put the caret in the search field.
+    pub fn focus_input(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.input.read(cx).focus_handle(cx));
+    }
+
     /// Play, pause and a scrubber for a trajectory, along the foot of the
     /// viewport.
     fn transport(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3378,7 +3847,7 @@ impl Profold {
     }
 }
 
-impl Render for Profold {
+impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if viewer::spinning() {
             self.camera.yaw += 0.02;
@@ -3386,12 +3855,7 @@ impl Render for Profold {
         }
         let _timer = viewer::Phase::Tree.timer();
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
-        // Model, steps and pLDDT are the settings for Fold and Compare, so they
-        // appear exactly when those can be run.
-        let can_fold = matches!(
-            self.detected,
-            Input::Sequence(_) | Input::Pdb(_) | Input::UniProt(_)
-        );
+        let folding = self.mode == Mode::Fold;
         let structure = self.structure.clone();
 
         div()
@@ -3401,18 +3865,12 @@ impl Render for Profold {
             .bg(theme::PAPER)
             .text_color(theme::TEXT)
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &OpenFile, _, cx| this.prompt_open(cx)))
-            // Files dropped anywhere on the window are opened.
-            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                if let Some(path) = paths.paths().first() {
-                    this.open_path(path.clone(), cx);
-                }
-            }))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
-            .child(self.topbar(cx))
+            // A fold tab has nothing in its toolbar until it has a prediction.
+            .when(!folding || structure.is_some(), |d| d.child(self.toolbar(cx)))
             .child(
                 div()
                 .flex()
@@ -3431,7 +3889,8 @@ impl Render for Profold {
                     .border_color(theme::BORDER)
                     .child(self.masthead())
                     .child(self.search(focused, cx))
-                    .when(can_fold, |d| d.children(self.plugin_options(cx)))
+                    // Model, steps and pLDDT: the settings for Fold and Compare.
+                    .when(folding, |d| d.children(self.plugin_options(cx)))
                     .child(self.status(cx))
                     .when(structure.is_none(), |d| {
                         d.child(self.examples(cx)).child(div().flex_1())
@@ -3452,8 +3911,8 @@ mod ui_tests {
     use super::*;
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
 
-    fn open(cx: &mut TestAppContext) -> (Entity<Profold>, &mut VisualTestContext) {
-        let (view, cx) = cx.add_window_view(|window, cx| Profold::new(window, cx));
+    fn open(cx: &mut TestAppContext) -> (Entity<Viewer>, &mut VisualTestContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
         view.update(cx, |this, cx| {
             let s = formats::load_bytes(SAMPLES[0].file, SAMPLES[0].bytes.to_vec()).unwrap();
             this.show(s, cx);
@@ -3470,7 +3929,7 @@ mod ui_tests {
         cx.run_until_parked();
     }
 
-    fn colors(view: &Entity<Profold>, cx: &mut VisualTestContext) -> Vec<[f32; 3]> {
+    fn colors(view: &Entity<Viewer>, cx: &mut VisualTestContext) -> Vec<[f32; 3]> {
         view.update(cx, |this, _| this.scene.spheres.iter().map(|s| s.color).collect())
     }
 
@@ -3536,5 +3995,69 @@ mod ui_tests {
             // saturated one.
             view.update(cx, |this, _| this.style == Style::Illustrative)
         });
+    }
+
+    fn hit(kind: Kind, id: &str, title: &str) -> Hit {
+        Hit::for_test(kind, id, title)
+    }
+
+    #[gpui::test]
+    fn results_list_opens_the_chosen_hit(cx: &mut TestAppContext) {
+        cx.update(crate::ui::input::bind_keys);
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        cx.simulate_input("green fluorescent protein");
+        let (detected, searching) =
+            view.update(cx, |this, _| (this.detected.clone(), this.searching.clone()));
+        assert_eq!(detected, Input::Query("green fluorescent protein".into()));
+        assert_eq!(searching.as_deref(), Some("green fluorescent protein"), "no search was started");
+
+        // Stand in for the network: results arrive for what is typed.
+        view.update(cx, |this, cx| {
+            this.search_task = None;
+            this.searching = None;
+            this.hits = vec![
+                hit(Kind::Pdb, "1GFL", "Structure of green fluorescent protein"),
+                hit(Kind::AlphaFold, "P42212", "Green fluorescent protein"),
+                hit(Kind::Molecule, "2519", "Caffeine"),
+            ];
+            this.hits_for = "green fluorescent protein".into();
+            this.dropdown = true;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("hit-2").is_some(), "the results list is not on screen");
+
+        // Down twice, up once: the AlphaFold model.
+        cx.simulate_keystrokes("down down up");
+        assert_eq!(view.update(cx, |this, _| this.highlight), 1);
+        cx.simulate_keystrokes("escape");
+        assert!(!view.update(cx, |this, _| this.dropdown), "escape left the list up");
+        cx.simulate_keystrokes("down");
+        assert!(view.update(cx, |this, _| this.dropdown), "down did not bring the list back");
+
+        click(cx, "hit-0");
+        let busy = view.update(cx, |this, _| (this.dropdown, this.busy.is_some(), this.log.last().cloned()));
+        assert!(!busy.0, "the list stayed up after a pick");
+        assert!(busy.1, "picking a result started nothing");
+        assert!(busy.2.is_some_and(|l| l.contains("1GFL")));
+    }
+
+    #[gpui::test]
+    fn a_fold_tab_takes_sequences_and_never_searches(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::Fold, window, cx));
+        cx.simulate_input("green fluorescent protein");
+        let (detected, searching) =
+            view.update(cx, |this, _| (this.detected.clone(), this.searching.clone()));
+        assert!(matches!(detected, Input::Sequence(_)));
+        assert!(searching.is_none(), "a fold tab searched");
+    }
+
+    #[gpui::test]
+    fn a_viewer_never_offers_to_fold(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        cx.simulate_input("1CRN");
+        assert_eq!(view.update(cx, |this, _| this.detected.clone()), Input::Pdb("1CRN".into()));
+        assert!(cx.debug_bounds("compare").is_none());
+        assert!(cx.debug_bounds("model").is_none());
     }
 }

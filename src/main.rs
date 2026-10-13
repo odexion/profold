@@ -13,6 +13,7 @@ mod plugins;
 mod protein;
 mod render;
 mod samples;
+mod search;
 mod settings;
 mod theme;
 mod ui;
@@ -32,10 +33,8 @@ fn main() {
         #[cfg(target_os = "macos")]
         set_dock_icon();
         ui::input::bind_keys(cx);
-        cx.bind_keys([
-            gpui::KeyBinding::new("cmd-q", Quit, None),
-            gpui::KeyBinding::new("cmd-o", ui::app::OpenFile, None),
-        ]);
+        ui::workspace::bind_keys(cx);
+        cx.bind_keys([gpui::KeyBinding::new("cmd-q", Quit, None)]);
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
         cx.set_menus(vec![
             Menu {
@@ -44,7 +43,25 @@ fn main() {
             },
             Menu {
                 name: "File".into(),
-                items: vec![MenuItem::action("Open…", ui::app::OpenFile)],
+                items: {
+                    let mut items = vec![MenuItem::action("New Tab", ui::workspace::NewTab)];
+                    if cfg!(feature = "simplefold") {
+                        items.push(MenuItem::action("New Fold Tab", ui::workspace::NewFoldTab));
+                    }
+                    items.extend([
+                        MenuItem::action("Open…", ui::workspace::OpenFile),
+                        MenuItem::separator(),
+                        MenuItem::action("Close Tab", ui::workspace::CloseTab),
+                    ]);
+                    items
+                },
+            },
+            Menu {
+                name: "Window".into(),
+                items: vec![
+                    MenuItem::action("Next Tab", ui::workspace::NextTab),
+                    MenuItem::action("Previous Tab", ui::workspace::PreviousTab),
+                ],
             },
         ]);
 
@@ -61,30 +78,58 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|cx| ui::app::Profold::new(window, cx));
+                let view = cx.new(|cx| ui::workspace::Workspace::new(window, cx));
                 // `profold 1CRN` or `profold traj.xyz` opens with that
-                // loaded. With the SimpleFold plugin, `--fold` predicts an
-                // entry instead of fetching it, and `--compare` does both and
+                // loaded, and each further argument in a tab of its own. With
+                // the SimpleFold plugin, `--fold` predicts an entry in a fold
+                // tab instead of fetching it, and `--compare` does both and
                 // lays one over the other.
                 let args: Vec<String> = std::env::args().skip(1).collect();
                 let verb = args.first().filter(|a| a.starts_with("--")).cloned();
-                if let Some(target) = args.get(usize::from(verb.is_some())) {
-                    let target = target.clone();
-                    view.update(cx, |this, cx| match verb.as_deref() {
-                        #[cfg(feature = "simplefold")]
-                        Some("--compare") => this.open_comparison(&target, cx),
-                        #[cfg(feature = "simplefold")]
-                        Some("--fold") => this.open_fold(&target, cx),
-                        _ => {
-                            let path = std::path::PathBuf::from(&target);
-                            if path.is_file() {
-                                this.open_path(path, cx);
-                            } else {
-                                this.open(&target, cx);
+                let targets = &args[usize::from(verb.is_some())..];
+                view.update(cx, |this, cx| {
+                    // `--fold` alone opens an empty fold tab.
+                    #[cfg(feature = "simplefold")]
+                    if verb.as_deref() == Some("--fold") && targets.is_empty() {
+                        this.add(ui::app::Mode::Fold, window, cx);
+                    }
+                    for (n, target) in targets.iter().enumerate() {
+                        let path = std::path::PathBuf::from(target);
+                        match verb.as_deref() {
+                            #[cfg(feature = "simplefold")]
+                            Some("--compare") | Some("--fold") => {
+                                let tab = this.add(ui::app::Mode::Fold, window, cx);
+                                let compare = verb.as_deref() == Some("--compare");
+                                tab.update(cx, |tab, cx| {
+                                    if compare {
+                                        tab.open_comparison(target, cx)
+                                    } else {
+                                        tab.open_fold(target, cx)
+                                    }
+                                });
+                            }
+                            _ => {
+                                let tab = if n == 0 {
+                                    this.active()
+                                } else {
+                                    this.add(ui::app::Mode::View, window, cx)
+                                };
+                                tab.update(cx, |tab, cx| {
+                                    if path.is_file() {
+                                        tab.open_path(path, cx)
+                                    } else {
+                                        tab.open(target, cx)
+                                    }
+                                });
                             }
                         }
-                    });
-                }
+                    }
+                    // `PROFOLD_TYPE=caffeine` types into the field without
+                    // pressing Return, for looking at the search results.
+                    if let Ok(text) = std::env::var("PROFOLD_TYPE") {
+                        this.active().update(cx, |tab, cx| tab.type_text(&text, cx));
+                    }
+                });
                 view
             },
         )

@@ -14,11 +14,9 @@ pub struct Progress {
     pub fraction: Option<f32>,
 }
 
-/// What a job produced. A UniProt accession with no deposited model resolves
-/// to a sequence rather than a structure, which the app then folds.
+/// What a job produced.
 pub enum Outcome {
     Structure(Structure),
-    Sequence(String),
     /// An experimental structure and a prediction folded from its own
     /// sequence, already superimposed.
     #[cfg_attr(not(feature = "simplefold"), allow(dead_code))]

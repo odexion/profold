@@ -1,11 +1,11 @@
 //! Structure prediction with Apple's SimpleFold.
 //!
 //! The viewer works without this; it is compiled in by the `simplefold`
-//! feature. It contributes three things: jobs the app runs (fold a sequence,
-//! fold an entry's own chains, fold and compare against the deposited
-//! structure), the settings row for them, and the Fold and Compare buttons.
-//! Everything else — running jobs, showing structures, superimposed pairs —
-//! is the viewer's.
+//! feature, and appears only in a fold tab, which is opened from the + menu.
+//! It contributes three things: jobs the tab runs (fold a sequence, fold an
+//! entry's own chains, fold and compare against the deposited structure), the
+//! settings row for them, and the Compare button. Everything else — running
+//! jobs, showing structures, superimposed pairs — is the viewer's.
 
 mod engine;
 
@@ -20,7 +20,7 @@ use crate::formats::parse_any;
 use crate::job::{Event, Outcome};
 use crate::protein::{Atom, Chain, Source, Structure};
 use crate::theme;
-use crate::ui::app::{label, pill, Profold};
+use crate::ui::app::{label, pill, Viewer};
 use engine::{model_label, Engine, MODELS};
 
 /// Work for the app to run in the background, and what to say first.
@@ -119,6 +119,7 @@ impl SimpleFold {
                         vec![(vec!["A".to_string()], sequence)]
                     }
                     Retrieval::Pdb(ref id) => fetch::fetch_pdb(id, tx)?.distinct_chains(),
+                    Retrieval::PubChem(_) => anyhow::bail!("a compound has no protein chains to fold"),
                 };
 
                 let (foldable, short): (Vec<_>, Vec<_>) =
@@ -314,7 +315,7 @@ fn assemble(parts: Vec<(String, Structure)>, id: String, title: String) -> Struc
 /// The list under the MODEL pill. Each row says whether its checkpoint is
 /// already downloaded, since the larger ones are several gigabytes and are
 /// fetched on first use.
-fn model_list(fold: &SimpleFold, cx: &mut Context<Profold>) -> impl IntoElement {
+fn model_list(fold: &SimpleFold, cx: &mut Context<Viewer>) -> impl IntoElement {
     let current = fold.model;
     let engine = fold.engine.clone();
     div()
@@ -372,7 +373,7 @@ fn model_list(fold: &SimpleFold, cx: &mut Context<Profold>) -> impl IntoElement 
 }
 
 /// Model, steps and pLDDT: the settings for Fold and Compare.
-pub fn options(fold: &SimpleFold, cx: &mut Context<Profold>) -> impl IntoElement {
+pub fn options(fold: &SimpleFold, cx: &mut Context<Viewer>) -> impl IntoElement {
     let model: SharedString = model_label(MODELS[fold.model]).to_string().into();
     let steps = fold.steps;
     let open = fold.menu_open;
@@ -388,6 +389,7 @@ pub fn options(fold: &SimpleFold, cx: &mut Context<Profold>) -> impl IntoElement
                 .relative()
                 .child(
                     pill("model", format!("{model}  ▾"), open)
+                        .debug_selector(|| "model".into())
                         .when(!open, |d| d.border_1().border_color(theme::BORDER))
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| {

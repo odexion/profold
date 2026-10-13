@@ -126,6 +126,7 @@ pub struct Chain {
 pub enum Source {
     Pdb,
     AlphaFold,
+    PubChem,
     #[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
     SimpleFold,
     /// Opened from disk.
@@ -139,6 +140,7 @@ impl Source {
         match self {
             Source::Pdb => "RCSB PDB",
             Source::AlphaFold => "AlphaFold DB",
+            Source::PubChem => "PubChem",
             Source::SimpleFold => "SimpleFold",
             Source::File => "Local file",
             Source::Sample => "Sample",
@@ -149,6 +151,7 @@ impl Source {
     pub fn kind(self) -> &'static str {
         match self {
             Source::Pdb => "experimental",
+            Source::PubChem => "compound",
             Source::AlphaFold | Source::SimpleFold => "predicted",
             Source::File => "file",
             Source::Sample => "sample",

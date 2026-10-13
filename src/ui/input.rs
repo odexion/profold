@@ -22,6 +22,8 @@ actions!(
     [
         Submit,
         Cancel,
+        Up,
+        Down,
         Backspace,
         Delete,
         Left,
@@ -596,6 +598,9 @@ pub enum InputEvent {
     Submit,
     /// Escape: leave the field without taking what was typed.
     Cancel,
+    /// The arrow keys, for moving through a list that hangs off the field.
+    Up,
+    Down,
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -638,6 +643,14 @@ impl TextInput {
         cx.emit(InputEvent::Cancel);
     }
 
+    fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(InputEvent::Up);
+    }
+
+    fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(InputEvent::Down);
+    }
+
     /// Select everything, so typing replaces the value.
     pub fn select_everything(&mut self, cx: &mut Context<Self>) {
         self.move_to(0, cx);
@@ -662,6 +675,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("end", End, Some("Input")),
         KeyBinding::new("enter", Submit, Some("Input")),
         KeyBinding::new("escape", Cancel, Some("Input")),
+        KeyBinding::new("up", Up, Some("Input")),
+        KeyBinding::new("down", Down, Some("Input")),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some("Input")),
     ]);
 }
@@ -689,6 +704,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::cancel))
+            .on_action(cx.listener(Self::up))
+            .on_action(cx.listener(Self::down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))

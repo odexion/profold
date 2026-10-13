@@ -1,15 +1,15 @@
 //! Input classification and structure retrieval.
 //!
 //! One text field takes everything, so the classifier here decides whether a
-//! paste is a file on disk, a PDB entry, a UniProt accession, or a sequence
-//! to fold.
+//! paste is a file on disk, a PDB entry, a UniProt accession, a PubChem
+//! compound, a sequence, or words to search for.
 
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use crate::formats::parse_any;
+use crate::formats::{self, parse_any};
 use crate::job::{Event, Outcome, Progress};
 use crate::protein::{Source, Structure};
 use anyhow::{anyhow, Context, Result};
@@ -20,6 +20,12 @@ pub enum Input {
     Sequence(String),
     Pdb(String),
     UniProt(String),
+    /// A PubChem compound, typed as `CID 2519`.
+    Cid(u64),
+    /// Words to search for by name.
+    Query(String),
+    /// What looks like a path, to a file that is not there.
+    Missing(String),
     Empty,
     Unknown,
 }
@@ -31,6 +37,9 @@ impl Input {
             Input::Sequence(_) => "SEQUENCE",
             Input::Pdb(_) => "PDB ID",
             Input::UniProt(_) => "UNIPROT",
+            Input::Cid(_) => "PUBCHEM",
+            Input::Query(_) => "SEARCH",
+            Input::Missing(_) => "FILE",
             Input::Empty => "",
             Input::Unknown => "UNRECOGNISED",
         }
@@ -45,15 +54,21 @@ impl Input {
             Input::Sequence(s) => format!("{} aa", s.len()),
             Input::Pdb(id) => id.clone(),
             Input::UniProt(id) => id.clone(),
+            Input::Cid(cid) => format!("CID {cid}"),
+            Input::Query(_) => "PDB · AlphaFold DB · PubChem".into(),
+            Input::Missing(_) => "no such file".into(),
             Input::Empty => String::new(),
-            Input::Unknown => "not a file, PDB ID, accession or sequence".into(),
+            Input::Unknown => "not a file, identifier, name or sequence".into(),
         }
     }
 
+    /// The primary button's word in the viewer, where a sequence is looked
+    /// up rather than folded.
     pub fn action(&self) -> &'static str {
         match self {
             Input::File(_) => "Open",
-            Input::Sequence(_) => "Fold",
+            Input::Sequence(_) | Input::Query(_) | Input::Empty | Input::Unknown => "Search",
+            Input::Missing(_) => "Open",
             _ => "Fetch",
         }
     }
@@ -117,6 +132,46 @@ fn as_file(text: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// Whether a word ends like a structure file's name.
+fn has_extension(text: &str) -> bool {
+    let name = text.strip_suffix(".gz").unwrap_or(text);
+    name.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty() && formats::Format::from_name(&format!("x.{ext}")).is_some()
+    })
+}
+
+/// `CID 2519`, `cid:2519` or `CID2519`.
+fn as_cid(text: &str) -> Option<u64> {
+    let lower = text.trim().to_ascii_lowercase();
+    let rest = lower.strip_prefix("cid")?;
+    let rest = rest.trim_start_matches([':', ' ', '#']);
+    rest.parse().ok().filter(|n| *n > 0)
+}
+
+/// Residue letters, if that is all the text is. A FASTA header settles it;
+/// otherwise words are taken for a name unless they are long runs of capitals
+/// or one long run of letters, the way sequences are written.
+pub fn as_sequence(raw: &str, loose: bool) -> Option<String> {
+    let trimmed = raw.trim();
+    let seq = clean_sequence(trimmed);
+    if seq.len() < 12 || !seq.chars().all(|c| AA.contains(c)) {
+        return None;
+    }
+    if loose || trimmed.starts_with('>') {
+        return Some(seq);
+    }
+    let tokens: Vec<&str> = trimmed
+        .split_whitespace()
+        .filter(|t| t.chars().any(|c| c.is_ascii_alphabetic()))
+        .collect();
+    let written_as_sequence = match tokens.as_slice() {
+        [one] => one.len() >= 16 || one.chars().all(|c| !c.is_ascii_lowercase()),
+        // Blocks of ten, as GenBank and many papers print them.
+        many => many.iter().all(|t| t.len() >= 10),
+    };
+    written_as_sequence.then_some(seq)
+}
+
 pub fn classify(raw: &str) -> Input {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -147,10 +202,19 @@ pub fn classify(raw: &str) -> Input {
             return Input::UniProt(upper);
         }
     }
-
-    let seq = clean_sequence(trimmed);
-    if seq.len() >= 12 && seq.chars().all(|c| AA.contains(c)) {
+    if !trimmed.contains(char::is_whitespace)
+        && (trimmed.contains('/') || trimmed.starts_with('~') || has_extension(trimmed))
+    {
+        return Input::Missing(trimmed.to_string());
+    }
+    if let Some(cid) = as_cid(trimmed) {
+        return Input::Cid(cid);
+    }
+    if let Some(seq) = as_sequence(trimmed, false) {
         return Input::Sequence(seq);
+    }
+    if trimmed.chars().filter(|c| c.is_alphanumeric()).count() >= 2 && !trimmed.contains('\n') {
+        return Input::Query(trimmed.split_whitespace().collect::<Vec<_>>().join(" "));
     }
     Input::Unknown
 }
@@ -238,7 +302,35 @@ pub fn fetch_alphafold(acc: &str, tx: &Sender<Event>) -> Result<Structure> {
     Ok(s)
 }
 
-/// Used when an accession has no AlphaFold model but can still be folded.
+/// A compound from PubChem, in 3D where PubChem has a conformer for it and
+/// as its flat drawing where it does not (proteins and other large ones).
+pub fn fetch_pubchem(cid: u64, tx: &Sender<Event>) -> Result<Structure> {
+    let _ = tx.send(Event::Stage(format!("Fetching CID {cid} from PubChem")));
+    let base = format!("https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}");
+    let text = match get(&format!("{base}/SDF?record_type=3d"), Some(tx)) {
+        Ok(text) => text,
+        Err(_) => {
+            let _ = tx.send(Event::Log(format!(
+                "PubChem has no 3D conformer for CID {cid}; showing its 2D drawing."
+            )));
+            get(&format!("{base}/SDF?record_type=2d"), Some(tx))
+                .map_err(|e| anyhow!("CID {cid} not found in PubChem ({e})"))?
+        }
+    };
+    let _ = tx.send(Event::Stage("Reading structure".into()));
+    let mut s = formats::parse(&text, formats::Format::Sdf, format!("CID {cid}"), Source::PubChem)?;
+    if s.atoms.is_empty() {
+        anyhow::bail!("no atoms in CID {cid}");
+    }
+    s.format = Some(formats::Format::Sdf.label());
+    if let Some(title) = crate::search::compound_title(cid) {
+        s.title = title;
+    }
+    Ok(s)
+}
+
+/// A UniProt entry's sequence, for folding.
+#[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
 pub fn fetch_uniprot_sequence(acc: &str) -> Result<String> {
     let fasta = get(&format!("https://rest.uniprot.org/uniprotkb/{acc}.fasta"), None)?;
     let seq = clean_sequence(&fasta);
@@ -248,26 +340,48 @@ pub fn fetch_uniprot_sequence(acc: &str) -> Result<String> {
     Ok(seq)
 }
 
-/// Something to fetch: an entry in the PDB, or an AlphaFold model.
-#[derive(Clone)]
+/// Something to fetch: an entry in the PDB, an AlphaFold model, or a
+/// compound in PubChem.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Retrieval {
     Pdb(String),
     AlphaFold(String),
+    PubChem(u64),
 }
 
 impl Retrieval {
     pub fn run(self, tx: &Sender<Event>) -> Result<Outcome> {
         match self {
-            Retrieval::Pdb(id) => fetch_pdb(&id, tx).map(Outcome::Structure),
-            Retrieval::AlphaFold(acc) => match fetch_alphafold(&acc, tx) {
-                Ok(s) => Ok(Outcome::Structure(s)),
-                // An accession without a model can still be folded, by a
-                // plugin that folds.
-                Err(e) => match fetch_uniprot_sequence(&acc) {
-                    Ok(seq) => Ok(Outcome::Sequence(seq)),
-                    Err(_) => Err(e),
-                },
-            },
+            Retrieval::Pdb(id) => fetch_pdb(&id, tx),
+            Retrieval::AlphaFold(acc) => fetch_alphafold(&acc, tx),
+            Retrieval::PubChem(cid) => fetch_pubchem(cid, tx),
         }
+        .map(Outcome::Structure)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn words_are_searched_and_residues_are_not() {
+        assert_eq!(classify("green fluorescent protein"), Input::Query("green fluorescent protein".into()));
+        assert_eq!(classify("caffeine"), Input::Query("caffeine".into()));
+        assert_eq!(classify("samples/nothing.pdb"), Input::Missing("samples/nothing.pdb".into()));
+        assert_eq!(classify("melt.lammpstrj"), Input::Missing("melt.lammpstrj".into()));
+        assert_eq!(classify("GREEN FLUORESCENT PROTEIN"), Input::Query("GREEN FLUORESCENT PROTEIN".into()));
+        assert_eq!(classify("1gfl"), Input::Pdb("1GFL".into()));
+        assert_eq!(classify("P42212"), Input::UniProt("P42212".into()));
+        assert_eq!(classify("CID 2519"), Input::Cid(2519));
+        assert_eq!(classify("cid:2244"), Input::Cid(2244));
+        let crambin = "TTCCPSIVARSNFNVCRLPGTPEAICATYTGCIIIPGATCPGDYAN";
+        assert_eq!(classify(crambin), Input::Sequence(crambin.into()));
+        assert_eq!(classify(&format!(">crambin\n{crambin}")), Input::Sequence(crambin.into()));
+        // GenBank's blocks of ten.
+        assert!(matches!(classify("ttccpsivar snfnvcrlpg tpeaicatyt"), Input::Sequence(_)));
+        // A fold tab takes words that could be residues as residues.
+        assert!(as_sequence("green fluorescent protein", true).is_some());
+        assert!(as_sequence("green fluorescent protein", false).is_none());
     }
 }

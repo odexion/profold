@@ -14,15 +14,22 @@
 </p>
 
 Open a structure or a trajectory and turn it around: a protein from the PDB, a
-ligand, a crystal, or a LAMMPS or GROMACS simulation box. Paste an identifier and
-it fetches the structure. With the SimpleFold plugin, paste a sequence and it
-folds it with [Apple's SimpleFold](https://github.com/apple/ml-simplefold), then
-lays the prediction over the experiment and tells you how close it came.
+ligand, a crystal, or a LAMMPS or GROMACS simulation box. Search for a protein
+or a molecule by name, or paste an identifier, and it fetches the structure.
+Each tab holds its own, so a protein, a trajectory and caffeine can be open side
+by side. With the SimpleFold plugin, a fold tab folds a sequence with
+[Apple's SimpleFold](https://github.com/apple/ml-simplefold), then lays the
+prediction over the experiment and tells you how close it came.
 
 ## Highlights
 
-- **One field for everything.** A path, a PDB ID, a UniProt accession or a raw
-  sequence. It works out which one you gave it.
+- **Search by name.** Type *green fluorescent protein* or *caffeine* and pick
+  from structures in the PDB, AlphaFold models and molecules in PubChem, best
+  match first. No identifier needed.
+- **One field for everything.** A name, a path, a PDB ID, a UniProt accession,
+  a PubChem CID or a sequence. It works out which one you gave it.
+- **Tabs.** Each tab has its own structure, camera and job, so a fold or a
+  download in one never holds up the others.
 - **Twelve file formats.** PDB, mmCIF, crystallographic CIF, XYZ, GROMACS,
   MOL2, SDF, LAMMPS data and dump, VASP, Gaussian cube and XCrySDen. Gzipped
   files open as they are.
@@ -40,6 +47,7 @@ lays the prediction over the experiment and tells you how close it came.
 - **Fast.** Impostor spheres and capsules on the GPU through wgpu, off the main
   thread. Without a GPU it falls back to a parallel software rasterizer that
   draws the same image.
+- **Folding in its own tab** (plugin). Opt in from the + menu.
 - **Prediction vs. experiment** (plugin). Fold a PDB entry's own sequence,
   superimpose it with Kabsch, and read off the Cα RMSD, coloured by deviation.
 - **Publication images.** Save the viewport as a PNG at one to three times the screen size.
@@ -80,13 +88,28 @@ One field takes everything, and the app works out what you gave it:
 
 | Input | What happens |
 | --- | --- |
+| `green fluorescent protein`: a name | Searches the PDB, AlphaFold DB and PubChem |
 | `~/sims/dump.melt`: a path | Opens the file |
 | `1CRN`: a PDB ID | Downloads the experimental structure from RCSB |
 | `P69905`: a UniProt accession | Downloads the predicted model from AlphaFold DB |
-| `MVLSPADKTNVK…`: residue letters, FASTA and all | Folds it with SimpleFold (plugin) |
+| `CID 2519`: a PubChem compound | Downloads its 3D conformer from PubChem |
+| `MVLSPADKTNVK…`: residue letters, FASTA and all | Finds PDB entries with that sequence |
 
-An accession with no AlphaFold model falls back to fetching its sequence from
-UniProt and folding that instead, when the SimpleFold plugin is built in.
+A search lists what it finds as you type, grouped by database: experimental
+structures, predicted models, and molecules. Return opens the best match, the
+arrow keys or a click another one. The databases rank by their own relevance,
+which for a protein favours the latest of a thousand variants, so profold ranks
+the hits again by how well their names match, with a nudge towards the first
+structure ever deposited (1UBQ for ubiquitin, 1MBN for myoglobin) and towards
+human proteins. A name that is a molecule's, like *caffeine* or *aspirin*, puts
+PubChem first. A compound without a 3D conformer, a peptide drug say, opens as
+PubChem's flat drawing.
+
+**Tabs.** ⌘T opens a tab, ⌘W closes it, ⌘1 to ⌘9 and ⌃Tab move between them.
+Whatever is opened, searched or dropped on the window goes into the tab in front
+and replaces what was there, as in a browser. Each tab keeps its own camera and
+trajectory playback, and a job in one tab carries on while you use another; its
+tab shows the progress.
 
 In the viewport: drag to orbit, shift-drag to pan, scroll to zoom, double-click
 to reframe. The molecule follows the pointer, so dragging right brings the near
@@ -172,7 +195,8 @@ switched off with **Cell**.
 
 ## Comparing
 
-*Part of the SimpleFold plugin.* Next to **Fetch** there is **Compare**, which
+*Part of the SimpleFold plugin.* In a fold tab, an identifier can be folded or
+compared. **Compare**
 is the interesting one. It pulls the deposited structure, folds that structure's
 *own* sequence with SimpleFold, superimposes the two, and reports the Cα RMSD
 between them. That is how close the prediction came to the experiment, for this
@@ -199,6 +223,12 @@ alignment or having to fetch it again.
 
 ## Folding
 
+Folding happens in a tab of its own, which you open from the **+** in the tab
+bar (*Fold a protein*) or with *File › New Fold Tab*. The viewer never folds.
+A fold tab takes a sequence, or a PDB ID or UniProt accession whose chains it
+folds, and shows the prediction in its own viewport, so you can keep working in
+other tabs while it runs.
+
 Folding is a plugin, compiled in by the `simplefold` Cargo feature, which is on
 by default. `cargo build --no-default-features` builds the viewer on its own.
 
@@ -208,7 +238,7 @@ virtualenv, and on Apple silicon the MLX backend and ESM. It needs
 [`uv`](https://docs.astral.sh/uv/) on the system (`brew install uv`) and it
 downloads several gigabytes, once. Progress streams into the left panel.
 
-Model size (100M through 3B), step count and pLDDT are on the sequence panel.
+Model size (100M through 3B), step count and pLDDT are on the fold tab's panel.
 100M at 200 steps is the quick setting. Larger models are slower and better.
 
 pLDDT is off by default because it is not free. SimpleFold scores confidence
@@ -237,12 +267,14 @@ with a space in it still works.
 cargo run --release
 ```
 
-It also takes an argument, which saves typing while iterating:
+It also takes arguments, each opened in a tab of its own:
 
 ```
-profold 1UBQ              # open with that already loaded
-profold traj.lammpstrj    # or a file
-profold --compare 1UBQ    # fetch it and fold its sequence alongside (plugin)
+profold 1UBQ                    # open with that already loaded
+profold traj.lammpstrj caffeine # a file, and a molecule found by name
+profold --fold                  # an empty fold tab (plugin)
+profold --fold 1CRN             # fold an entry's chains (plugin)
+profold --compare 1UBQ          # fetch it and fold its sequence alongside (plugin)
 ```
 
 Without the folding plugin:
@@ -278,9 +310,10 @@ cargo test --release readme_gallery -- --ignored
 | [`render.rs`](src/render.rs) | Scene building, camera, and the software rasterizer |
 | [`gpu.rs`](src/gpu.rs), [`gpu.wgsl`](src/gpu.wgsl) | The same drawing on the graphics card, with wgpu |
 | [`settings.rs`](src/settings.rs) | Preferences kept between sessions |
-| [`fetch.rs`](src/fetch.rs) | Input classification, RCSB / AlphaFold / UniProt |
+| [`fetch.rs`](src/fetch.rs) | Input classification, RCSB / AlphaFold / UniProt / PubChem |
+| [`search.rs`](src/search.rs) | Search by name across the PDB, UniProt and PubChem, and the ranking |
 | [`plugins/simplefold/`](src/plugins/simplefold/) | The folding plugin: jobs, settings, and the SimpleFold subprocess |
-| [`ui/`](src/ui/) | The GPUI views |
+| [`ui/`](src/ui/) | The GPUI views: the tabbed window, and the viewer each tab is |
 
 GPUI has no 3D pipeline, so profold brings its own. A structure becomes a scene
 of sphere and capsule impostors, plus triangles for the cartoon. A camera looks

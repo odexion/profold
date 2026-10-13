@@ -38,9 +38,10 @@ provider's own terms:
 
 | Service | Used for | Terms |
 | --- | --- | --- |
-| RCSB Protein Data Bank (`files.rcsb.org`) | Downloading PDB entries | [RCSB PDB policies](https://www.rcsb.org/pages/policies) |
+| RCSB Protein Data Bank (`files.rcsb.org`, `search.rcsb.org`, `data.rcsb.org`) | Searching and downloading PDB entries | [RCSB PDB policies](https://www.rcsb.org/pages/policies) |
 | AlphaFold Protein Structure Database (`alphafold.ebi.ac.uk`) | Downloading predicted models | [AlphaFold DB terms](https://alphafold.ebi.ac.uk/faq), [EMBL-EBI terms of use](https://www.ebi.ac.uk/about/terms-of-use) |
-| UniProt (`rest.uniprot.org`) | Downloading sequences | [UniProt license and disclaimer](https://www.uniprot.org/help/license) |
+| UniProt (`rest.uniprot.org`) | Searching proteins, downloading sequences | [UniProt license and disclaimer](https://www.uniprot.org/help/license) |
+| PubChem and NCBI E-utilities (`pubchem.ncbi.nlm.nih.gov`, `eutils.ncbi.nlm.nih.gov`) | Searching and downloading molecules | [NCBI policies](https://www.ncbi.nlm.nih.gov/home/about/policies/), [PubChem usage policy](https://pubchem.ncbi.nlm.nih.gov/docs/programmatic-access) |
 | GitHub (`github.com`) | Cloning SimpleFold and ESM (plugin) | [GitHub Terms of Service](https://docs.github.com/site-policy/github-terms/github-terms-of-service) |
 | Python Package Index, through `uv` | Installing Python dependencies (plugin) | [PyPI terms](https://policies.python.org/pypi.org/Terms-of-Service/) |
 | Apple and Meta model hosting | Downloading SimpleFold and ESM2 weights (plugin) | The licenses shipped with each model |
@@ -68,8 +69,13 @@ cargo build --release --no-default-features
 - profold has **no telemetry, analytics, accounts or crash reporting**.
 - Files you open are read on your computer and never uploaded.
 - Network requests happen only when you ask for something that needs them:
-  - fetching a PDB ID or UniProt accession sends that identifier to the
-    services above;
+  - fetching a PDB ID, UniProt accession or PubChem CID sends that identifier
+    to the services above;
+  - typing a name in a viewer's search field sends what you typed, once you
+    pause, to the RCSB PDB, UniProt and NCBI/PubChem;
+  - pasting a sequence into a viewer's search field sends the sequence to the
+    RCSB PDB's sequence search. To keep a sequence private, fold it in a fold
+    tab instead, which never searches;
   - setting up the folding plugin downloads its code and weights.
 
   Like any web request, these reveal your IP address to the provider.
