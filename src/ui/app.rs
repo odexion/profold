@@ -140,6 +140,8 @@ pub struct Profold {
     style: Style,
     palette: Palette,
     cache: Rc<RefCell<viewer::Cache>>,
+    /// The logo's strand, for the head of the panel.
+    mark: Arc<gpui::Image>,
 
     drag: Option<Drag>,
     last_mouse: Point<Pixels>,
@@ -252,6 +254,10 @@ impl Profold {
             style: settings.style,
             palette: settings.palette,
             cache: Rc::new(RefCell::new(viewer::Cache::default())),
+            mark: Arc::new(gpui::Image::from_bytes(
+                gpui::ImageFormat::Png,
+                include_bytes!("../../assets/mark.png").to_vec(),
+            )),
             drag: None,
             last_mouse: Point::default(),
             last_step: [0.0; 2],
@@ -1257,11 +1263,11 @@ fn secondary(id: &'static str, text: &'static str) -> gpui::Stateful<gpui::Div> 
         .child(text)
 }
 
-pub(crate) fn label(text: &'static str) -> impl IntoElement {
+pub(crate) fn label(text: impl Into<gpui::SharedString>) -> impl IntoElement {
     div()
         .text_size(px(9.5))
         .text_color(theme::FAINT)
-        .child(text)
+        .child(text.into())
 }
 
 
@@ -1521,14 +1527,7 @@ impl Profold {
             .border_color(theme::BORDER)
             .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
             .child(
-                div()
-                    .pr(px(14.))
-                    .text_size(px(13.))
-                    .text_color(theme::INK)
-                    .child("profold"),
-            )
-            .child(
-                tab("open-file", "Open…", false)
+                tab("open-file", "Open", false)
                     .on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))),
             )
             .child(self.tab_with_menu(
@@ -1573,6 +1572,7 @@ impl Profold {
     fn angle_readout(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let [x, y] = self.camera.angles();
         let zoom = self.camera.zoom;
+        let (fps, live) = self.cache.borrow().fps();
         let name = |n: &'static str| div().text_size(px(9.)).text_color(theme::FAINT).child(n);
         // Rounded first, so a hair either side of zero is not "-0".
         let degrees = |d: f32| format!("{}°", d.round() as i32);
@@ -1589,6 +1589,21 @@ impl Profold {
             .child(div().w(px(6.)))
             .child(name("ZOOM"))
             .child(self.field("zoom", Field::Zoom, format!("{zoom:.2}×"), 50., cx))
+            .child(div().w(px(6.)))
+            .child(name("FPS"))
+            .child(
+                div()
+                    .w(px(30.))
+                    .h(px(18.))
+                    .px(px(4.))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .font_family(theme::MONO)
+                    .text_size(px(10.5))
+                    .text_color(if live { theme::MUTED } else { theme::FAINT })
+                    .child(format!("{}", fps.round() as u32)),
+            )
     }
 
     /// A menu title with its card hanging under it, painted over everything
@@ -1621,35 +1636,52 @@ impl Profold {
                 this.open = None;
                 cx.notify();
             }))
-            .children(SAMPLES.iter().enumerate().map(|(i, sample)| {
-                div()
-                    .id(("sample-menu", i))
-                    .flex()
-                    .items_baseline()
-                    .justify_between()
-                    .gap(px(10.))
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(5.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::SUNKEN))
-                    .child(
+            .children(crate::samples::grouped().into_iter().enumerate().flat_map(
+                |(n, (group, samples))| {
+                    let heading = div()
+                        .px(px(8.))
+                        .pt(px(if n == 0 { 3. } else { 0. }))
+                        .pb(px(2.))
+                        .child(label(group.to_uppercase()))
+                        .into_any_element();
+                    let rows = samples.into_iter().map(|(i, sample)| {
                         div()
-                            .text_size(px(11.5))
-                            .text_color(theme::TEXT)
-                            .child(sample.name),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(9.5))
-                            .text_color(theme::FAINT)
-                            .child(sample.file),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open = None;
-                        this.open_sample(i, cx);
-                    }))
-            }))
+                            .id(("sample-menu", i))
+                            .flex()
+                            .items_baseline()
+                            .justify_between()
+                            .gap(px(10.))
+                            .px(px(8.))
+                            .py(px(4.))
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme::SUNKEN))
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(theme::TEXT)
+                                    .child(sample.name),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(9.5))
+                                    .text_color(theme::FAINT)
+                                    .child(sample.file),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open = None;
+                                this.open_sample(i, cx);
+                            }))
+                            .into_any_element()
+                    });
+                    (n > 0)
+                        .then(|| divide().into_any_element())
+                        .into_iter()
+                        .chain(std::iter::once(heading))
+                        .chain(rows)
+                        .collect::<Vec<_>>()
+                },
+            ))
     }
 
     /// The controls that govern the drawing, floating over the viewport:
@@ -1965,6 +1997,29 @@ impl Profold {
             }))
     }
 
+    /// The logo and what the app is for, at the head of the panel.
+    fn masthead(&self) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(11.))
+            .px(px(20.))
+            .child(gpui::img(self.mark.clone()).size(px(40.)).flex_none())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .child(div().text_size(px(17.)).text_color(theme::INK).child("profold"))
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(theme::FAINT)
+                            .child("proteins, molecules and crystals"),
+                    ),
+            )
+    }
+
     fn search(&self, focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let detected = self.detected.clone();
         let ready = !matches!(detected, Input::Empty | Input::Unknown)
@@ -1975,6 +2030,27 @@ impl Profold {
         let identifier = matches!(detected, Input::Pdb(_) | Input::UniProt(_));
         let busy = self.busy.is_some();
 
+        let run = div()
+            .id("run")
+            .flex_none()
+            .h(px(38.))
+            .min_w(px(68.))
+            .px(px(15.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(8.))
+            .text_size(px(11.5))
+            .when(ready && !busy, |d| {
+                d.bg(theme::INK)
+                    .text_color(theme::ON_INK)
+                    .hover(|s| s.opacity(0.86))
+                    .cursor_pointer()
+            })
+            .when(!ready || busy, |d| d.bg(theme::SUNKEN).text_color(theme::FAINT))
+            .child(detected.action())
+            .on_click(cx.listener(|this, _, _, cx| this.submit(cx)));
+
         div()
             .flex()
             .flex_col()
@@ -1984,79 +2060,72 @@ impl Profold {
                 div()
                     .flex()
                     .items_center()
-                    .h(px(38.))
-                    .px(px(11.))
-                    .rounded(px(8.))
-                    .bg(if focused { theme::SURFACE } else { theme::SUNKEN })
-                    .border_1()
-                    .border_color(if focused {
-                        theme::BORDER_FOCUS
-                    } else {
-                        theme::BORDER
-                    })
-                    .text_size(px(12.5))
-                    .text_color(theme::TEXT)
-                    .font_family(theme::MONO)
-                    .child(self.input.clone()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
                     .gap(px(8.))
-                    .h(px(22.))
-                    .child(match &detected {
-                        Input::Empty => div().child(""),
-                        Input::Unknown => div()
-                            .text_size(px(10.5))
-                            .text_color(theme::FAINT)
-                            .child(detected.detail()),
-                        other => div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(
-                                div()
-                                    .text_size(px(9.))
-                                    .text_color(theme::MUTED)
-                                    .child(other.kind()),
-                            )
-                            .child(
-                                div()
-                                    .font_family(theme::MONO)
-                                    .text_size(px(11.))
-                                    .text_color(theme::TEXT)
-                                    .child(other.detail()),
-                            ),
-                    })
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
-                            .when(identifier && !busy, |d| self.plugin_actions(d, cx))
-                            .child(
-                                div()
-                                    .id("run")
-                                    .px(px(13.))
-                                    .py(px(5.))
-                                    .rounded(px(6.))
-                                    .text_size(px(11.5))
-                                    .when(ready && !busy, |d| {
-                                        d.bg(theme::INK)
-                                            .text_color(theme::ON_INK)
-                                            .hover(|s| s.opacity(0.86))
-                                            .cursor_pointer()
-                                    })
-                                    .when(!ready || busy, |d| {
-                                        d.bg(theme::SUNKEN).text_color(theme::FAINT)
-                                    })
-                                    .child(detected.action())
-                                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
-                            ),
-                    ),
+                            .h(px(38.))
+                            .px(px(11.))
+                            .rounded(px(8.))
+                            .bg(if focused { theme::SURFACE } else { theme::SUNKEN })
+                            .border_1()
+                            .border_color(if focused {
+                                theme::BORDER_FOCUS
+                            } else {
+                                theme::BORDER
+                            })
+                            .text_size(px(12.5))
+                            .text_color(theme::TEXT)
+                            .font_family(theme::MONO)
+                            .child(self.input.clone()),
+                    )
+                    .child(run),
             )
+            // What the field holds, and what else can be done with it; only
+            // once there is something in it.
+            .when(!matches!(detected, Input::Empty), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.))
+                        .h(px(22.))
+                        .child(match &detected {
+                            Input::Unknown => div()
+                                .text_size(px(10.5))
+                                .text_color(theme::FAINT)
+                                .child(detected.detail()),
+                            other => div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(px(9.))
+                                        .text_color(theme::MUTED)
+                                        .child(other.kind()),
+                                )
+                                .child(
+                                    div()
+                                        .font_family(theme::MONO)
+                                        .text_size(px(11.))
+                                        .text_color(theme::TEXT)
+                                        .child(other.detail()),
+                                ),
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .when(identifier && !busy, |d| self.plugin_actions(d, cx)),
+                        ),
+                )
+            })
     }
 
     /// Buttons a plugin puts beside the primary action for an identifier.
@@ -3360,6 +3429,7 @@ impl Render for Profold {
                     .bg(theme::SURFACE)
                     .border_r_1()
                     .border_color(theme::BORDER)
+                    .child(self.masthead())
                     .child(self.search(focused, cx))
                     .when(can_fold, |d| d.children(self.plugin_options(cx)))
                     .child(self.status(cx))

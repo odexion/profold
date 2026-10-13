@@ -9,8 +9,10 @@
 //! keeps answering however long a frame takes.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui::{canvas, px, Corners, IntoElement, RenderImage, Styled};
 use image::{Frame, RgbaImage};
@@ -56,6 +58,61 @@ pub struct Cache {
     drawing: Option<Key>,
     /// The pixel size last painted, which is what an exported image matches.
     pub size: (usize, usize),
+    /// When each frame of the last second went up.
+    shown: VecDeque<Instant>,
+    /// Whether a repaint is due for when the frame rate falls idle.
+    settling: bool,
+    /// The frame rate over `shown`, while there were two frames to time.
+    rate: f32,
+}
+
+/// How far back the frame rate looks, and how long the view must be still
+/// before it is called idle.
+const WINDOW: Duration = Duration::from_secs(1);
+
+impl Cache {
+    /// Frames put up per second, as last measured while the view moved,
+    /// and whether it is moving still. Frames are drawn only when the view
+    /// changes, so a still view keeps the rate it last had.
+    pub fn fps(&self) -> (f32, bool) {
+        let live = self.shown.back().is_some_and(|t| t.elapsed() <= WINDOW);
+        (self.rate, live)
+    }
+
+    /// Note a new frame, and see that the rate reads idle once the view
+    /// stops: nothing else would paint the window again to say so.
+    fn shown(this: &Rc<RefCell<Cache>>, window: &mut gpui::Window, cx: &mut gpui::App) {
+        let mut cache = this.borrow_mut();
+        let now = Instant::now();
+        cache.shown.push_back(now);
+        while cache.shown.front().is_some_and(|t| now - *t > WINDOW) {
+            cache.shown.pop_front();
+        }
+        if let (Some(first), true) = (cache.shown.front(), cache.shown.len() > 1) {
+            let span = (now - *first).as_secs_f32();
+            if span > 0.0 {
+                cache.rate = (cache.shown.len() - 1) as f32 / span;
+            }
+        }
+        if std::mem::replace(&mut cache.settling, true) {
+            return;
+        }
+        let this = this.clone();
+        window
+            .spawn(cx, async move |cx| {
+                loop {
+                    let last = this.borrow().shown.back().copied();
+                    let Some(wait) = last.and_then(|t| (t + WINDOW).checked_duration_since(Instant::now()))
+                    else {
+                        break;
+                    };
+                    cx.background_executor().timer(wait + Duration::from_millis(10)).await;
+                }
+                this.borrow_mut().settling = false;
+                let _ = cx.update(|window, _| window.refresh());
+            })
+            .detach();
+    }
 }
 
 /// `interactive` renders at 1x instead of the display's scale factor, which
@@ -94,6 +151,9 @@ pub fn viewport(
                     let _ = window.drop_image(old);
                 }
                 current.key = Some(k);
+                drop(current);
+                Cache::shown(&cache, window, cx);
+                current = cache.borrow_mut();
             } else if current.key.as_ref() != Some(&k) && current.drawing.is_none() {
                 current.drawing = Some(k);
                 let (scene, cache) = (scene.clone(), cache.clone());
@@ -103,7 +163,8 @@ pub fn viewport(
                 window
                     .spawn(cx, async move |cx| {
                         let image = drawn.await;
-                        let _ = cx.update(|window, _| {
+                        let _ = cx.update(|window, cx| {
+                            let this = cache.clone();
                             let mut cache = cache.borrow_mut();
                             // A resize may have drawn past it in the meantime.
                             let Some(k) = cache.drawing.take() else { return };
@@ -116,6 +177,8 @@ pub fn viewport(
                                     let _ = window.drop_image(old);
                                 }
                                 cache.key = Some(k);
+                                drop(cache);
+                                Cache::shown(&this, window, cx);
                             }
                             // Paint again, which starts on the newest view if
                             // it has moved on since.
