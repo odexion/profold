@@ -260,6 +260,18 @@ seconds on Apple silicon. SimpleFold keeps that working cache inside its output
 directory, so the app hands it one stable directory rather than a fresh one per
 run. Otherwise every fold would re-download the whole 3.7 GB.
 
+Every one of those files is fetched by profold before SimpleFold starts, and
+SimpleFold finds them in place. SimpleFold's own downloads write straight to the
+final file, so an interrupted one leaves a truncated checkpoint that the next
+run believes. profold's are all or nothing: each file is written beside its
+destination as `<name>.part`, checked against the size the server declared, and
+only then renamed into place. An interrupted download keeps its `.part` and
+resumes from there next time, so closing the tab mid-way costs nothing. A file
+that was already there is checked against the server once and recorded in
+`~/.profold/downloads.json`; one found short is finished rather than fetched
+again. The tab says which file it is downloading and how far along it is. The
+environment itself counts as installed only once its install has run to the end.
+
 The environment does not go in `~/Library/Application Support`, even though that
 is the right place for it. SimpleFold fetches its weights with
 `os.system(f"curl -L {url} -o {path}")`, and an unquoted path containing a space

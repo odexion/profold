@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 
+use super::download;
 use crate::job::{self, Event};
 
 pub const MODELS: [&str; 6] = [
@@ -96,8 +97,78 @@ impl Engine {
         self.root.join("predictions")
     }
 
+    /// The files a fold with `model` needs, and where SimpleFold looks for
+    /// them: its checkpoints, ESM2 in torch's hub, and Boltz's component
+    /// dictionary and structure module in the working cache.
+    fn weights(&self, model: &str, plddt: bool) -> Vec<download::Wanted> {
+        const APPLE: &str = "https://ml-site.cdn-apple.com/models/simplefold";
+        const ESM: &str = "https://dl.fbaipublicfiles.com/fair-esm";
+        const BOLTZ: &str = "https://huggingface.co/boltz-community/boltz-1/resolve/main";
+        let want = |url: String, path: PathBuf, what: &str| download::Wanted {
+            url,
+            path,
+            what: what.to_string(),
+        };
+        let ckpt = self.checkpoints();
+        let hub = torch_hub().join("checkpoints");
+        let cache = self.predictions().join("cache");
+        // Torch's own downloads leave `.partial` files when interrupted,
+        // which it never resumes; they are dead weight.
+        if let Ok(entries) = std::fs::read_dir(&hub) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().ends_with(".partial") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+
+        let mut files = vec![want(
+            format!("{APPLE}/{model}.ckpt"),
+            ckpt.join(format!("{model}.ckpt")),
+            &format!("SimpleFold {} weights", model_label(model)),
+        )];
+        if plddt {
+            files.push(want(
+                format!("{APPLE}/plddt_module_1.6B.ckpt"),
+                ckpt.join("plddt.ckpt"),
+                "the pLDDT module",
+            ));
+            files.push(want(
+                format!("{APPLE}/simplefold_1.6B.ckpt"),
+                ckpt.join("simplefold_1.6B.ckpt"),
+                "SimpleFold 1.6B weights for pLDDT",
+            ));
+        }
+        files.extend([
+            want(
+                format!("{ESM}/models/esm2_t36_3B_UR50D.pt"),
+                hub.join("esm2_t36_3B_UR50D.pt"),
+                "the ESM2-3B language model",
+            ),
+            want(
+                format!("{ESM}/regression/esm2_t36_3B_UR50D-contact-regression.pt"),
+                hub.join("esm2_t36_3B_UR50D-contact-regression.pt"),
+                "ESM2-3B's contact regression",
+            ),
+            want(format!("{BOLTZ}/ccd.pkl"), cache.join("ccd.pkl"), "the chemical component dictionary"),
+            want(
+                format!("{BOLTZ}/boltz1_conf.ckpt"),
+                cache.join("boltz1_conf.ckpt"),
+                "the Boltz-1 structure module",
+            ),
+        ]);
+        files
+    }
+
     pub fn is_installed(&self) -> bool {
-        self.cli().exists() && self.venv_is_current()
+        self.cli().exists() && self.venv_is_current() && self.installed_marker().exists()
+    }
+
+    /// Written when an install has run to the end, so that one cut short,
+    /// with the `simplefold` script in place but packages missing, is
+    /// finished next time rather than trusted.
+    fn installed_marker(&self) -> PathBuf {
+        self.venv().join(".profold-installed")
     }
 
     /// Whether the environment runs the Python this version of profold sets
@@ -207,9 +278,10 @@ impl Engine {
             )?;
         }
 
-        if !self.is_installed() {
+        if !self.cli().exists() {
             return Err(anyhow!("installation finished but `simplefold` is missing"));
         }
+        std::fs::write(self.installed_marker(), PYTHON)?;
         self.ease_esm_load(tx);
         stage(tx, "Folding engine ready.");
         Ok(())
@@ -280,7 +352,7 @@ impl Engine {
             "        url = f\"https://dl.fbaipublicfiles.com/fair-esm/models/{name}.pt\"\n",
             "        ckpt = os.path.join(torch.hub.get_dir(), \"checkpoints\", f\"{name}.pt\")\n",
             "        regression = ckpt.replace(\".pt\", \"-contact-regression.pt\")\n",
-            "        for path, source in ((ckpt, url), (regression, url.replace(\".pt\", \"-contact-regression.pt\"))):\n",
+            "        for path, source in ((ckpt, url), (regression, url.replace(\"/models/\", \"/regression/\").replace(\".pt\", \"-contact-regression.pt\"))):\n",
             "            if not os.path.exists(path):\n",
             "                os.makedirs(os.path.dirname(path), exist_ok=True)\n",
             "                torch.hub.download_url_to_file(source, path)\n",
@@ -389,6 +461,9 @@ impl Engine {
         std::fs::create_dir_all(self.checkpoints())?;
         clear_previous(&run_dir)?;
         self.ease_esm_load(tx);
+        // Everything SimpleFold would fetch for itself, fetched first and
+        // whole; see download.rs.
+        download::ensure(&self.weights(model, plddt), &self.root.join("downloads.json"), tx)?;
         let started = std::time::SystemTime::now();
 
         let fasta = run_dir.join(format!("{name}.fasta"));
@@ -519,6 +594,19 @@ fn newest_structure(dir: &Path, since: std::time::SystemTime) -> Option<PathBuf>
 }
 
 /// Announce a phase in our own words, rather than the subprocess's.
+/// Where torch keeps what it downloads: `$TORCH_HOME/hub`, or the hub under
+/// the cache directory, as `torch.hub.get_dir` works it out.
+fn torch_hub() -> PathBuf {
+    if let Some(home) = std::env::var_os("TORCH_HOME") {
+        return PathBuf::from(home).join("hub");
+    }
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
+        .unwrap_or_else(|| PathBuf::from(".cache"));
+    cache.join("torch").join("hub")
+}
+
 fn stage(tx: &Sender<Event>, msg: &str) {
     STAGE.with_borrow_mut(|s| *s = msg.to_string());
     let _ = tx.send(Event::Stage(msg.to_string()));

@@ -7,6 +7,7 @@
 //! settings row for them, and the Compare button. Everything else — running
 //! jobs, showing structures, superimposed pairs — is the viewer's.
 
+mod download;
 mod engine;
 
 use std::sync::mpsc::Sender;
