@@ -242,7 +242,7 @@ pub struct Viewer {
 impl Viewer {
     pub fn new(mode: Mode, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let placeholder = match mode {
-            Mode::View => "Search by name, or paste an ID",
+            Mode::View => "Search by name or gene, or paste an ID",
             Mode::Fold => "Sequence, PDB ID or accession",
         };
         let input = cx.new(|cx| TextInput::new(placeholder, cx));

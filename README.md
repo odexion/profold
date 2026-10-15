@@ -79,7 +79,8 @@ Settings, the folding environment and its weights live in `~/.profold` (and
 
 - **Search by name.** Type *green fluorescent protein* or *caffeine* and pick
   from structures in the PDB, AlphaFold models and molecules in PubChem, best
-  match first. No identifier needed.
+  match first. A gene symbol works too: *TP53* brings up human p53. No
+  identifier needed.
 - **One field for everything.** A name, a path, a PDB ID, a UniProt accession,
   a PubChem CID or a sequence. It works out which one you gave it.
 - **Tabs.** Each tab has its own structure, camera and job, so a fold or a
@@ -143,6 +144,7 @@ One field takes everything, and the app works out what you gave it:
 | Input | What happens |
 | --- | --- |
 | `green fluorescent protein`: a name | Searches the PDB, AlphaFold DB and PubChem |
+| `TP53`: a gene symbol | Finds the protein it codes for, human first, as structures and a model |
 | `~/sims/dump.melt`: a path | Opens the file |
 | `1CRN`: a PDB ID | Downloads the experimental structure from RCSB |
 | `P69905`: a UniProt accession | Downloads the predicted model from AlphaFold DB |
@@ -160,6 +162,14 @@ structure ever deposited (1UBQ for ubiquitin, 1MBN for myoglobin) and towards
 human proteins. A name that is a molecule's, like *caffeine* or *aspirin*, puts
 PubChem first. A compound without a 3D conformer, a peptide drug say, opens as
 PubChem's flat drawing.
+
+A gene symbol, *TP53*, *BRCA1* or *EGFR*, is looked up in UniProt's gene names
+too. The protein it codes for comes up as its AlphaFold model, and the PDB
+entries are the ones whose chains are that protein, ranked by how much of it
+they hold, so p53's core domain comes before a peptide of it and KRAS's own
+structures before its promoter's DNA. The human gene wins when several species
+share the symbol; a word that only some bacterium's gene answers to, like
+*heme*, stays the molecule.
 
 **Tabs.** ⌘T opens a tab, ⇧⌘T a fold tab, ⌘W closes one, and ⌘1 to ⌘9 and
 ⌃Tab move between them. Drag a tab along the bar to reorder it. The tabs you
@@ -431,7 +441,7 @@ cargo test --release readme_gallery -- --ignored
 | [`settings.rs`](src/settings.rs) | Preferences kept between sessions |
 | [`update.rs`](src/update.rs) | Checking GitHub releases, and replacing the app with a new one |
 | [`fetch.rs`](src/fetch.rs) | Input classification, RCSB / AlphaFold / UniProt / PubChem |
-| [`search.rs`](src/search.rs) | Search by name across the PDB, UniProt and PubChem, and the ranking |
+| [`search.rs`](src/search.rs) | Search by name or gene across the PDB, UniProt and PubChem, and the ranking |
 | [`plugins/simplefold/`](src/plugins/simplefold/) | The folding plugin: jobs, settings, and the SimpleFold subprocess |
 | [`ui/`](src/ui/) | The GPUI views: the tabbed window, and the viewer each tab is |
 

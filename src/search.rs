@@ -7,6 +7,10 @@
 //! ones first. So the hits are scored again here, by how closely their names
 //! match what was typed, and the database whose best hit is a match for the
 //! name leads.
+//!
+//! A gene symbol (TP53, BRCA1, EGFR) names no protein, so it is looked up in
+//! UniProt's gene names as well: the protein it codes for comes up as its
+//! AlphaFold model, and the PDB entries whose chains are that protein.
 
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -50,6 +54,8 @@ pub struct Hit {
     exact: bool,
     /// Found as a synonym of the query rather than by its own name.
     alias: bool,
+    /// The gene it was found by, when it was.
+    gene: Option<String>,
 }
 
 impl Hit {
@@ -71,6 +77,7 @@ impl Hit {
             score: 0.0,
             exact: false,
             alias: false,
+            gene: None,
         }
     }
 
@@ -80,7 +87,10 @@ impl Hit {
     pub fn is_named(&self, query: &str) -> bool {
         let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
         let query = squash(query);
-        !query.is_empty() && (squash(&self.title) == query || squash(&self.label()) == query)
+        !query.is_empty()
+            && (squash(&self.title) == query
+                || squash(&self.label()) == query
+                || self.gene.as_deref().is_some_and(|g| squash(g) == query))
     }
 
     /// The identifier as shown beside the title.
@@ -107,9 +117,10 @@ pub fn search(query: &str) -> Result<Vec<Hit>> {
         let respelt = s.spawn(|| respelt(query));
         (search_all(query), respelt.join().ok().flatten())
     });
-    let (mut pdb, mut uniprot, mut molecules) = found?;
-    if let Some(fixed) = respelt {
-        if let Ok((p, u, m)) = search_all(&american(&fixed)) {
+    let ((mut pdb, mut uniprot, mut molecules), gene) = found?;
+    // A gene symbol is not a misspelling: the speller has BRCA1 as brca.
+    if let Some(fixed) = respelt.filter(|_| !gene) {
+        if let Ok(((p, u, m), _)) = search_all(&american(&fixed)) {
             pdb = merge(pdb, p, PDB_SHOWN);
             uniprot = merge(uniprot, u, UNIPROT_SHOWN);
             molecules = merge(molecules, m, MOLECULES_SHOWN);
@@ -127,26 +138,50 @@ pub fn search(query: &str) -> Result<Vec<Hit>> {
 
 type Groups = (Vec<Hit>, Vec<Hit>, Vec<Hit>);
 
-/// The three databases at once. One that fails is left out; only when all
-/// of them fail is it an error.
-fn search_all(query: &str) -> Result<Groups> {
-    let (pdb, uniprot, pubchem) = std::thread::scope(|s| {
+/// The three databases at once, and whether the query is surely a gene's
+/// name. One that fails is left out; only when all of them fail is it an
+/// error.
+fn search_all(query: &str) -> Result<(Groups, bool)> {
+    let (pdb, uniprot, pubchem, gene) = std::thread::scope(|s| {
         let pdb = s.spawn(|| search_pdb(query));
         let uniprot = s.spawn(|| search_uniprot(query));
         let pubchem = s.spawn(|| search_pubchem(query));
+        // A gene symbol, looked up alongside; its protein's structures are
+        // asked for once UniProt says which protein that is.
+        let genes = genes(query);
+        let gene = genes.first().is_some_and(|g| g.certain);
+        let gene_pdb = genes
+            .first()
+            .filter(|g| g.certain)
+            .cloned()
+            .map(|g| s.spawn(move || search_pdb_gene(&g)));
+        let mut pdb = pdb.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed")));
+        let mut uniprot = uniprot.join().unwrap_or_else(|_| Err(anyhow!("UniProt search failed")));
+        // The text search finds whatever mentions the symbol: KRAS's
+        // promoter, antibodies against EGFR. The protein's own entries are
+        // what a gene symbol asks for.
+        if let Some(Ok(Ok(hits))) = gene_pdb.map(|t| t.join()) {
+            if !hits.is_empty() {
+                pdb = Ok(hits);
+            }
+        }
+        if !genes.is_empty() {
+            let hits = genes.into_iter().map(Gene::hit).collect();
+            uniprot = Ok(merge(uniprot.unwrap_or_default(), hits, UNIPROT_SHOWN));
+        }
         (
-            pdb.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed"))),
-            uniprot.join().unwrap_or_else(|_| Err(anyhow!("UniProt search failed"))),
+            pdb,
+            uniprot,
             pubchem.join().unwrap_or_else(|_| Err(anyhow!("PubChem search failed"))),
+            gene,
         )
     });
     if let (Err(e), Err(_), Err(_)) = (&pdb, &uniprot, &pubchem) {
         return Err(anyhow!("search failed: {e:#}"));
     }
     Ok((
-        pdb.unwrap_or_default(),
-        uniprot.unwrap_or_default(),
-        pubchem.unwrap_or_default(),
+        (pdb.unwrap_or_default(), uniprot.unwrap_or_default(), pubchem.unwrap_or_default()),
+        gene,
     ))
 }
 
@@ -311,6 +346,8 @@ struct Entry {
     detail: String,
     /// The names of its chains.
     names: Vec<String>,
+    /// Each chain's UniProt accessions and length in residues.
+    chains: Vec<(Vec<String>, u64)>,
     /// Better resolved structures are a little more likely to be the one
     /// wanted; it only ever settles near ties.
     quality: f32,
@@ -326,6 +363,7 @@ impl Entry {
             score,
             exact,
             alias: false,
+            gene: None,
         }
     }
 }
@@ -359,7 +397,9 @@ fn describe_entries(ids: &[String]) -> Result<Vec<Entry>> {
         "{{entries(entry_ids:[{list}]){{rcsb_id struct{{title}} \
          rcsb_entry_info{{resolution_combined experimental_method}} \
          polymer_entities{{rcsb_polymer_entity{{pdbx_description}} \
-         rcsb_entity_source_organism{{scientific_name}}}}}}}}"
+         rcsb_entity_source_organism{{scientific_name}} \
+         entity_poly{{rcsb_sample_sequence_length}} \
+         rcsb_polymer_entity_container_identifiers{{uniprot_ids}}}}}}}}"
     );
     let reply = post_json("https://data.rcsb.org/graphql", &json!({ "query": query }))?;
     let entries = reply
@@ -402,6 +442,21 @@ fn describe_entries(ids: &[String]) -> Result<Vec<Entry>> {
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect();
+        let chains = entities
+            .iter()
+            .map(|p| {
+                let ids = p
+                    .pointer("/rcsb_polymer_entity_container_identifiers/uniprot_ids")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .unwrap_or_default();
+                let length = p
+                    .pointer("/entity_poly/rcsb_sample_sequence_length")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                (ids, length)
+            })
+            .collect();
         let organism = entities
             .iter()
             .filter_map(|p| p.pointer("/rcsb_entity_source_organism/0/scientific_name"))
@@ -427,6 +482,7 @@ fn describe_entries(ids: &[String]) -> Result<Vec<Entry>> {
             title,
             detail: detail.join(" · "),
             names,
+            chains,
             quality: match resolution {
                 Some(r) if r <= 2.0 => 0.3,
                 Some(r) if r <= 3.0 => 0.15,
@@ -517,9 +573,211 @@ fn uniprot(asked: &str, query: &str) -> Result<Vec<Hit>> {
                 score: score + 0.6 * (1.0 - rank as f32 / 6.0),
                 exact,
                 alias: false,
+                gene: None,
             })
         })
         .collect();
+    Ok(hits)
+}
+
+// ---------------------------------------------------------------------------
+// Gene symbols
+// ---------------------------------------------------------------------------
+
+/// A reviewed UniProt entry found by the name of its gene.
+#[derive(Clone, Debug)]
+struct Gene {
+    accession: String,
+    /// The gene's own name, as UniProt writes it: TP53, Tp53 or tp53.
+    symbol: String,
+    protein: String,
+    organism: String,
+    length: Option<u64>,
+    score: f32,
+    /// Surely the gene that was meant: its name, not a synonym, and either
+    /// human or written the way it was typed. Lower-case heme is a molecule,
+    /// not hemE of E. coli.
+    certain: bool,
+}
+
+impl Gene {
+    fn hit(self) -> Hit {
+        let mut detail = vec![self.symbol.clone(), self.organism];
+        detail.extend(self.length.map(|n| format!("{n} aa")));
+        Hit {
+            kind: Kind::AlphaFold,
+            id: self.accession,
+            title: self.protein,
+            detail: detail.join(" · "),
+            score: self.score,
+            exact: self.certain,
+            alias: false,
+            gene: Some(self.symbol),
+        }
+    }
+}
+
+/// Whether a query could be a gene symbol: one short word of letters and
+/// digits, with perhaps a hyphen (HLA-A).
+fn gene_like(query: &str) -> bool {
+    let n = query.chars().count();
+    (2..=15).contains(&n)
+        && query.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && query.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+/// The proteins a gene symbol codes for, best first: those whose gene it is
+/// by name before those that have it as a synonym, and the human one first
+/// of each, as most who type TP53 mean ours. Empty when the query is not a
+/// gene, or UniProt cannot be reached.
+fn genes(query: &str) -> Vec<Gene> {
+    if !gene_like(query) {
+        return Vec::new();
+    }
+    let reply = agent()
+        .get("https://rest.uniprot.org/uniprotkb/search")
+        .query("query", format!("gene_exact:\"{query}\" AND reviewed:true"))
+        .query("fields", "accession,protein_name,organism_name,gene_names,length")
+        .query("size", "8")
+        .query("format", "json")
+        .header("accept-encoding", "identity")
+        .header("user-agent", USER_AGENT)
+        .call()
+        .and_then(|mut r| r.body_mut().with_config().limit(8 * 1024 * 1024).read_to_string());
+    let Some(json) = reply.ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
+        return Vec::new();
+    };
+    let results = json.get("results").and_then(Value::as_array).cloned().unwrap_or_default();
+    let n = results.len().max(1) as f32;
+    let mut genes: Vec<Gene> = results
+        .iter()
+        .enumerate()
+        .filter_map(|(rank, r)| {
+            let accession = r.get("primaryAccession")?.as_str()?.to_string();
+            let protein = r
+                .pointer("/proteinDescription/recommendedName/fullName/value")
+                .or_else(|| r.pointer("/proteinDescription/submissionNames/0/fullName/value"))
+                .and_then(Value::as_str)?
+                .to_string();
+            let named = |v: &Value| v.as_str().is_some_and(|g| g.eq_ignore_ascii_case(query));
+            let entries = r.get("genes").and_then(Value::as_array).cloned().unwrap_or_default();
+            let primary = entries.iter().find_map(|g| {
+                let name = g.pointer("/geneName/value")?;
+                named(name).then(|| name.as_str().unwrap_or(query).to_string())
+            });
+            // gene_exact also finds synonyms, ordered locus names and the like.
+            let synonym = entries.iter().any(|g| {
+                ["synonyms", "orderedLocusNames", "orfNames"].iter().any(|k| {
+                    g.get(*k)
+                        .and_then(Value::as_array)
+                        .is_some_and(|a| a.iter().any(|s| s.get("value").is_some_and(named)))
+                })
+            });
+            if primary.is_none() && !synonym {
+                return None;
+            }
+            let organism = r
+                .pointer("/organism/scientificName")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let human = organism == "Homo sapiens";
+            let certain = primary.as_deref().is_some_and(|p| human || p == query);
+            Some(Gene {
+                accession,
+                symbol: primary.unwrap_or_else(|| query.to_uppercase()),
+                protein,
+                length: r.pointer("/sequence/length").and_then(Value::as_u64),
+                // An uncertain one is listed, but below proteins named so.
+                score: if certain { 4.0 } else { 1.2 }
+                    + if human { 0.5 } else { 0.0 }
+                    + 0.3 * (1.0 - rank as f32 / n),
+                certain,
+                organism,
+            })
+        })
+        .collect();
+    genes.sort_by(|a, b| b.score.total_cmp(&a.score));
+    genes
+}
+
+/// The PDB's experimental structures of the protein a gene codes for: the
+/// earliest, which are the classics, and the best resolved. Those with more
+/// of the protein in them rank higher, so a domain beats a peptide of it,
+/// and the protein alone beats it caught with partners.
+fn search_pdb_gene(gene: &Gene) -> Result<Vec<Hit>> {
+    let request = |rows: usize, sort: &str| {
+        json!({
+            "query": {
+                "type": "group",
+                "logical_operator": "and",
+                "nodes": [
+                    {
+                        "type": "terminal",
+                        "service": "text",
+                        "parameters": {
+                            "attribute": "rcsb_polymer_entity_container_identifiers.reference_sequence_identifiers.database_accession",
+                            "operator": "exact_match",
+                            "value": gene.accession,
+                        }
+                    },
+                    {
+                        "type": "terminal",
+                        "service": "text",
+                        "parameters": {
+                            "attribute": "rcsb_polymer_entity_container_identifiers.reference_sequence_identifiers.database_name",
+                            "operator": "exact_match",
+                            "value": "UniProt",
+                        }
+                    }
+                ]
+            },
+            "return_type": "entry",
+            "request_options": {
+                "paginate": { "start": 0, "rows": rows },
+                "results_content_type": ["experimental"],
+                "sort": [{ "sort_by": sort, "direction": "asc" }],
+            }
+        })
+    };
+    let earliest = request(PDB_EARLIEST, "rcsb_accession_info.initial_release_date");
+    let sharpest = request(PDB_ROWS, "rcsb_entry_info.resolution_combined");
+    let (earliest, sharpest) = std::thread::scope(|s| {
+        let b = s.spawn(|| rcsb_ids(&sharpest));
+        (rcsb_ids(&earliest), b.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed"))))
+    });
+    let earliest = earliest?;
+    let mut ids = earliest.clone();
+    ids.extend(sharpest.unwrap_or_default().into_iter().filter(|id| !earliest.contains(id)));
+
+    let protein = words(&gene.protein);
+    let mut hits: Vec<Hit> = describe_entries(&ids)?
+        .into_iter()
+        .map(|e| {
+            let named = e
+                .names
+                .iter()
+                .map(|d| matching(&protein, &words(d)).0)
+                .fold(0.0f32, f32::max);
+            let classic = if earliest.contains(&e.id) { 0.7 } else { 0.0 };
+            let covered = e
+                .chains
+                .iter()
+                .filter(|(ids, _)| ids.contains(&gene.accession))
+                .map(|(_, n)| *n)
+                .max()
+                .unwrap_or(0);
+            let coverage = gene.length.map_or(0.0, |l| (covered as f32 / l.max(1) as f32).min(1.0));
+            // Every other chain is a partner the protein was caught with.
+            let partners = 0.2 * e.names.len().saturating_sub(1).min(3) as f32;
+            let score = 2.0 + 0.3 * named + 1.5 * coverage + classic + e.quality
+                - variation(&e.title)
+                - partners;
+            e.hit(score, true)
+        })
+        .collect();
+    hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+    hits.truncate(PDB_SHOWN);
     Ok(hits)
 }
 
@@ -658,6 +916,7 @@ fn properties(url: &str) -> Result<Vec<Hit>> {
                 score: 0.0,
                 exact: false,
                 alias: false,
+                gene: None,
             })
         })
         .collect())
@@ -1101,6 +1360,7 @@ mod tests {
             score: 0.0,
             exact,
             alias: false,
+            gene: None,
         };
         let order = arrange(
             vec![hit(Kind::Pdb, false)],
@@ -1117,6 +1377,19 @@ mod tests {
     }
 
     #[test]
+    fn gene_symbols_look_like_genes() {
+        for g in ["TP53", "brca1", "HLA-A", "Kras"] {
+            assert!(gene_like(g), "{g}");
+        }
+        for q in ["green fluorescent protein", "vitamin c", "53", "2,4-D", "a"] {
+            assert!(!gene_like(q), "{q}");
+        }
+        let mut hit = Hit::for_test(Kind::AlphaFold, "P04637", "Cellular tumor antigen p53");
+        hit.gene = Some("TP53".into());
+        assert!(hit.is_named("tp53"));
+    }
+
+    #[test]
     fn encodes_names_for_a_path() {
         assert_eq!(encode("vitamin c"), "vitamin%20c");
         assert_eq!(encode("2,4-D"), "2%2C4-D");
@@ -1126,7 +1399,7 @@ mod tests {
     #[test]
     #[ignore]
     fn search_live() {
-        for q in ["green fluorescent protein", "caffeine", "haemoglobin", "hemoglobin", "ubiquitin", "ATP", "heme", "myoglobin", "spike protein", "hiv protease", "kinase", "insulin", "aspirin", "lysozyme", "vitamin c", "green fluo", "green flou", "green flourescent protein", "caffe", "hemoglobn", "ubiquit", "asprin"] {
+        for q in ["green fluorescent protein", "caffeine", "haemoglobin", "hemoglobin", "ubiquitin", "ATP", "heme", "myoglobin", "spike protein", "hiv protease", "kinase", "insulin", "aspirin", "lysozyme", "vitamin c", "green fluo", "green flou", "green flourescent protein", "caffe", "hemoglobn", "ubiquit", "asprin", "TP53", "brca1", "EGFR", "kras", "GFP", "gfp"] {
             let hits = search(q).unwrap();
             println!("== {q}");
             for h in hits.iter() {
@@ -1143,6 +1416,17 @@ mod tests {
             assert!(hits.iter().any(|h| h.title.to_lowercase().contains("green fluorescent")), "{q}");
             assert!(hits.iter().all(|h| h.kind != Kind::Molecule || h.title.to_lowercase().contains("green")), "{q}");
         }
+        // A gene symbol: the human protein, as a model and as structures.
+        let p53 = search("TP53").unwrap();
+        assert!(p53.iter().any(|h| h.kind == Kind::AlphaFold && h.id == "P04637"));
+        assert!(p53.iter().any(|h| h.kind == Kind::Pdb));
+        assert!(p53[0].is_named("tp53") || p53[0].kind == Kind::Pdb);
+        // Lower-case heme is the molecule, whatever E. coli calls a gene.
+        assert_eq!(search("heme").unwrap()[0].kind, Kind::Molecule);
+        // Not respelt as brca, whose hits are BRCA2's.
+        let brca1 = search("brca1").unwrap();
+        assert_eq!(brca1[0].kind, Kind::Pdb);
+        assert!(brca1.iter().any(|h| h.id == "P38398"));
         let crambin = search_sequence("TTCCPSIVARSNFNVCRLPGTPEAICATYTGCIIIPGATCPGDYAN").unwrap();
         assert_eq!(crambin[0].id, "1CRN");
     }
