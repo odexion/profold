@@ -2126,40 +2126,53 @@ impl Viewer {
                 }))
                 .into_any_element()
         };
-        // Each family under its name, in two columns so the menu stays short
-        // enough to open upward in a small window.
+        // Each family under its name. The two rainbows lead in a row across
+        // the top; below, Perceptual's seven stand beside Thematic and Muted,
+        // which together come out the same height, so the menu is short
+        // enough to open upward in a small window and squares off at the foot.
+        // A heading after another group stands a little further off it.
+        let heading = |g: PaletteGroup, first: bool| {
+            div()
+                .px(px(8.))
+                .pt(px(if first { 6. } else { 10. }))
+                .pb(px(2.))
+                .text_size(px(9.))
+                .text_color(theme::FAINT)
+                .child(spaced(&g.label().to_uppercase()))
+        };
+        let members = |g: PaletteGroup| Palette::ALL.into_iter().filter(move |p| p.group() == g);
         let column = |groups: &[PaletteGroup]| {
             let mut col = div().flex_1().flex().flex_col().gap(px(1.));
-            for g in groups {
-                col = col.child(
-                    div()
-                        .px(px(8.))
-                        .pt(px(6.))
-                        .pb(px(2.))
-                        .text_size(px(9.))
-                        .text_color(theme::FAINT)
-                        .child(spaced(&g.label().to_uppercase())),
-                );
-                for p in Palette::ALL.into_iter().filter(|p| p.group() == *g) {
+            for (i, g) in groups.iter().enumerate() {
+                col = col.child(heading(*g, i == 0));
+                for p in members(*g) {
                     col = col.child(item(p));
                 }
             }
             col
         };
-        let left = column(&[PaletteGroup::Classic, PaletteGroup::Perceptual]);
+        let top = div()
+            .flex()
+            .flex_col()
+            .gap(px(1.))
+            .child(heading(PaletteGroup::Classic, true))
+            .child(
+                div()
+                    .flex()
+                    .gap(px(4.))
+                    .children(members(PaletteGroup::Classic).map(|p| div().flex_1().child(item(p)))),
+            );
+        let left = column(&[PaletteGroup::Perceptual]);
         let right = column(&[PaletteGroup::Thematic, PaletteGroup::Muted]);
         let list = menu(372.)
-            .flex_row()
-            .items_start()
-            .gap(px(4.))
             .top_auto()
             .bottom(px(34.))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.open = None;
                 cx.notify();
             }))
-            .child(left)
-            .child(right);
+            .child(top)
+            .child(div().flex().items_start().gap(px(4.)).child(left).child(right));
         // Fixed colours leave the palette nothing to do, so it says so by
         // going pale and staying shut.
         let fixed = self.fixed_colors;
@@ -4115,6 +4128,27 @@ mod ui_tests {
         click(cx, "palette-Viridis");
         assert!(view.update(cx, |this, _| this.palette == Palette::Viridis));
         assert_ne!(colors(&view, cx), before, "the palette changed nothing");
+    }
+
+    #[gpui::test]
+    fn palette_menu_columns_end_level(cx: &mut TestAppContext) {
+        let (_view, cx) = open(cx);
+        click(cx, "palette-button");
+        let mut bounds = |selector: &'static str| {
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} is not in the menu"))
+        };
+        let (left, right) = (bounds("palette-Rocket"), bounds("palette-Greyscale"));
+        let gap = (f32::from(left.bottom()) - f32::from(right.bottom())).abs();
+        assert!(gap <= 1.0, "the columns end {gap}px apart");
+        // The rainbows share the top row.
+        let (spectrum, turbo, viridis) = (
+            bounds("palette-Spectrum"),
+            bounds("palette-Turbo"),
+            bounds("palette-Viridis"),
+        );
+        assert_eq!(spectrum.top(), turbo.top());
+        assert!(turbo.bottom() <= viridis.top());
     }
 
     #[gpui::test]
