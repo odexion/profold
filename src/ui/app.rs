@@ -303,8 +303,7 @@ impl Viewer {
             show_prediction: true,
             scene: Arc::new(Scene::default()),
             camera: Camera {
-                yaw: 0.0,
-                pitch: 0.0,
+                orientation: Camera::home(),
                 zoom: 1.0,
                 pan: [0.0, 0.0],
                 center: [0.0; 3],
@@ -994,12 +993,9 @@ impl Viewer {
             Field::Angle(axis) => {
                 if let Some(deg) = settings::parse_degrees(&text) {
                     self.halt();
-                    let r = deg.to_radians();
-                    if axis == 0 {
-                        self.camera.pitch = (Camera::HOME_PITCH + r).clamp(-1.55, 1.55);
-                    } else {
-                        self.camera.yaw = Camera::HOME_YAW + r;
-                    }
+                    let mut angles = self.camera.angles();
+                    angles[axis] = deg;
+                    self.camera.set_angles(angles);
                 }
             }
             Field::Zoom => {
@@ -1271,8 +1267,7 @@ impl Viewer {
                 let Some(v) = this.spin else {
                     return false;
                 };
-                this.camera.yaw += v[0];
-                this.camera.pitch = (this.camera.pitch + v[1]).clamp(-1.55, 1.55);
+                this.camera.rotate(v[0], v[1]);
                 let slowed = [v[0] * 0.94, v[1] * 0.94];
                 this.spin = (slowed[0].abs() + slowed[1].abs() > 0.0007).then_some(slowed);
                 cx.notify();
@@ -1327,8 +1322,7 @@ impl Viewer {
                 // Negated so the molecule follows the pointer: dragging right
                 // brings the near face right, rather than spinning away.
                 self.last_step = [-dx * 0.008, -dy * 0.008];
-                self.camera.yaw += self.last_step[0];
-                self.camera.pitch = (self.camera.pitch + self.last_step[1]).clamp(-1.55, 1.55);
+                self.camera.rotate(self.last_step[0], self.last_step[1]);
             }
             Drag::Pan => {
                 self.camera.pan[0] += dx;
@@ -3983,7 +3977,7 @@ impl Viewer {
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if viewer::spinning() {
-            self.camera.yaw += 0.02;
+            self.camera.rotate(0.02, 0.0);
             window.request_animation_frame();
         }
         let _timer = viewer::Phase::Tree.timer();
@@ -4098,7 +4092,7 @@ mod ui_tests {
     fn camera_menu_resets_the_view(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
         view.update(cx, |this, cx| {
-            this.camera.yaw += 1.0;
+            this.camera.rotate(1.0, 0.0);
             this.camera.zoom = 3.0;
             cx.notify();
         });

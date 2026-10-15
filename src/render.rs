@@ -378,8 +378,10 @@ impl Style {
 
 #[derive(Clone, Copy)]
 pub struct Camera {
-    pub yaw: f32,
-    pub pitch: f32,
+    /// World to view, as rows. Dragging turns it about the screen's own
+    /// axes, trackball fashion, so the molecule can go all the way round in
+    /// any direction with nothing to get stuck on.
+    pub orientation: [[f32; 3]; 3],
     /// Multiplier on the auto-fit scale.
     pub zoom: f32,
     pub pan: [f32; 2],
@@ -393,6 +395,18 @@ impl Camera {
     pub const HOME_YAW: f32 = 0.55;
     pub const HOME_PITCH: f32 = 0.25;
 
+    /// The opening orientation.
+    pub fn home() -> [[f32; 3]; 3] {
+        mul(tilt(Self::HOME_PITCH), spin(Self::HOME_YAW))
+    }
+
+    /// Turn the view about the screen's vertical axis (`across`, as a drag
+    /// from side to side does) and its horizontal axis (`down`).
+    pub fn rotate(&mut self, across: f32, down: f32) {
+        let turned = mul(mul(tilt(down), spin(across)), self.orientation);
+        self.orientation = orthonormal(turned);
+    }
+
     /// Rotation away from the opening view, in degrees about the screen's
     /// x axis (tilting) and y axis (turning), each in -180..=180.
     pub fn angles(&self) -> [f32; 2] {
@@ -404,10 +418,18 @@ impl Camera {
                 d
             }
         };
-        [
-            wrap(self.pitch - Self::HOME_PITCH),
-            wrap(self.yaw - Self::HOME_YAW),
-        ]
+        // The turn from home, read as a tilt after a spin: tilt(a) * spin(b)
+        // has -sin b and cos b along its first row, and -sin a and cos a
+        // down its middle column.
+        let r = mul(self.orientation, transpose(Self::home()));
+        let turn = (-r[0][2]).atan2(r[0][0]);
+        let tilt = (-r[2][1]).atan2(r[1][1]);
+        [wrap(tilt), wrap(turn)]
+    }
+
+    /// Set the view to read `[x, y]` degrees on the angle readout.
+    pub fn set_angles(&mut self, [x, y]: [f32; 2]) {
+        self.orientation = mul(mul(tilt(x.to_radians()), spin(y.to_radians())), Self::home());
     }
 
     pub fn frame(structure: &Structure) -> Self {
@@ -439,8 +461,7 @@ impl Camera {
         }
         if lo[0] > hi[0] {
             return Camera {
-                yaw: Camera::HOME_YAW,
-                pitch: Camera::HOME_PITCH,
+                orientation: Camera::home(),
                 zoom: 1.0,
                 pan: [0.0, 0.0],
                 center: [0.0; 3],
@@ -465,8 +486,7 @@ impl Camera {
         }
         let radius = r2.sqrt().max(1.0);
         Camera {
-            yaw: Camera::HOME_YAW,
-            pitch: Camera::HOME_PITCH,
+            orientation: Camera::home(),
             zoom: 1.0,
             pan: [0.0, 0.0],
             center,
@@ -475,15 +495,59 @@ impl Camera {
     }
 
     pub(crate) fn basis(&self) -> [[f32; 3]; 3] {
-        let (sy, cy) = self.yaw.sin_cos();
-        let (sp, cp) = self.pitch.sin_cos();
-        // Rows of Rx(pitch) * Ry(yaw): world -> view.
-        [
-            [cy, 0.0, -sy],
-            [sp * sy, cp, sp * cy],
-            [cp * sy, -sp, cp * cy],
-        ]
+        self.orientation
     }
+}
+
+/// Turning about the view's vertical axis, as rows: world to view.
+fn spin(a: f32) -> [[f32; 3]; 3] {
+    let (s, c) = a.sin_cos();
+    [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]]
+}
+
+/// Tilting about the view's horizontal axis, as rows: world to view.
+fn tilt(a: f32) -> [[f32; 3]; 3] {
+    let (s, c) = a.sin_cos();
+    [[1.0, 0.0, 0.0], [0.0, c, s], [0.0, -s, c]]
+}
+
+fn mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut m = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            m[i][j] = (0..3).map(|k| a[i][k] * b[k][j]).sum();
+        }
+    }
+    m
+}
+
+fn transpose(a: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut m = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            m[i][j] = a[j][i];
+        }
+    }
+    m
+}
+
+/// Square the rows up again, so thousands of small turns do not let the
+/// rotation drift into a skew.
+fn orthonormal(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let unit = |a: [f32; 3]| {
+        let n = dot(a, a).sqrt().max(1e-12);
+        [a[0] / n, a[1] / n, a[2] / n]
+    };
+    let x = unit(m[0]);
+    let d = dot(m[1], x);
+    let y = unit([m[1][0] - d * x[0], m[1][1] - d * x[1], m[1][2] - d * x[2]]);
+    let z = [
+        x[1] * y[2] - x[2] * y[1],
+        x[2] * y[0] - x[0] * y[2],
+        x[0] * y[1] - x[1] * y[0],
+    ];
+    [x, y, z]
 }
 
 #[derive(Clone, Copy)]
@@ -2080,13 +2144,52 @@ mod tests {
     fn angles_start_at_zero() {
         let mut cam = Camera::frame_all(&[]);
         assert_eq!(cam.angles(), [0.0, 0.0]);
-        cam.yaw += std::f32::consts::FRAC_PI_2;
-        cam.pitch -= 0.5f32.to_radians() * 20.0;
+        cam.rotate(std::f32::consts::FRAC_PI_2, 0.0);
+        cam.rotate(0.0, -10f32.to_radians());
         let [x, y] = cam.angles();
-        assert!((y - 90.0).abs() < 1e-3 && (x + 10.0).abs() < 1e-3);
+        assert!((y - 90.0).abs() < 1e-3 && (x + 10.0).abs() < 1e-3, "{x} {y}");
         // A full turn comes back round.
-        cam.yaw += std::f32::consts::TAU;
+        cam.rotate(std::f32::consts::TAU, 0.0);
         assert!((cam.angles()[1] - 90.0).abs() < 1e-2);
+        cam.set_angles([30.0, -45.0]);
+        let [x, y] = cam.angles();
+        assert!((x - 30.0).abs() < 1e-3 && (y + 45.0).abs() < 1e-3, "{x} {y}");
+    }
+
+    #[test]
+    fn the_view_tumbles_over_the_top_and_keeps_its_bearings() {
+        let mut cam = Camera::frame_all(&[]);
+        let step = 0.008 * 7.0;
+        // Drag down, a long way: right over the top and back round, with
+        // nowhere to stick. Every step turns the view by the same amount.
+        let mut last = cam.basis();
+        for _ in 0..200 {
+            cam.rotate(0.0, step);
+            let now = cam.basis();
+            let turned = mul(now, transpose(last));
+            let angle = ((turned[0][0] + turned[1][1] + turned[2][2] - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
+            assert!((angle - step).abs() < 1e-3, "a step turned {angle}");
+            last = now;
+        }
+        // Upside down, a drag to the right still turns the near face right:
+        // about the screen's vertical, whichever way the molecule is up.
+        cam.set_angles([180.0, 0.0]);
+        let before = cam.basis();
+        cam.rotate(0.1, 0.0);
+        assert_eq!(mul(cam.basis(), transpose(before))[1][1].round(), 1.0);
+        let turned = mul(cam.basis(), transpose(before));
+        assert!((turned[0][0] - 0.1f32.cos()).abs() < 1e-4 && turned[0][2] < 0.0);
+        // And it stays a rotation.
+        for _ in 0..10_000 {
+            cam.rotate(0.013, -0.007);
+        }
+        let m = cam.basis();
+        let i = mul(m, transpose(m));
+        for (r, row) in i.iter().enumerate() {
+            for (c, v) in row.iter().enumerate() {
+                assert!((v - if r == c { 1.0 } else { 0.0 }).abs() < 1e-4);
+            }
+        }
     }
 
     #[test]
@@ -2104,8 +2207,7 @@ mod tests {
             alpha: 0.5,
         };
         let cam = Camera {
-            yaw: 0.0,
-            pitch: 0.0,
+            orientation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             zoom: 1.0,
             pan: [0.0, 0.0],
             center: [0.0; 3],
@@ -2164,7 +2266,7 @@ mod bench {
             }
             let t = Instant::now();
             for _ in 0..n {
-                cam.yaw += 0.02;
+                cam.rotate(0.02, 0.0);
                 let frame = render(&scene, &cam, 1616, 1436, [1.0; 3], Style::Illustrative);
                 std::hint::black_box(frame);
             }
@@ -2205,7 +2307,7 @@ mod bench {
                         draw(cam);
                         let t = Instant::now();
                         for i in 0..n {
-                            cam.yaw += 0.01 * i as f32;
+                            cam.rotate(0.01 * i as f32, 0.0);
                             std::hint::black_box(draw(cam));
                         }
                         t.elapsed() / n
@@ -2268,7 +2370,7 @@ mod gpu_tests {
                         )
                         .stamp();
                         let mut cam = Camera::frame(&s);
-                        cam.yaw += 0.3;
+                        cam.rotate(0.3, 0.0);
                         // Lines one, two and three pixels wide, which the card
                         // finds by three routes.
                         let sizes: &[(usize, usize)] = if name == "caffeine.sdf" {
