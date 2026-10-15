@@ -200,39 +200,105 @@ impl Coloring {
 pub enum Palette {
     /// The classic molecular rainbow.
     Spectrum,
+    /// A rainbow without the muddy band in the middle.
+    Turbo,
     /// Perceptually even and safe for colour vision deficiency.
     Viridis,
-    Ember,
-    Ice,
-    Magma,
-    Plasma,
     /// Even and readable to every kind of colour vision.
     Cividis,
+    Magma,
+    Inferno,
+    Plasma,
     Mako,
+    Rocket,
+    Ember,
+    Ice,
+    Forest,
+    Dusk,
+    /// Soft, chalky colour, the way a molecule is painted in an illustration.
+    Pastel,
+    /// For print, and for a figure that has to survive a photocopier.
+    Greyscale,
+}
+
+/// The families the palettes are shown in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PaletteGroup {
+    /// Rainbows, which tell neighbours apart best.
+    Classic,
+    /// Even in lightness, so they read the same to every eye and in grey.
+    Perceptual,
+    /// A single mood each.
+    Thematic,
+    /// Quiet colour for illustration and print.
+    Muted,
+}
+
+impl PaletteGroup {
+    pub fn label(self) -> &'static str {
+        match self {
+            PaletteGroup::Classic => "Classic",
+            PaletteGroup::Perceptual => "Perceptual",
+            PaletteGroup::Thematic => "Thematic",
+            PaletteGroup::Muted => "Muted",
+        }
+    }
 }
 
 impl Palette {
-    pub const ALL: [Palette; 8] = [
+    /// In menu order, each group together.
+    pub const ALL: [Palette; 15] = [
         Palette::Spectrum,
+        Palette::Turbo,
         Palette::Viridis,
+        Palette::Cividis,
+        Palette::Magma,
+        Palette::Inferno,
+        Palette::Plasma,
+        Palette::Mako,
+        Palette::Rocket,
         Palette::Ember,
         Palette::Ice,
-        Palette::Magma,
-        Palette::Plasma,
-        Palette::Cividis,
-        Palette::Mako,
+        Palette::Forest,
+        Palette::Dusk,
+        Palette::Pastel,
+        Palette::Greyscale,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             Palette::Spectrum => "Spectrum",
+            Palette::Turbo => "Turbo",
             Palette::Viridis => "Viridis",
+            Palette::Cividis => "Cividis",
+            Palette::Magma => "Magma",
+            Palette::Inferno => "Inferno",
+            Palette::Plasma => "Plasma",
+            Palette::Mako => "Mako",
+            Palette::Rocket => "Rocket",
             Palette::Ember => "Ember",
             Palette::Ice => "Ice",
-            Palette::Magma => "Magma",
-            Palette::Plasma => "Plasma",
-            Palette::Cividis => "Cividis",
-            Palette::Mako => "Mako",
+            Palette::Forest => "Forest",
+            Palette::Dusk => "Dusk",
+            Palette::Pastel => "Pastel",
+            Palette::Greyscale => "Greyscale",
+        }
+    }
+
+    pub fn group(self) -> PaletteGroup {
+        match self {
+            Palette::Spectrum | Palette::Turbo => PaletteGroup::Classic,
+            Palette::Viridis
+            | Palette::Cividis
+            | Palette::Magma
+            | Palette::Inferno
+            | Palette::Plasma
+            | Palette::Mako
+            | Palette::Rocket => PaletteGroup::Perceptual,
+            Palette::Ember | Palette::Ice | Palette::Forest | Palette::Dusk => {
+                PaletteGroup::Thematic
+            }
+            Palette::Pastel | Palette::Greyscale => PaletteGroup::Muted,
         }
     }
 
@@ -242,6 +308,21 @@ impl Palette {
         match self {
             // Hue sweep rather than a table, so it stays smooth end to end.
             Palette::Spectrum => hsl_to_rgb((1.0 - t) * 250.0, 0.62, 0.52),
+            // Trimmed of its darkest ends, which read as black on a molecule.
+            Palette::Turbo => sample(
+                &[
+                    [0.239, 0.208, 0.547],
+                    [0.275, 0.511, 0.973],
+                    [0.122, 0.789, 0.866],
+                    [0.234, 0.961, 0.556],
+                    [0.633, 0.992, 0.239],
+                    [0.906, 0.843, 0.222],
+                    [0.995, 0.575, 0.164],
+                    [0.887, 0.262, 0.038],
+                    [0.631, 0.069, 0.004],
+                ],
+                t,
+            ),
             Palette::Viridis => sample(
                 &[
                     [0.267, 0.005, 0.329],
@@ -249,6 +330,66 @@ impl Palette {
                     [0.128, 0.567, 0.551],
                     [0.369, 0.789, 0.383],
                     [0.993, 0.906, 0.144],
+                ],
+                t,
+            ),
+            Palette::Cividis => sample(
+                &[
+                    [0.000, 0.135, 0.305],
+                    [0.253, 0.344, 0.454],
+                    [0.478, 0.508, 0.472],
+                    [0.719, 0.699, 0.406],
+                    [0.995, 0.909, 0.218],
+                ],
+                t,
+            ),
+            Palette::Magma => sample(
+                &[
+                    [0.001, 0.000, 0.014],
+                    [0.316, 0.072, 0.485],
+                    [0.716, 0.215, 0.475],
+                    [0.986, 0.536, 0.382],
+                    [0.987, 0.991, 0.749],
+                ],
+                t,
+            ),
+            Palette::Inferno => sample(
+                &[
+                    [0.001, 0.000, 0.014],
+                    [0.342, 0.062, 0.429],
+                    [0.736, 0.216, 0.330],
+                    [0.978, 0.558, 0.035],
+                    [0.988, 0.998, 0.645],
+                ],
+                t,
+            ),
+            Palette::Plasma => sample(
+                &[
+                    [0.050, 0.030, 0.528],
+                    [0.494, 0.012, 0.658],
+                    [0.798, 0.280, 0.470],
+                    [0.973, 0.585, 0.254],
+                    [0.940, 0.975, 0.131],
+                ],
+                t,
+            ),
+            Palette::Mako => sample(
+                &[
+                    [0.043, 0.035, 0.052],
+                    [0.238, 0.235, 0.443],
+                    [0.263, 0.478, 0.635],
+                    [0.362, 0.716, 0.663],
+                    [0.867, 0.949, 0.792],
+                ],
+                t,
+            ),
+            Palette::Rocket => sample(
+                &[
+                    [0.011, 0.018, 0.100],
+                    [0.381, 0.121, 0.325],
+                    [0.797, 0.105, 0.311],
+                    [0.959, 0.533, 0.375],
+                    [0.981, 0.921, 0.865],
                 ],
                 t,
             ),
@@ -271,53 +412,47 @@ impl Palette {
                 ],
                 t,
             ),
-            Palette::Magma => sample(
+            Palette::Forest => sample(
                 &[
-                    [0.001, 0.000, 0.014],
-                    [0.316, 0.072, 0.485],
-                    [0.716, 0.215, 0.475],
-                    [0.986, 0.536, 0.382],
-                    [0.987, 0.991, 0.749],
+                    [0.07, 0.19, 0.14],
+                    [0.13, 0.38, 0.24],
+                    [0.40, 0.58, 0.27],
+                    [0.73, 0.76, 0.40],
+                    [0.94, 0.92, 0.70],
                 ],
                 t,
             ),
-            Palette::Plasma => sample(
+            Palette::Dusk => sample(
                 &[
-                    [0.050, 0.030, 0.528],
-                    [0.494, 0.012, 0.658],
-                    [0.798, 0.280, 0.470],
-                    [0.973, 0.585, 0.254],
-                    [0.940, 0.975, 0.131],
+                    [0.12, 0.13, 0.33],
+                    [0.36, 0.22, 0.50],
+                    [0.67, 0.32, 0.55],
+                    [0.92, 0.52, 0.52],
+                    [0.99, 0.80, 0.62],
                 ],
                 t,
             ),
-            Palette::Cividis => sample(
+            Palette::Pastel => sample(
                 &[
-                    [0.000, 0.135, 0.305],
-                    [0.253, 0.344, 0.454],
-                    [0.478, 0.508, 0.472],
-                    [0.719, 0.699, 0.406],
-                    [0.995, 0.909, 0.218],
+                    [0.55, 0.66, 0.90],
+                    [0.55, 0.82, 0.82],
+                    [0.68, 0.86, 0.60],
+                    [0.97, 0.87, 0.57],
+                    [0.97, 0.69, 0.58],
+                    [0.91, 0.63, 0.76],
                 ],
                 t,
             ),
-            Palette::Mako => sample(
-                &[
-                    [0.043, 0.035, 0.052],
-                    [0.238, 0.235, 0.443],
-                    [0.263, 0.478, 0.635],
-                    [0.362, 0.716, 0.663],
-                    [0.867, 0.949, 0.792],
-                ],
-                t,
-            ),
+            Palette::Greyscale => sample(&[[0.16, 0.16, 0.17], [0.90, 0.90, 0.89]], t),
         }
     }
 
-    /// A distinct colour per chain. Spectrum keeps its hand-picked hues and
-    /// Viridis borrows the Okabe–Ito set, which is built to stay separable
-    /// under colour vision deficiency; the rest step along their own ramp,
-    /// interleaved so neighbouring chains do not land next to each other.
+    /// A distinct colour per chain. Palettes with a set of their own use it:
+    /// Spectrum and Pastel keep hand-picked hues, Viridis borrows the
+    /// Okabe–Ito set, built to stay separable under colour vision deficiency,
+    /// and Forest and Dusk lift theirs off their ramps with the hues pulled
+    /// apart. The rest step along their own ramp, interleaved so neighbouring
+    /// chains do not land next to each other.
     pub fn chain(self, i: usize) -> [f32; 3] {
         const SPECTRUM: [[f32; 3]; 8] = [
             [0.29, 0.47, 0.78],
@@ -339,10 +474,43 @@ impl Palette {
             [0.941, 0.894, 0.259],
             [0.350, 0.350, 0.350],
         ];
+        const PASTEL: [[f32; 3]; 8] = [
+            [0.96, 0.62, 0.55],
+            [0.55, 0.72, 0.92],
+            [0.70, 0.86, 0.58],
+            [0.98, 0.85, 0.55],
+            [0.78, 0.66, 0.90],
+            [0.56, 0.84, 0.82],
+            [0.95, 0.70, 0.82],
+            [0.80, 0.74, 0.64],
+        ];
+        const FOREST: [[f32; 3]; 8] = [
+            [0.16, 0.42, 0.26],
+            [0.80, 0.70, 0.36],
+            [0.42, 0.62, 0.28],
+            [0.55, 0.40, 0.24],
+            [0.30, 0.56, 0.52],
+            [0.72, 0.78, 0.48],
+            [0.10, 0.26, 0.20],
+            [0.62, 0.56, 0.42],
+        ];
+        const DUSK: [[f32; 3]; 8] = [
+            [0.36, 0.24, 0.56],
+            [0.95, 0.60, 0.50],
+            [0.68, 0.30, 0.52],
+            [0.98, 0.82, 0.62],
+            [0.20, 0.22, 0.44],
+            [0.86, 0.44, 0.52],
+            [0.54, 0.46, 0.72],
+            [0.76, 0.58, 0.62],
+        ];
         const ORDER: [usize; 8] = [0, 4, 2, 6, 1, 5, 3, 7];
         match self {
             Palette::Spectrum => SPECTRUM[i % 8],
             Palette::Viridis => OKABE_ITO[i % 8],
+            Palette::Pastel => PASTEL[i % 8],
+            Palette::Forest => FOREST[i % 8],
+            Palette::Dusk => DUSK[i % 8],
             _ => self.ramp(ORDER[i % 8] as f32 / 7.0),
         }
     }
@@ -363,15 +531,44 @@ pub enum Style {
     Soft,
     /// Ink outlines, vivid colour, banded light: the look of a drawn figure.
     Illustrative,
+    /// Soft colour laid on almost flat, held by ink outlines: the look of a
+    /// painted molecular illustration, after David Goodsell.
+    Flat,
 }
 
 impl Style {
     /// The drawn figure leads: it is what the viewer opens with.
-    pub const ALL: [Style; 2] = [Style::Illustrative, Style::Soft];
+    pub const ALL: [Style; 3] = [Style::Illustrative, Style::Soft, Style::Flat];
     pub fn label(self) -> &'static str {
         match self {
             Style::Soft => "Soft",
             Style::Illustrative => "Illustrative",
+            Style::Flat => "Flat",
+        }
+    }
+
+    /// Whether the edges are drawn in ink, rather than shaded darker.
+    pub fn inked(self) -> bool {
+        self != Style::Soft
+    }
+
+    /// How far the farthest geometry washes toward the paper. A drawn figure
+    /// does not fade with distance, so its outlines carry the depth instead;
+    /// a painted one fades a little, as the back of a crowded scene does.
+    pub fn fog(self) -> f32 {
+        match self {
+            Style::Soft => 0.42,
+            Style::Illustrative => 0.0,
+            Style::Flat => 0.30,
+        }
+    }
+
+    /// The style as the GPU shader reads it.
+    pub fn code(self) -> f32 {
+        match self {
+            Style::Soft => 0.0,
+            Style::Illustrative => 1.0,
+            Style::Flat => 2.0,
         }
     }
 }
@@ -665,6 +862,17 @@ fn vivid(c: [f32; 3]) -> [f32; 3] {
     hsl_to_rgb(h, (s * 1.5 + 0.18).min(1.0), 0.5 + (l - 0.5) * 0.62)
 }
 
+/// Soften a colour toward paint: less saturated, and lifted into the light
+/// middle so the dark ink outline always stands off it.
+fn chalky(c: [f32; 3]) -> [f32; 3] {
+    let (h, s, l) = rgb_to_hsl(c);
+    let l = 0.66 + (l - 0.5) * 0.4;
+    if s < 0.02 {
+        return [l, l, l];
+    }
+    hsl_to_rgb(h, (s * 0.8).min(0.72), l)
+}
+
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let hp = h / 60.0;
@@ -841,7 +1049,12 @@ pub fn build_scene(
             scene.capsules.extend(cell_edges(c));
         }
     }
-    if style == Style::Illustrative {
+    let tone: Option<fn([f32; 3]) -> [f32; 3]> = match style {
+        Style::Soft => None,
+        Style::Illustrative => Some(vivid),
+        Style::Flat => Some(chalky),
+    };
+    if let Some(tone) = tone {
         for c in scene
             .spheres
             .iter_mut()
@@ -849,7 +1062,7 @@ pub fn build_scene(
             .chain(scene.capsules.iter_mut().flat_map(|c| [&mut c.ca, &mut c.cb]))
             .chain(scene.tris.iter_mut().map(|t| &mut t.c))
         {
-            *c = vivid(*c);
+            *c = tone(*c);
         }
     }
     scene
@@ -1395,6 +1608,9 @@ fn shade(n: [f32; 3], base: [f32; 3], style: Style) -> [f32; 3] {
             let mixed = diff * 0.35 + banded.min(1.0) * 0.65;
             (0.62 + 0.42 * mixed, n8 * n8 * 0.10)
         }
+        // Barely lit: the shape comes from the outline, with just enough
+        // fall-off that a sphere does not read as a disc.
+        Style::Flat => (0.82 + 0.20 * diff, 0.0),
     };
     [base[0] * k + spec, base[1] * k + spec, base[2] * k + spec]
 }
@@ -1683,10 +1899,7 @@ pub fn render_cpu(
 
     // Depth cue: wash distant geometry toward the paper. A drawn figure does
     // not fade with distance, so the outlines carry the depth instead.
-    let fog_strength = match style {
-        Style::Soft => 0.42,
-        Style::Illustrative => 0.0,
-    };
+    let fog_strength = style.fog();
     if fog_strength > 0.0 {
         color
             .par_chunks_mut(3)
@@ -1741,7 +1954,7 @@ pub fn render_cpu(
                     }
                 });
         }
-        Style::Illustrative => {
+        Style::Illustrative | Style::Flat => {
             const INK: [f32; 3] = [0.07, 0.07, 0.09];
             let mut edge = vec![false; n];
             edge.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
@@ -1824,7 +2037,7 @@ pub fn render_cpu(
                         c[k] += (page[k] - c[k]) * fog;
                     }
                     let (c, alpha) = match (edge, style) {
-                        (true, Style::Illustrative) => ([0.07, 0.07, 0.09], alpha.max(0.45)),
+                        (true, Style::Illustrative | Style::Flat) => ([0.07, 0.07, 0.09], alpha.max(0.45)),
                         (true, Style::Soft) => (c.map(|x| x * 0.8), alpha),
                         _ => (c, alpha),
                     };
@@ -2105,6 +2318,45 @@ mod tests {
     fn pixel(f: &Frame, x: usize, y: usize) -> [u8; 3] {
         let o = (y * f.width + x) * 4;
         [f.bgra[o + 2], f.bgra[o + 1], f.bgra[o]]
+    }
+
+    #[test]
+    fn palettes_are_listed_by_group() {
+        let mut seen = Vec::new();
+        for p in Palette::ALL {
+            if seen.last() != Some(&p.group()) {
+                assert!(!seen.contains(&p.group()), "{p:?} is apart from its group");
+                seen.push(p.group());
+            }
+        }
+        assert_eq!(seen.len(), 4);
+        for (i, p) in Palette::ALL.iter().enumerate() {
+            assert!(
+                Palette::ALL[..i].iter().all(|q| q.label() != p.label()),
+                "two palettes are called {}",
+                p.label()
+            );
+        }
+    }
+
+    #[test]
+    fn chains_are_told_apart_in_every_palette() {
+        // Chains beside each other in a structure are the ones that touch, so
+        // each must stand clear of the next, and the first four, which most
+        // complexes stop at, of each other.
+        let apart = |a: [f32; 3], b: [f32; 3]| {
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+        };
+        for p in Palette::ALL {
+            for i in 0..8 {
+                for j in i + 1..8 {
+                    if j == i + 1 || j < 4 {
+                        let d = apart(p.chain(i), p.chain(j));
+                        assert!(d > 0.2, "{p:?}: chains {i} and {j} are {d:.3} apart");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

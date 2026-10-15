@@ -426,17 +426,11 @@ impl Gpu {
                 page[0],
                 page[1],
                 page[2],
-                match style {
-                    Style::Soft => 0.42,
-                    Style::Illustrative => 0.0,
-                },
+                style.fog(),
             ],
             params: [
                 (span * 0.012).max(0.45),
-                match style {
-                    Style::Soft => 0.0,
-                    Style::Illustrative => 1.0,
-                },
+                style.code(),
                 weight as f32 + 0.5,
                 weight as f32,
             ],
@@ -531,7 +525,7 @@ impl Gpu {
             }
         }
         // Only heavy lines need their edges found in a pass of their own.
-        if style == Style::Illustrative && !fused {
+        if style.inked() && !fused {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("edges"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {

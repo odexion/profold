@@ -17,7 +17,7 @@ struct U {
     depth: vec4f,
     // page colour, fog strength
     page: vec4f,
-    // jump, style (0 soft, 1 illustrative), rim, line weight
+    // jump, style (0 soft, 1 illustrative, 2 flat), rim, line weight
     params: vec4f,
 }
 
@@ -63,6 +63,9 @@ fn shade(n: vec3f, base: vec3f) -> vec3f {
     if u.params.y < 0.5 {
         k = 0.34 + 0.70 * diff;
         spec = n8 * n8 * n8 * 0.28;
+    } else if u.params.y > 1.5 {
+        k = 0.82 + 0.20 * diff;
+        spec = 0.0;
     } else {
         let banded = floor(diff * 4.0) / 3.0;
         let mixed = diff * 0.35 + min(banded, 1.0) * 0.65;
@@ -250,7 +253,7 @@ struct Blended {
 }
 
 // Laid over the finished opaque frame, back to front, with the same fog and,
-// in the illustrative style, an ink rim on spheres.
+// in the inked styles, an ink rim on spheres.
 @fragment
 fn glass_fs(in: ImpOut) -> Blended {
     let h = trace(in);

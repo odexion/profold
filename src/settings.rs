@@ -306,4 +306,19 @@ mod tests {
         assert!(back.fixed_colors);
         assert_eq!(back.appearance.get(&Species::Kind("2".into())).alpha, 0.25);
     }
+
+    #[test]
+    fn every_style_and_palette_is_remembered() {
+        for style in Style::ALL {
+            for palette in Palette::ALL {
+                let s = Settings {
+                    style,
+                    palette,
+                    ..Settings::default()
+                };
+                let back = Settings::from_json(&serde_json::from_str(&s.to_json()).unwrap());
+                assert_eq!((back.style, back.palette), (style, palette));
+            }
+        }
+    }
 }

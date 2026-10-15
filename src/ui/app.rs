@@ -25,7 +25,9 @@ use crate::fetch::{self, Input, Retrieval};
 use crate::formats;
 use crate::job::{self, Event, Outcome};
 use crate::protein::{Source, Structure};
-use crate::render::{self, Appearance, Camera, Coloring, Look, Palette, Repr, Scene, Species, Style};
+use crate::render::{
+    self, Appearance, Camera, Coloring, Look, Palette, PaletteGroup, Repr, Scene, Species, Style,
+};
 use crate::samples::SAMPLES;
 use crate::search::{self, Hit, Kind};
 use crate::settings::{self, Settings};
@@ -2093,44 +2095,71 @@ impl Viewer {
     fn palette_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.palette;
         let open = self.open == Some(Dropdown::Palette);
-        let list = menu(196.)
+        let item = |p: Palette| {
+            let chosen = p == current;
+            div()
+                .id(("palette", p as usize))
+                .debug_selector(move || format!("palette-{}", p.label()))
+                .flex()
+                .items_center()
+                .gap(px(9.))
+                .px(px(8.))
+                .py(px(4.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .when(!chosen, |d| d.hover(|s| s.bg(theme::SUNKEN)))
+                .child(swatch_strip(p))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(11.5))
+                        .text_color(if chosen { theme::INK } else { theme::TEXT })
+                        .child(p.label()),
+                )
+                .when(chosen, |d| {
+                    d.child(div().text_size(px(10.)).text_color(theme::MUTED).child("✓"))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.palette = p;
+                    this.open = None;
+                    this.rebuild(cx);
+                }))
+                .into_any_element()
+        };
+        // Each family under its name, in two columns so the menu stays short
+        // enough to open upward in a small window.
+        let column = |groups: &[PaletteGroup]| {
+            let mut col = div().flex_1().flex().flex_col().gap(px(1.));
+            for g in groups {
+                col = col.child(
+                    div()
+                        .px(px(8.))
+                        .pt(px(6.))
+                        .pb(px(2.))
+                        .text_size(px(9.))
+                        .text_color(theme::FAINT)
+                        .child(spaced(&g.label().to_uppercase())),
+                );
+                for p in Palette::ALL.into_iter().filter(|p| p.group() == *g) {
+                    col = col.child(item(p));
+                }
+            }
+            col
+        };
+        let left = column(&[PaletteGroup::Classic, PaletteGroup::Perceptual]);
+        let right = column(&[PaletteGroup::Thematic, PaletteGroup::Muted]);
+        let list = menu(372.)
+            .flex_row()
+            .items_start()
+            .gap(px(4.))
             .top_auto()
             .bottom(px(34.))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.open = None;
                 cx.notify();
             }))
-            .children(Palette::ALL.iter().map(|p| {
-                let p = *p;
-                let chosen = p == current;
-                div()
-                    .id(("palette", p as usize))
-                    .debug_selector(move || format!("palette-{}", p.label()))
-                    .flex()
-                    .items_center()
-                    .gap(px(9.))
-                    .px(px(8.))
-                    .py(px(4.))
-                    .rounded(px(5.))
-                    .cursor_pointer()
-                    .when(!chosen, |d| d.hover(|s| s.bg(theme::SUNKEN)))
-                    .child(swatch_strip(p))
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(px(11.5))
-                            .text_color(if chosen { theme::INK } else { theme::TEXT })
-                            .child(p.label()),
-                    )
-                    .when(chosen, |d| {
-                        d.child(div().text_size(px(10.)).text_color(theme::MUTED).child("✓"))
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.palette = p;
-                        this.open = None;
-                        this.rebuild(cx);
-                    }))
-            }));
+            .child(left)
+            .child(right);
         // Fixed colours leave the palette nothing to do, so it says so by
         // going pale and staying shut.
         let fixed = self.fixed_colors;
@@ -4131,9 +4160,8 @@ mod ui_tests {
         });
         assert_eq!(carbon, Some(SWATCHES[0]));
         assert!(colors(&view, cx).contains(&SWATCHES[0]) || {
-            // The illustrative style saturates colours; the scene holds the
-            // saturated one.
-            view.update(cx, |this, _| this.style == Style::Illustrative)
+            // The inked styles tone colours; the scene holds the toned one.
+            view.update(cx, |this, _| this.style.inked())
         });
     }
 
