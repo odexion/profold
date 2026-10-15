@@ -538,7 +538,7 @@ pub enum Style {
 
 impl Style {
     /// The drawn figure leads: it is what the viewer opens with.
-    pub const ALL: [Style; 3] = [Style::Illustrative, Style::Soft, Style::Flat];
+    pub const ALL: [Style; 3] = [Style::Illustrative, Style::Flat, Style::Soft];
     pub fn label(self) -> &'static str {
         match self {
             Style::Soft => "Soft",
@@ -557,7 +557,7 @@ impl Style {
     /// a painted one fades a little, as the back of a crowded scene does.
     pub fn fog(self) -> f32 {
         match self {
-            Style::Soft => 0.42,
+            Style::Soft => 0.26,
             Style::Illustrative => 0.0,
             Style::Flat => 0.2,
         }
@@ -862,6 +862,15 @@ fn vivid(c: [f32; 3]) -> [f32; 3] {
     hsl_to_rgb(h, (s * 1.5 + 0.18).min(1.0), 0.5 + (l - 0.5) * 0.62)
 }
 
+/// Deepen a colour a little, so it holds its own once lit and fogged.
+fn rich(c: [f32; 3]) -> [f32; 3] {
+    let (h, s, l) = rgb_to_hsl(c);
+    if s < 0.02 {
+        return c;
+    }
+    hsl_to_rgb(h, (s * 1.2 + 0.05).min(0.9), l)
+}
+
 /// Settle a colour into paint: full-bodied but never neon, and drawn toward
 /// a mid lightness so the dark ink outline always stands off it.
 fn chalky(c: [f32; 3]) -> [f32; 3] {
@@ -1050,7 +1059,7 @@ pub fn build_scene(
         }
     }
     let tone: Option<fn([f32; 3]) -> [f32; 3]> = match style {
-        Style::Soft => None,
+        Style::Soft => Some(rich),
         Style::Illustrative => Some(vivid),
         Style::Flat => Some(chalky),
     };
@@ -2383,9 +2392,10 @@ mod tests {
             .map(|p| p.color)
             .collect::<Vec<_>>()
         };
-        // Fixed, elements keep their standard colours whatever the palette.
+        // Fixed, elements keep their standard colours whatever the palette,
+        // deepened as the style deepens every colour.
         let standard = colors(Palette::Spectrum, true);
-        assert_eq!(standard[0], crate::elements::Element::O.color());
+        assert_eq!(standard[0], rich(crate::elements::Element::O.color()));
         assert_eq!(colors(Palette::Viridis, true), standard);
         // Otherwise each palette paints them its own way.
         assert_ne!(colors(Palette::Viridis, false), standard);
