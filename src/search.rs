@@ -8,8 +8,8 @@
 //! match what was typed, and the database whose best hit is a match for the
 //! name leads.
 
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
@@ -74,6 +74,15 @@ impl Hit {
         }
     }
 
+    /// Whether this is what was typed, by name or identifier, letter for
+    /// letter save case and spacing. Enter before the list is back opens
+    /// only such a hit; anything looser is left for the user to choose.
+    pub fn is_named(&self, query: &str) -> bool {
+        let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        let query = squash(query);
+        !query.is_empty() && (squash(&self.title) == query || squash(&self.label()) == query)
+    }
+
     /// The identifier as shown beside the title.
     pub fn label(&self) -> String {
         match self.kind {
@@ -93,6 +102,34 @@ const MOLECULES_SHOWN: usize = 4;
 /// fails is left out; only when all of them fail is it an error.
 pub fn search(query: &str) -> Result<Vec<Hit>> {
     let query = &american(query.trim());
+    // The speller is asked alongside; only a misspelling costs a second round.
+    let (found, respelt) = std::thread::scope(|s| {
+        let respelt = s.spawn(|| respelt(query));
+        (search_all(query), respelt.join().ok().flatten())
+    });
+    let (mut pdb, mut uniprot, mut molecules) = found?;
+    if let Some(fixed) = respelt {
+        if let Ok((p, u, m)) = search_all(&american(&fixed)) {
+            pdb = merge(pdb, p, PDB_SHOWN);
+            uniprot = merge(uniprot, u, UNIPROT_SHOWN);
+            molecules = merge(molecules, m, MOLECULES_SHOWN);
+        }
+    }
+    // PubChem's synonyms are generous: vitamin C is ascorbic acid, but it
+    // also has ubiquitin down as citric acid. A synonym that shares no word
+    // with the query is believed only when no protein answers to the name.
+    let protein = |hits: &[Hit]| hits.first().is_some_and(|h| h.exact);
+    if protein(&pdb) || protein(&uniprot) {
+        molecules.retain(|h| !h.alias);
+    }
+    Ok(arrange(pdb, uniprot, molecules))
+}
+
+type Groups = (Vec<Hit>, Vec<Hit>, Vec<Hit>);
+
+/// The three databases at once. One that fails is left out; only when all
+/// of them fail is it an error.
+fn search_all(query: &str) -> Result<Groups> {
     let (pdb, uniprot, pubchem) = std::thread::scope(|s| {
         let pdb = s.spawn(|| search_pdb(query));
         let uniprot = s.spawn(|| search_uniprot(query));
@@ -106,19 +143,25 @@ pub fn search(query: &str) -> Result<Vec<Hit>> {
     if let (Err(e), Err(_), Err(_)) = (&pdb, &uniprot, &pubchem) {
         return Err(anyhow!("search failed: {e:#}"));
     }
-    let (pdb, uniprot, mut molecules) = (
+    Ok((
         pdb.unwrap_or_default(),
         uniprot.unwrap_or_default(),
         pubchem.unwrap_or_default(),
-    );
-    // PubChem's synonyms are generous: vitamin C is ascorbic acid, but it
-    // also has ubiquitin down as citric acid. A synonym that shares no word
-    // with the query is believed only when no protein answers to the name.
-    let protein = |hits: &[Hit]| hits.first().is_some_and(|h| h.exact);
-    if protein(&pdb) || protein(&uniprot) {
-        molecules.retain(|h| !h.alias);
+    ))
+}
+
+/// Two rankings of one database's hits as one, best first.
+fn merge(mut hits: Vec<Hit>, more: Vec<Hit>, keep: usize) -> Vec<Hit> {
+    for h in more {
+        match hits.iter_mut().find(|k| k.id == h.id) {
+            Some(k) if h.score > k.score => *k = h,
+            Some(_) => {}
+            None => hits.push(h),
+        }
     }
-    Ok(arrange(pdb, uniprot, molecules))
+    hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+    hits.truncate(keep);
+    hits
 }
 
 /// Put the groups in order: the one whose best hit is named exactly what was
@@ -170,12 +213,12 @@ fn search_pdb(query: &str) -> Result<Vec<Hit>> {
     // entries that match at all. The first structure of a protein is often
     // the one in the textbooks (1UBQ, 1LYZ, 1EMA), and among a thousand
     // later variants the relevance ranking alone never finds it.
-    let request = |rows: usize, sort: Value| {
+    let request = |value: &str, rows: usize, sort: Value| {
         json!({
             "query": {
                 "type": "terminal",
                 "service": "full_text",
-                "parameters": { "value": query }
+                "parameters": { "value": value }
             },
             "return_type": "entry",
             "request_options": {
@@ -185,21 +228,43 @@ fn search_pdb(query: &str) -> Result<Vec<Hit>> {
             }
         })
     };
-    let relevant = request(PDB_ROWS, json!({ "sort_by": "score", "direction": "desc" }));
-    let earliest = request(
-        PDB_EARLIEST,
-        json!({ "sort_by": "rcsb_accession_info.initial_release_date", "direction": "asc" }),
-    );
-    let (relevant, earliest) = std::thread::scope(|s| {
-        let a = s.spawn(|| rcsb_ids(&relevant));
-        let b = s.spawn(|| rcsb_ids(&earliest));
-        (
-            a.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed"))),
-            b.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed"))),
-        )
+    let pools = |value: &str| {
+        let relevant = request(value, PDB_ROWS, json!({ "sort_by": "score", "direction": "desc" }));
+        let earliest = request(
+            value,
+            PDB_EARLIEST,
+            json!({ "sort_by": "rcsb_accession_info.initial_release_date", "direction": "asc" }),
+        );
+        std::thread::scope(|s| {
+            let a = s.spawn(|| rcsb_ids(&relevant));
+            let b = s.spawn(|| rcsb_ids(&earliest));
+            (
+                a.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed"))),
+                b.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed"))),
+            )
+        })
+    };
+    // The words as typed, and again with the last left open in case it is
+    // half-written; a database finds something for almost anything, so the
+    // second is asked every time and the ranking below sorts the two.
+    let tolerant = forgiving(query);
+    let ((relevant, earliest), (more, first)) = std::thread::scope(|s| {
+        let loose = s.spawn(|| pools(&tolerant));
+        let strict = pools(query);
+        (strict, loose.join().unwrap_or((Ok(Vec::new()), Ok(Vec::new()))))
     });
-    let relevant = relevant?;
-    let earliest = earliest.unwrap_or_default();
+    let mut relevant = relevant?;
+    let mut earliest = earliest.unwrap_or_default();
+    for id in more.unwrap_or_default().into_iter().take(PDB_ROWS * 2 / 3) {
+        if !relevant.contains(&id) {
+            relevant.push(id);
+        }
+    }
+    for id in first.unwrap_or_default() {
+        if !earliest.contains(&id) {
+            earliest.push(id);
+        }
+    }
     let mut ids = relevant.clone();
     ids.extend(earliest.iter().filter(|id| !relevant.contains(id)).cloned());
 
@@ -208,6 +273,12 @@ fn search_pdb(query: &str) -> Result<Vec<Hit>> {
     let n = relevant.len().max(1) as f32;
     let mut hits: Vec<Hit> = entries
         .into_iter()
+        // An entry that names none of the words was found by a loose
+        // reading of them, and has nothing to do with what was asked.
+        .filter(|e| {
+            matching(&wanted, &words(&e.title)).0 > 0.0
+                || e.names.iter().any(|d| matching(&wanted, &words(d)).0 > 0.0)
+        })
         .map(|e| {
             let (title_score, title_exact) = matching(&wanted, &subject_words(&e.title));
             let (name_score, name_exact) = e
@@ -371,9 +442,34 @@ fn describe_entries(ids: &[String]) -> Result<Vec<Entry>> {
 // ---------------------------------------------------------------------------
 
 fn search_uniprot(query: &str) -> Result<Vec<Hit>> {
+    // UniProt has no room for a slip, but the last word may be unfinished.
+    let open = open_ended(query);
+    let (strict, loose) = std::thread::scope(|s| {
+        let loose = s.spawn(|| open.as_deref().map(|open| uniprot(open, query)));
+        (uniprot(query, query), loose.join().ok().flatten())
+    });
+    let mut hits = match (strict, loose) {
+        (Err(e), None | Some(Err(_))) => return Err(e),
+        (strict, loose) => {
+            let mut hits = strict.unwrap_or_default();
+            for h in loose.and_then(Result::ok).unwrap_or_default() {
+                if !hits.iter().any(|k| k.id == h.id) {
+                    hits.push(h);
+                }
+            }
+            hits
+        }
+    };
+    hits.sort_by(|a, b| b.score.total_cmp(&a.score));
+    hits.truncate(UNIPROT_SHOWN);
+    Ok(hits)
+}
+
+/// UniProt's reviewed entries for `asked`, ranked against what was typed.
+fn uniprot(asked: &str, query: &str) -> Result<Vec<Hit>> {
     let reply = agent()
         .get("https://rest.uniprot.org/uniprotkb/search")
-        .query("query", format!("({query}) AND reviewed:true"))
+        .query("query", format!("({asked}) AND reviewed:true"))
         .query("fields", "accession,protein_name,organism_name,length")
         .query("size", "6")
         .query("format", "json")
@@ -387,7 +483,7 @@ fn search_uniprot(query: &str) -> Result<Vec<Hit>> {
     let json: Value = serde_json::from_str(&reply)?;
     let wanted = words(query);
 
-    let mut hits: Vec<Hit> = json
+    let hits: Vec<Hit> = json
         .get("results")
         .and_then(Value::as_array)
         .cloned()
@@ -407,6 +503,10 @@ fn search_uniprot(query: &str) -> Result<Vec<Hit>> {
                 .unwrap_or("");
             let length = r.pointer("/sequence/length").and_then(Value::as_u64);
             let (score, exact) = matching(&wanted, &words(&name));
+            // Found for a word in its notes, not its name.
+            if score == 0.0 {
+                return None;
+            }
             let mut detail = vec![organism.to_string()];
             detail.extend(length.map(|n| format!("{n} aa")));
             Some(Hit {
@@ -420,8 +520,6 @@ fn search_uniprot(query: &str) -> Result<Vec<Hit>> {
             })
         })
         .collect();
-    hits.sort_by(|a, b| b.score.total_cmp(&a.score));
-    hits.truncate(UNIPROT_SHOWN);
     Ok(hits)
 }
 
@@ -440,23 +538,45 @@ fn search_pubchem(query: &str) -> Result<Vec<Hit>> {
             properties(&format!("{PUG}/compound/name/{}/property/{PROPS}/JSON", encode(query)))
         });
         let found = s.spawn(|| -> Result<Vec<Hit>> {
-            let reply = agent()
-                .get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi")
-                .query("db", "pccompound")
-                .query("term", query)
-                .query("retmode", "json")
-                .query("retmax", "12")
-                .query("sort", "relevance")
-                .header("user-agent", USER_AGENT)
-                .call()?
-                .body_mut()
-                .read_to_string()?;
-            let json: Value = serde_json::from_str(&reply)?;
-            let ids: Vec<&str> = json
-                .pointer("/esearchresult/idlist")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).collect())
-                .unwrap_or_default();
+            let esearch = |term: &str| -> Result<Vec<String>> {
+                ncbi_turn();
+                let reply = agent()
+                    .get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi")
+                    .query("db", "pccompound")
+                    .query("term", term)
+                    .query("retmode", "json")
+                    .query("retmax", "12")
+                    .query("sort", "relevance")
+                    .header("user-agent", USER_AGENT)
+                    .call()?
+                    .body_mut()
+                    .read_to_string()?;
+                let json: Value = serde_json::from_str(&reply)?;
+                Ok(json
+                    .pointer("/esearchresult/idlist")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .unwrap_or_default())
+            };
+            // As typed, and with the last word left open in case it is
+            // unfinished: "caffe" finds caffeine only the second way.
+            let open = open_ended(query);
+            let (strict, loose) = std::thread::scope(|s| {
+                let loose = s.spawn(|| open.as_deref().map(esearch));
+                (esearch(query), loose.join().ok().flatten())
+            });
+            let ids = match (strict, loose) {
+                (Err(e), None | Some(Err(_))) => return Err(e),
+                (strict, loose) => {
+                    let mut ids = strict.unwrap_or_default();
+                    for id in loose.and_then(Result::ok).unwrap_or_default() {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
+                    }
+                    ids
+                }
+            };
             if ids.is_empty() {
                 return Ok(Vec::new());
             }
@@ -488,15 +608,18 @@ fn search_pubchem(query: &str) -> Result<Vec<Hit>> {
         .into_iter()
         .enumerate()
         .filter(|(_, h)| !h.title.contains(';') && !hits.iter().any(|k| k.id == h.id))
-        .map(|(rank, mut h)| {
+        .filter_map(|(rank, mut h)| {
             let (score, exact) = matching(&wanted, &words(&h.title));
+            // Something whose name lacks a word asked for was found by a
+            // synonym, a patent or that word alone (Fluo-4 for "green
+            // fluo"), and is noise in a list like this.
+            if score <= 1.0 {
+                return None;
+            }
             h.exact = exact;
             h.score = score + 0.6 * (1.0 - rank as f32 / n);
-            h
+            Some(h)
         })
-        // Something whose name has none of the words asked for was found by
-        // a synonym or a patent, and is noise in a list like this.
-        .filter(|h| h.score > 0.6)
         .collect();
     rest.sort_by(|a, b| b.score.total_cmp(&a.score));
     hits.extend(rest);
@@ -637,28 +760,149 @@ fn subject_words(title: &str) -> Vec<String> {
 }
 
 /// How well a name answers a query: 3 when it is the query, 2 less a little
-/// per extra word when it contains it, and the share of the query's words it
-/// has otherwise. The flag says whether it was the query exactly.
+/// per extra word when it has all of it, and the share of the query's words
+/// it has otherwise. A word typed half-way or with a slip counts for a little
+/// less than the word itself, and a name with every word answered never
+/// scores below 1.1. The flag says whether it was the query exactly.
 fn matching(wanted: &[String], name: &[String]) -> (f32, bool) {
     if wanted.is_empty() || name.is_empty() {
         return (0.0, false);
     }
-    // Long words also count inside longer ones: hemoglobin in deoxyhemoglobin.
-    let has = |w: &String| name.iter().any(|n| n == w || (w.len() > 5 && n.contains(w.as_str())));
-    let found = wanted.iter().filter(|w| has(w)).count();
-    if found == wanted.len() {
-        // A chain letter after a name ("insulin A") does not make it another
-        // molecule; a letter asked for ("vitamin C") still has to be there.
-        let extra = name
-            .iter()
-            .filter(|n| n.chars().count() > 1 && !wanted.contains(n) && !NEUTRAL.contains(&n.as_str()))
-            .count();
-        if extra == 0 {
-            return (3.0, true);
-        }
-        return (2.0 - 0.08 * extra.min(10) as f32, false);
+    let best = |w: &String| name.iter().map(|n| closeness(w, n)).fold(0.0f32, f32::max);
+    let found: Vec<f32> = wanted.iter().map(best).collect();
+    if found.iter().any(|c| *c == 0.0) {
+        return (found.iter().sum::<f32>() / wanted.len() as f32, false);
     }
-    (found as f32 / wanted.len() as f32, false)
+    // A chain letter after a name ("insulin A") does not make it another
+    // molecule; a letter asked for ("vitamin C") still has to be there.
+    let extra = name
+        .iter()
+        .filter(|n| {
+            n.chars().count() > 1
+                && !NEUTRAL.contains(&n.as_str())
+                && !wanted.iter().any(|w| closeness(w, n) > 0.0)
+        })
+        .count();
+    let slack: f32 = found.iter().map(|c| 1.0 - c).sum();
+    let base = if extra == 0 { 3.0 } else { 2.0 - 0.08 * extra.min(10) as f32 };
+    ((base - slack).max(1.1), extra == 0 && slack == 0.0)
+}
+
+/// How far a name's word answers one word of the query: 1 when it is that
+/// word, and less when it holds it (hemoglobin in deoxyhemoglobin), begins
+/// with it (fluo, still being typed), or is it with a slip of the keys
+/// (flourescent). Nothing otherwise.
+fn closeness(w: &str, n: &str) -> f32 {
+    if n == w {
+        return 1.0;
+    }
+    let len = w.chars().count();
+    if len > 5 && n.contains(w) {
+        return 0.9;
+    }
+    if len >= 3 && n.starts_with(w) {
+        return 0.85;
+    }
+    // One slip in a word of four letters or more, two from eight.
+    let slips = match len {
+        0..=3 => return 0.0,
+        4..=7 => 1,
+        _ => 2,
+    };
+    if slips_between(w, n) <= slips {
+        return 0.7;
+    }
+    // A slip in a word still being typed: flou for fluorescent.
+    let head: String = n.chars().take(len).collect();
+    if n.chars().count() > len && slips_between(w, &head) <= 1 {
+        return 0.6;
+    }
+    0.0
+}
+
+/// Letters typed wrong, missed, added, or swapped with the next one.
+fn slips_between(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for j in 0..=b.len() {
+        d[0][j] = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[a.len()][b.len()]
+}
+
+/// The query with its last word left open, for a word still being typed:
+/// "green fluo" as "green fluo*".
+fn open_ended(query: &str) -> Option<String> {
+    let last = query.split_whitespace().last()?;
+    (last.chars().count() >= 3 && last.chars().all(char::is_alphanumeric))
+        .then(|| format!("{query}*"))
+}
+
+/// The query as the PDB's text search takes it with its last word left
+/// open, as typed and with each pair of its letters swapped: "green flou"
+/// finds green fluorescent protein by way of fluo*. Misspelt whole words
+/// are for [`respelt`].
+fn forgiving(query: &str) -> String {
+    let mut words: Vec<String> = query.split_whitespace().map(str::to_string).collect();
+    if let Some(last) = words.last_mut() {
+        let chars: Vec<char> = last.chars().collect();
+        if chars.len() >= 3 && chars.iter().all(|c| c.is_alphanumeric()) {
+            let mut options = vec![format!("{last}*")];
+            for k in 1..chars.len().min(10) {
+                let mut swapped = chars.clone();
+                swapped.swap(k - 1, k);
+                let option = format!("{}*", swapped.into_iter().collect::<String>());
+                if !options.contains(&option) {
+                    options.push(option);
+                }
+            }
+            *last = format!("({})", options.join(" | "));
+        }
+    }
+    words.join(" ")
+}
+
+/// The query with its misspellings put right, by NCBI's speller for the
+/// biomedical literature: "green flourescent protein", "hemoglobn",
+/// "asprin". None when it has nothing to correct, or would change how many
+/// words there are ("green f lou" for a word still being typed).
+fn respelt(query: &str) -> Option<String> {
+    ncbi_turn();
+    let reply = agent()
+        .get("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/espell.fcgi")
+        .query("db", "pubmed")
+        .query("term", query)
+        .header("user-agent", USER_AGENT)
+        .call()
+        .ok()?
+        .body_mut()
+        .read_to_string()
+        .ok()?;
+    let corrected = reply
+        .split_once("<CorrectedQuery>")?
+        .1
+        .split_once("</CorrectedQuery>")?
+        .0
+        .trim()
+        .to_string();
+    let count = |t: &str| t.split_whitespace().count();
+    (!corrected.is_empty()
+        && corrected.to_lowercase() != query.to_lowercase()
+        && count(&corrected) == count(query))
+    .then_some(corrected)
 }
 
 /// PDB titles shout. Take it down to sentence case, keeping identifiers and
@@ -722,6 +966,21 @@ fn formula_subscripts(formula: &str) -> String {
 
 const USER_AGENT: &str = "profold/0.1 (https://github.com/odexion/profold)";
 
+/// Wait for a turn at NCBI's E-utilities, which turn away more than three
+/// requests a second from one address; a search asks it up to five times.
+fn ncbi_turn() {
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(at) = *last {
+        let next = at + Duration::from_millis(350);
+        let now = Instant::now();
+        if next > now {
+            std::thread::sleep(next - now);
+        }
+    }
+    *last = Some(Instant::now());
+}
+
 /// One client for every search, with a time limit: a list that never comes
 /// is worse than one that says the search failed.
 fn agent() -> &'static ureq::Agent {
@@ -784,6 +1043,42 @@ mod tests {
     }
 
     #[test]
+    fn half_typed_and_misspelt_words_still_match() {
+        let gfp = w("Green fluorescent protein");
+        // Still typing, or a slip of the keys: every word is answered.
+        assert!(matching(&w("green fluo"), &gfp).0 > 1.0);
+        assert!(matching(&w("green flou"), &gfp).0 > 1.0);
+        assert!(matching(&w("green flourescent protein"), &gfp).0 > 1.0);
+        assert!(matching(&w("hemoglobn"), &w("Hemoglobin")).0 > 1.0);
+        // ...but never as well as the words themselves, nor as exactly.
+        let (typo, exact) = matching(&w("green flourescent protein"), &gfp);
+        assert!(!exact && typo < matching(&w("green fluorescent protein"), &gfp).0);
+        // A name lacking a word asked for is not a match: Fluo-4 has no green.
+        assert!(matching(&w("green fluo"), &w("Fluo-4")).0 <= 1.0);
+        assert!(matching(&w("green fluo"), &w("Fluo-3")).0 <= 1.0);
+        // Short words are not stretched to fit.
+        assert_eq!(closeness("cat", "car"), 0.0);
+        assert_eq!(slips_between("flourescent", "fluorescent"), 1);
+        assert_eq!(forgiving("green flou"), "green (flou* | lfou* | folu* | fluo*)");
+        assert_eq!(open_ended("green fluo").as_deref(), Some("green fluo*"));
+        assert_eq!(open_ended("vitamin c"), None);
+    }
+
+    #[test]
+    fn only_the_name_itself_is_named() {
+        let caffeine = Hit::for_test(Kind::Molecule, "2519", "Caffeine");
+        assert!(caffeine.is_named("caffeine"));
+        assert!(caffeine.is_named("  CAFFEINE "));
+        assert!(caffeine.is_named("cid 2519"));
+        assert!(!caffeine.is_named("caffein"));
+        assert!(!caffeine.is_named("caffeine citrate"));
+        let gfp = Hit::for_test(Kind::Pdb, "1EMA", "Green fluorescent protein");
+        assert!(gfp.is_named("green  fluorescent protein"));
+        assert!(!gfp.is_named("green protein"));
+        assert!(!gfp.is_named("asdkjh qwe"));
+    }
+
+    #[test]
     fn names_match_through_the_boilerplate() {
         let q = w("green fluorescent protein");
         assert_eq!(matching(&q, &subject_words("STRUCTURE OF GREEN FLUORESCENT PROTEIN")), (3.0, true));
@@ -831,7 +1126,7 @@ mod tests {
     #[test]
     #[ignore]
     fn search_live() {
-        for q in ["green fluorescent protein", "caffeine", "haemoglobin", "hemoglobin", "ubiquitin", "ATP", "heme", "myoglobin", "spike protein", "hiv protease", "kinase", "insulin", "aspirin", "lysozyme", "vitamin c"] {
+        for q in ["green fluorescent protein", "caffeine", "haemoglobin", "hemoglobin", "ubiquitin", "ATP", "heme", "myoglobin", "spike protein", "hiv protease", "kinase", "insulin", "aspirin", "lysozyme", "vitamin c", "green fluo", "green flou", "green flourescent protein", "caffe", "hemoglobn", "ubiquit", "asprin"] {
             let hits = search(q).unwrap();
             println!("== {q}");
             for h in hits.iter() {
@@ -842,6 +1137,12 @@ mod tests {
         assert_eq!(hits[0].kind, Kind::Pdb);
         assert!(["1GFL", "1EMA"].contains(&hits[0].id.as_str()), "{}", hits[0].id);
         assert_eq!(search("caffeine").unwrap()[0].id, "2519");
+        // Half-typed and misspelt: the protein, and no molecule lacking a word.
+        for q in ["green fluo", "green flou", "green flourescent protein"] {
+            let hits = search(q).unwrap();
+            assert!(hits.iter().any(|h| h.title.to_lowercase().contains("green fluorescent")), "{q}");
+            assert!(hits.iter().all(|h| h.kind != Kind::Molecule || h.title.to_lowercase().contains("green")), "{q}");
+        }
         let crambin = search_sequence("TTCCPSIVARSNFNVCRLPGTPEAICATYTGCIIIPGATCPGDYAN").unwrap();
         assert_eq!(crambin[0].id, "1CRN");
     }

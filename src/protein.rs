@@ -227,6 +227,20 @@ impl Structure {
     }
 
     /// Whether there is a protein backbone to draw as a cartoon or a tube.
+    /// The database's own page for what was fetched.
+    pub fn page(&self) -> Option<String> {
+        let id = self.id.trim();
+        Some(match self.source {
+            Source::Pdb => format!("https://www.rcsb.org/structure/{}", id.to_uppercase()),
+            Source::AlphaFold => format!("https://alphafold.ebi.ac.uk/entry/{id}"),
+            Source::PubChem => format!(
+                "https://pubchem.ncbi.nlm.nih.gov/compound/{}",
+                id.trim_start_matches("CID").trim()
+            ),
+            Source::SimpleFold | Source::File | Source::Sample => return None,
+        })
+    }
+
     pub fn has_polymer(&self) -> bool {
         self.residues.iter().filter(|r| r.ca.is_some()).take(3).count() >= 3
     }

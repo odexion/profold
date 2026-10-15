@@ -26,8 +26,18 @@ actions!(
         Down,
         Backspace,
         Delete,
+        DeleteWordLeft,
+        DeleteWordRight,
+        DeleteToStart,
+        DeleteToEnd,
         Left,
         Right,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
+        SelectToStart,
+        SelectToEnd,
         SelectLeft,
         SelectRight,
         SelectAll,
@@ -104,6 +114,54 @@ impl TextInput {
             self.select_to(self.next_boundary(self.cursor_offset()), cx)
         }
         self.replace_text_in_range(None, "", window, cx)
+    }
+
+    /// Delete back to `to`, or the selection if there is one.
+    fn delete_back(&mut self, to: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(to, cx)
+        }
+        self.replace_text_in_range(None, "", window, cx)
+    }
+
+    fn delete_word_left(&mut self, _: &DeleteWordLeft, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_back(self.previous_word_start(self.cursor_offset()), window, cx)
+    }
+
+    fn delete_word_right(&mut self, _: &DeleteWordRight, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_back(self.next_word_end(self.cursor_offset()), window, cx)
+    }
+
+    fn delete_to_start(&mut self, _: &DeleteToStart, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_back(0, window, cx)
+    }
+
+    fn delete_to_end(&mut self, _: &DeleteToEnd, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_back(self.content.len(), window, cx)
+    }
+
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.previous_word_start(self.cursor_offset()), cx)
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.next_word_end(self.cursor_offset()), cx)
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.previous_word_start(self.cursor_offset()), cx)
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.next_word_end(self.cursor_offset()), cx)
+    }
+
+    fn select_to_start(&mut self, _: &SelectToStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, cx)
+    }
+
+    fn select_to_end(&mut self, _: &SelectToEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.content.len(), cx)
     }
 
     fn on_mouse_down(
@@ -250,6 +308,39 @@ impl TextInput {
             .rev()
             .find_map(|(idx, _)| (idx < offset).then_some(idx))
             .unwrap_or(0)
+    }
+
+    /// Where the word before `offset` starts, past any spaces or
+    /// punctuation in between.
+    fn previous_word_start(&self, offset: usize) -> usize {
+        let mut chars = self.content[..offset].char_indices().rev().peekable();
+        let mut start = offset;
+        for word in [false, true] {
+            while let Some(&(i, c)) = chars.peek() {
+                if c.is_alphanumeric() != word {
+                    break;
+                }
+                start = i;
+                chars.next();
+            }
+        }
+        start
+    }
+
+    /// Where the word after `offset` ends.
+    fn next_word_end(&self, offset: usize) -> usize {
+        let mut chars = self.content[offset..].char_indices().peekable();
+        let mut end = offset;
+        for word in [false, true] {
+            while let Some(&(i, c)) = chars.peek() {
+                if c.is_alphanumeric() != word {
+                    break;
+                }
+                end = offset + i + c.len_utf8();
+                chars.next();
+            }
+        }
+        end
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
@@ -677,8 +768,44 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Cancel, Some("Input")),
         KeyBinding::new("up", Up, Some("Input")),
         KeyBinding::new("down", Down, Some("Input")),
+        // Shift held while deleting still deletes, as in any other field.
+        KeyBinding::new("shift-backspace", Backspace, Some("Input")),
+        KeyBinding::new("shift-home", SelectToStart, Some("Input")),
+        KeyBinding::new("shift-end", SelectToEnd, Some("Input")),
         #[cfg(target_os = "macos")]
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, Some("Input")),
+    ]);
+    // The platform's own conventions for words and lines: ⌘ for the line and
+    // ⌥ for the word on a Mac, Ctrl for the word elsewhere.
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("cmd-backspace", DeleteToStart, Some("Input")),
+        KeyBinding::new("cmd-delete", DeleteToEnd, Some("Input")),
+        KeyBinding::new("alt-backspace", DeleteWordLeft, Some("Input")),
+        KeyBinding::new("alt-delete", DeleteWordRight, Some("Input")),
+        KeyBinding::new("ctrl-w", DeleteWordLeft, Some("Input")),
+        KeyBinding::new("cmd-left", Home, Some("Input")),
+        KeyBinding::new("cmd-right", End, Some("Input")),
+        KeyBinding::new("cmd-shift-left", SelectToStart, Some("Input")),
+        KeyBinding::new("cmd-shift-right", SelectToEnd, Some("Input")),
+        KeyBinding::new("alt-left", WordLeft, Some("Input")),
+        KeyBinding::new("alt-right", WordRight, Some("Input")),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, Some("Input")),
+        KeyBinding::new("alt-shift-right", SelectWordRight, Some("Input")),
+        KeyBinding::new("ctrl-a", Home, Some("Input")),
+        KeyBinding::new("ctrl-e", End, Some("Input")),
+        KeyBinding::new("ctrl-k", DeleteToEnd, Some("Input")),
+    ]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-backspace", DeleteWordLeft, Some("Input")),
+        KeyBinding::new("ctrl-delete", DeleteWordRight, Some("Input")),
+        KeyBinding::new("ctrl-shift-backspace", DeleteToStart, Some("Input")),
+        KeyBinding::new("ctrl-shift-delete", DeleteToEnd, Some("Input")),
+        KeyBinding::new("ctrl-left", WordLeft, Some("Input")),
+        KeyBinding::new("ctrl-right", WordRight, Some("Input")),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("Input")),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("Input")),
     ]);
 }
 
@@ -692,6 +819,16 @@ impl Render for TextInput {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
+            .on_action(cx.listener(Self::delete_to_start))
+            .on_action(cx.listener(Self::delete_to_end))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::select_to_start))
+            .on_action(cx.listener(Self::select_to_end))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::select_left))

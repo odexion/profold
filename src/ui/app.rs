@@ -24,7 +24,7 @@ use crate::align;
 use crate::fetch::{self, Input, Retrieval};
 use crate::formats;
 use crate::job::{self, Event, Outcome};
-use crate::protein::Structure;
+use crate::protein::{Source, Structure};
 use crate::render::{self, Appearance, Camera, Coloring, Look, Palette, Repr, Scene, Species, Style};
 use crate::samples::SAMPLES;
 use crate::search::{self, Hit, Kind};
@@ -420,32 +420,39 @@ impl Viewer {
                     }
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.searching.as_deref() != Some(query.as_str()) {
-                    return;
-                }
-                this.searching = None;
-                match found {
-                    Ok(hits) => {
-                        this.hits = hits;
-                        this.hits_for = query;
-                        this.highlight = 0;
-                        this.dropdown = true;
-                        if std::mem::take(&mut this.open_when_found) && !this.hits.is_empty() {
-                            this.pick(0, cx);
-                        }
-                    }
-                    Err(e) => {
-                        this.hits.clear();
-                        this.hits_for = query;
-                        this.dropdown = true;
-                        this.open_when_found = false;
-                        this.search_error = Some(format!("{e:#}").into());
-                    }
-                }
-                cx.notify();
-            });
+            let _ = this.update(cx, |this, cx| this.receive(query, found, cx));
         }));
+    }
+
+    /// Results are back for `query`. Enter may have gone ahead of them: then
+    /// a hit named exactly what was typed opens outright, and anything else
+    /// is left in the list to choose from.
+    fn receive(&mut self, query: String, found: anyhow::Result<Vec<Hit>>, cx: &mut Context<Self>) {
+        if self.searching.as_deref() != Some(query.as_str()) {
+            return;
+        }
+        self.searching = None;
+        match found {
+            Ok(hits) => {
+                self.hits = hits;
+                self.highlight = 0;
+                self.dropdown = true;
+                if std::mem::take(&mut self.open_when_found) {
+                    if let Some(i) = self.hits.iter().position(|h| h.is_named(&query)) {
+                        self.pick(i, cx);
+                    }
+                }
+                self.hits_for = query;
+            }
+            Err(e) => {
+                self.hits.clear();
+                self.hits_for = query;
+                self.dropdown = true;
+                self.open_when_found = false;
+                self.search_error = Some(format!("{e:#}").into());
+            }
+        }
+        cx.notify();
     }
 
     /// Move the highlighted result up or down, opening the list if it was
@@ -639,7 +646,8 @@ impl Viewer {
                     }
                 } else {
                     // Not back yet, or still waiting out the typing pause:
-                    // go now, and open the best when it comes.
+                    // go now, and open it when it comes if it is named
+                    // exactly what was typed.
                     self.open_when_found = true;
                     self.schedule_search(query, Duration::ZERO, cx);
                     cx.notify();
@@ -3409,6 +3417,46 @@ impl Viewer {
     /// The info panel for anything that is not a protein: a molecule, a
     /// crystal, a simulation box. Atoms, bonds, the cell and the frames are
     /// what there is to say.
+    /// Where what is shown came from, as a quiet line under the table:
+    /// the entry's page in its database, or the file in its folder.
+    fn source_line(&self, structure: &Structure) -> Option<gpui::AnyElement> {
+        let (text, go): (String, Box<dyn Fn(&mut App)>) = match structure.page() {
+            Some(url) => (
+                format!("View on {}", structure.source.label()),
+                Box::new(move |cx| cx.open_url(&url)),
+            ),
+            None if structure.source == Source::File => {
+                let path = PathBuf::from(self.origin.as_deref()?);
+                let place = if cfg!(target_os = "macos") {
+                    "Show in Finder"
+                } else if cfg!(target_os = "windows") {
+                    "Show in Explorer"
+                } else {
+                    "Show in folder"
+                };
+                (place.to_string(), Box::new(move |cx| cx.reveal_path(&path)))
+            }
+            None => return None,
+        };
+        Some(
+            div()
+                .pt(px(14.))
+                .flex()
+                .child(
+                    div()
+                        .id("source-link")
+                        .debug_selector(|| "source-link".into())
+                        .text_size(px(10.5))
+                        .text_color(theme::FAINT)
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme::TEXT))
+                        .child(text)
+                        .on_click(move |_, _, cx| go(cx)),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn info_atoms(&self, structure: &Structure, cx: &mut Context<Self>) -> impl IntoElement {
         let name = if structure.title.trim().is_empty() {
             structure.id.clone()
@@ -3513,6 +3561,7 @@ impl Viewer {
                         d.child(spec("frames", thousands(structure.frame_count()), false))
                     }),
             )
+            .children(self.source_line(structure))
     }
 
     /// What is on screen, set like the opening of an article: the category in
@@ -3678,6 +3727,7 @@ impl Viewer {
                         .child(format!("{} frames", thousands(structure.frame_count()))),
                 )
             })
+            .children(self.source_line(structure))
             .into_any_element()
     }
 
@@ -3972,14 +4022,27 @@ impl Render for Viewer {
                     .border_color(theme::BORDER)
                     .child(self.masthead())
                     .child(self.search(focused, cx))
-                    // Model, steps and pLDDT: the settings for Fold and Compare.
-                    .when(folding, |d| d.children(self.plugin_options(cx)))
-                    .child(self.status(cx))
-                    .when(structure.is_none(), |d| {
-                        d.child(self.examples(cx)).child(div().flex_1())
-                    })
-                    .when_some(structure, |d, s| d.child(self.info(&s, cx)))
-                    .child(div().flex_1()),
+                    // Everything under the field scrolls when the window is
+                    // too short for it; the field itself stays put.
+                    .child(
+                        div()
+                            .id("panel")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(16.))
+                                    .pb(px(20.))
+                                    // Model, steps and pLDDT: the settings for Fold and Compare.
+                                    .when(folding, |d| d.children(self.plugin_options(cx)))
+                                    .child(self.status(cx))
+                                    .when(structure.is_none(), |d| d.child(self.examples(cx)))
+                                    .when_some(structure, |d, s| d.child(self.info(&s, cx))),
+                            ),
+                    ),
             )
             .child(self.stage(cx)),
             )
@@ -4123,6 +4186,89 @@ mod ui_tests {
         assert!(!busy.0, "the list stayed up after a pick");
         assert!(busy.1, "picking a result started nothing");
         assert!(busy.2.is_some_and(|l| l.contains("1GFL")));
+    }
+
+    #[gpui::test]
+    fn a_download_says_where_it_came_from(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        // A sample built into the app has no page to go to.
+        assert!(cx.debug_bounds("source-link").is_none());
+        view.update(cx, |this, cx| {
+            let mut s = formats::load_bytes(SAMPLES[0].file, SAMPLES[0].bytes.to_vec()).unwrap();
+            s.source = Source::PubChem;
+            s.id = "CID 2519".into();
+            this.show(s, cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("source-link").is_some(), "no link to PubChem");
+        let page = view.update(cx, |this, _| this.structure.as_ref().unwrap().page());
+        assert_eq!(page.as_deref(), Some("https://pubchem.ncbi.nlm.nih.gov/compound/2519"));
+    }
+
+    #[gpui::test]
+    fn enter_ahead_of_the_list_opens_only_an_exact_name(cx: &mut TestAppContext) {
+        cx.update(crate::ui::input::bind_keys);
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        // Enter, with the search the field started still out: the network's
+        // reply is stood in for below.
+        let enter = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, cx| {
+                this.submit(cx);
+                this.search_task = None;
+                assert!(this.open_when_found, "enter did not wait for the list");
+            })
+        };
+        cx.simulate_input("caffeine");
+        enter(&view, cx);
+        // Nothing is called that: the list comes up and nothing opens.
+        view.update(cx, |this, cx| {
+            let near = vec![hit(Kind::Molecule, "1", "Caffeine citrate")];
+            this.receive("caffeine".into(), Ok(near), cx);
+        });
+        let (busy, dropdown) = view.update(cx, |this, _| (this.busy.is_some(), this.dropdown));
+        assert!(!busy, "a near miss was opened");
+        assert!(dropdown, "the list did not come up");
+
+        // Typed again with the real thing among the hits: that one opens.
+        cx.simulate_keystrokes("backspace");
+        cx.simulate_input("e");
+        enter(&view, cx);
+        view.update(cx, |this, cx| {
+            let hits = vec![
+                hit(Kind::Molecule, "1", "Caffeine citrate"),
+                hit(Kind::Molecule, "2519", "Caffeine"),
+            ];
+            this.receive("caffeine".into(), Ok(hits), cx);
+        });
+        let (busy, last) = view.update(cx, |this, _| (this.busy.is_some(), this.log.last().cloned()));
+        assert!(busy, "the exact name did not open");
+        assert!(last.is_some_and(|l| l.contains("CID 2519")));
+    }
+
+    #[gpui::test]
+    fn cmd_or_ctrl_backspace_clears_words(cx: &mut TestAppContext) {
+        cx.update(crate::ui::input::bind_keys);
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        let text = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, cx| this.input.read(cx).text().to_string())
+        };
+        cx.simulate_input("green fluorescent");
+        cx.simulate_keystrokes("shift-backspace");
+        assert_eq!(text(&view, cx), "green fluorescen");
+        #[cfg(target_os = "macos")]
+        {
+            cx.simulate_keystrokes("alt-backspace");
+            assert_eq!(text(&view, cx), "green ");
+            cx.simulate_keystrokes("cmd-backspace");
+            assert_eq!(text(&view, cx), "");
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            cx.simulate_keystrokes("ctrl-backspace");
+            assert_eq!(text(&view, cx), "green ");
+            cx.simulate_keystrokes("ctrl-backspace");
+            assert_eq!(text(&view, cx), "");
+        }
     }
 
     #[gpui::test]
