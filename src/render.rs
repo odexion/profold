@@ -534,22 +534,26 @@ pub enum Style {
     /// Soft colour laid on almost flat, held by ink outlines: the look of a
     /// painted molecular illustration, after David Goodsell.
     Flat,
+    /// Glossy light and shadow where atoms crowd together, without ink: the
+    /// look of a rendered figure for a paper or a cover.
+    Studio,
 }
 
 impl Style {
     /// The drawn figure leads: it is what the viewer opens with.
-    pub const ALL: [Style; 3] = [Style::Illustrative, Style::Flat, Style::Soft];
+    pub const ALL: [Style; 4] = [Style::Illustrative, Style::Flat, Style::Soft, Style::Studio];
     pub fn label(self) -> &'static str {
         match self {
             Style::Soft => "Soft",
             Style::Illustrative => "Illustrative",
             Style::Flat => "Flat",
+            Style::Studio => "Studio",
         }
     }
 
-    /// Whether the edges are drawn in ink, rather than shaded darker.
+    /// Whether the edges are drawn in ink.
     pub fn inked(self) -> bool {
-        self != Style::Soft
+        matches!(self, Style::Illustrative | Style::Flat)
     }
 
     /// How far the farthest geometry washes toward the paper. A drawn figure
@@ -560,6 +564,7 @@ impl Style {
             Style::Soft => 0.26,
             Style::Illustrative => 0.0,
             Style::Flat => 0.2,
+            Style::Studio => 0.1,
         }
     }
 
@@ -569,6 +574,7 @@ impl Style {
             Style::Soft => 0.0,
             Style::Illustrative => 1.0,
             Style::Flat => 2.0,
+            Style::Studio => 3.0,
         }
     }
 }
@@ -1083,7 +1089,7 @@ pub fn build_scene(
         }
     }
     let tone: Option<fn([f32; 3]) -> [f32; 3]> = match style {
-        Style::Soft => Some(rich),
+        Style::Soft | Style::Studio => Some(rich),
         Style::Illustrative => Some(vivid),
         Style::Flat => Some(chalky),
     };
@@ -1713,6 +1719,12 @@ fn shade(n: [f32; 3], base: [f32; 3], style: Style) -> [f32; 3] {
         // Barely lit: the shape comes from the outline, with just enough
         // fall-off that a sphere does not read as a disc.
         Style::Flat => (0.76 + 0.26 * diff, 0.0),
+        // A glossy surface: deep shade on the far side, a tight highlight
+        // over a broad sheen.
+        Style::Studio => {
+            let n32 = n8 * n8 * n8 * n8;
+            (0.26 + 0.80 * diff, n32 * 0.5 + n8 * 0.04)
+        }
     };
     [base[0] * k + spec, base[1] * k + spec, base[2] * k + spec]
 }
@@ -2016,6 +2028,41 @@ pub fn render_cpu(
             });
     }
 
+    // Shadow where atoms crowd together, for the studio style.
+    if style == Style::Studio {
+        let radius = ao_radius(width, height);
+        let reach = radius / scale;
+        color
+            .par_chunks_mut(width * 3)
+            .enumerate()
+            .for_each(|(y, row)| {
+                for x in 0..width {
+                    let z = depth[y * width + x];
+                    if z == f32::NEG_INFINITY {
+                        continue;
+                    }
+                    let mut occ = 0.0;
+                    for o in AO {
+                        let qx = x as i32 + (o[0] * radius + 0.5).floor() as i32;
+                        let qy = y as i32 + (o[1] * radius + 0.5).floor() as i32;
+                        if qx < 0 || qy < 0 || qx >= width as i32 || qy >= height as i32 {
+                            continue;
+                        }
+                        let nz = depth[qy as usize * width + qx as usize];
+                        if nz != f32::NEG_INFINITY {
+                            occ += occluding(nz - z, reach);
+                        }
+                    }
+                    let k = 1.0 - AO_STRENGTH * occ / AO.len() as f32;
+                    // The card keeps colour in eight bits, so a highlight is
+                    // white before it is shaded; shaded here the same way.
+                    for c in &mut row[x * 3..x * 3 + 3] {
+                        *c = c.min(1.0) * k;
+                    }
+                }
+            });
+    }
+
     // Outline. Soft darkens what sits behind a depth jump and the rim of the
     // silhouette; illustrative lays down real ink, on both sides of the
     // silhouette, thickened so it holds at any resolution.
@@ -2105,6 +2152,7 @@ pub fn render_cpu(
                 .filter(|(_, e)| **e)
                 .for_each(|(c, _)| c.copy_from_slice(&INK));
         }
+        Style::Studio => {}
     }
 
     // -- translucent atoms and bonds ----------------------------------------
@@ -2143,9 +2191,10 @@ pub fn render_cpu(
                         (true, Style::Soft) => (c.map(|x| x * 0.8), alpha),
                         _ => (c, alpha),
                     };
+                    // The card clamps what it blends in to eight bits.
                     let o = idx * 3;
                     for k in 0..3 {
-                        color[o + k] = c[k] * alpha + color[o + k] * (1.0 - alpha);
+                        color[o + k] = c[k].min(1.0) * alpha + color[o + k] * (1.0 - alpha);
                     }
                 };
                 for &i in bin {
@@ -2170,6 +2219,46 @@ pub fn render_cpu(
     }
 
     to_bgra(&color, width, height)
+}
+
+/// Where the studio style looks for neighbours that shade a pixel: a spiral
+/// of sixteen points over the unit disc. The GPU shader holds the same list.
+const AO: [[f32; 2]; 16] = [
+    [0.1768, 0.0000],
+    [-0.2258, 0.2068],
+    [0.0346, -0.3938],
+    [0.2846, 0.3712],
+    [-0.5222, -0.0924],
+    [0.4947, -0.3147],
+    [-0.1655, 0.6155],
+    [-0.3156, -0.6076],
+    [0.6846, 0.2500],
+    [-0.7123, 0.2940],
+    [0.3434, -0.7337],
+    [0.2537, 0.8089],
+    [-0.7647, -0.4432],
+    [0.8971, -0.1972],
+    [-0.5475, 0.7788],
+    [-0.1265, -0.9761],
+];
+
+/// How dark a fully enclosed pixel goes.
+const AO_STRENGTH: f32 = 0.7;
+
+/// How far, in pixels, the studio style looks for neighbours: a fixed share
+/// of the frame, so the shadows read the same at any size and in any units.
+pub(crate) fn ao_radius(width: usize, height: usize) -> f32 {
+    (width.min(height) as f32 * 0.02).max(2.0)
+}
+
+/// How much a neighbour `dz` nearer the viewer shades a pixel: more the
+/// higher it stands, up to `reach`, then less again, so a body floating well
+/// in front casts no halo on what is behind it. Smooth, so the CPU and GPU,
+/// whose depths differ in the last bits, agree.
+fn occluding(dz: f32, reach: f32) -> f32 {
+    let up = (dz / reach).clamp(0.0, 1.0);
+    let down = 1.0 - ((dz - reach) / reach).clamp(0.0, 1.0);
+    up * down
 }
 
 /// Below this an atom is drawn as see-through.

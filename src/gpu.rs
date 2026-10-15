@@ -420,7 +420,12 @@ impl Gpu {
             ],
             center: [cam.center[0], cam.center[1], cam.center[2], 0.0],
             view: [cx, cy, scale, 0.0],
-            size: [width as f32, height as f32, fused as u32 as f32, 0.0],
+            size: [
+                width as f32,
+                height as f32,
+                fused as u32 as f32,
+                crate::render::ao_radius(width, height),
+            ],
             depth: [zmax + 1.0, span + 2.0, zmin, span],
             page: [
                 page[0],

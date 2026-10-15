@@ -11,13 +11,13 @@ struct U {
     center: vec4f,
     // cx, cy, scale
     view: vec4f,
-    // width, height, whether the ink pass finds its own edges
+    // width, height, whether the ink pass finds its own edges, shadow radius
     size: vec4f,
     // zfar, depth range, zmin, span
     depth: vec4f,
     // page colour, fog strength
     page: vec4f,
-    // jump, style (0 soft, 1 illustrative, 2 flat), rim, line weight
+    // jump, style (0 soft, 1 illustrative, 2 flat, 3 studio), rim, line weight
     params: vec4f,
 }
 
@@ -53,6 +53,18 @@ fn view_xy(frag: vec2f) -> vec2f {
     return vec2f((frag.x - u.view.x) / u.view.z, -(frag.y - u.view.y) / u.view.z);
 }
 
+fn soft() -> bool {
+    return u.params.y < 0.5;
+}
+
+fn inked() -> bool {
+    return u.params.y > 0.5 && u.params.y < 2.5;
+}
+
+fn studio() -> bool {
+    return u.params.y > 2.5;
+}
+
 fn shade(n: vec3f, base: vec3f) -> vec3f {
     let diff = max(dot(n, LIGHT), 0.0);
     let nh = max(dot(n, HALF), 0.0);
@@ -60,9 +72,13 @@ fn shade(n: vec3f, base: vec3f) -> vec3f {
     let n8 = n2 * n2 * n2 * n2;
     var k: f32;
     var spec: f32;
-    if u.params.y < 0.5 {
+    if soft() {
         k = 0.34 + 0.70 * diff;
         spec = n8 * n8 * n8 * 0.28;
+    } else if studio() {
+        let n32 = n8 * n8 * n8 * n8;
+        k = 0.26 + 0.80 * diff;
+        spec = n32 * 0.5 + n8 * 0.04;
     } else if u.params.y > 1.5 {
         k = 0.76 + 0.26 * diff;
         spec = 0.0;
@@ -268,9 +284,9 @@ fn glass_fs(in: ImpOut) -> Blended {
     let inner = max(in.a.w * u.view.z - u.params.z, 0.0);
     let from_centre = length(view_xy(in.pos.xy) - in.a.xy) * u.view.z;
     if sphere && from_centre > inner {
-        if u.params.y < 0.5 {
+        if soft() {
             c *= 0.8;
-        } else {
+        } else if inked() {
             c = INK;
             alpha = max(alpha, 0.45);
         }
@@ -386,6 +402,36 @@ fn edge4(z: f32, a: f32, b: f32, c: f32, d: f32) -> bool {
     return z != OUTSIDE && (crosses(z, a) || crosses(z, b) || crosses(z, c) || crosses(z, d));
 }
 
+// The studio style's shadow, as the CPU path works it out: neighbours on a
+// spiral, each shading the pixel the more it stands in front, up to a reach.
+const AO = array<vec2f, 16>(
+    vec2f(0.1768, 0.0000), vec2f(-0.2258, 0.2068), vec2f(0.0346, -0.3938), vec2f(0.2846, 0.3712),
+    vec2f(-0.5222, -0.0924), vec2f(0.4947, -0.3147), vec2f(-0.1655, 0.6155), vec2f(-0.3156, -0.6076),
+    vec2f(0.6846, 0.2500), vec2f(-0.7123, 0.2940), vec2f(0.3434, -0.7337), vec2f(0.2537, 0.8089),
+    vec2f(-0.7647, -0.4432), vec2f(0.8971, -0.1972), vec2f(-0.5475, 0.7788), vec2f(-0.1265, -0.9761),
+);
+
+fn occlusion(p: vec2i, z: f32) -> f32 {
+    let radius = u.size.w;
+    let reach = radius / u.view.z;
+    var occ = 0.0;
+    for (var i = 0; i < 16; i++) {
+        let q = p + vec2i(floor(AO[i] * radius + 0.5));
+        if !inside(q) {
+            continue;
+        }
+        let nz = z_at(q);
+        if nz < EMPTY {
+            continue;
+        }
+        let dz = nz - z;
+        let up = clamp(dz / reach, 0.0, 1.0);
+        let down = 1.0 - clamp((dz - reach) / reach, 0.0, 1.0);
+        occ += up * down;
+    }
+    return occ / 16.0;
+}
+
 @fragment
 fn post_fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     let p = vec2i(pos.xy);
@@ -393,7 +439,7 @@ fn post_fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     // depth around the pixel, which saves a pass; heavier ones, in a large
     // export, are read from `edge_fs`.
     let w = i32(u.params.w) - 1;
-    if u.params.y >= 0.5 && u.size.z > 0.5 {
+    if inked() && u.size.z > 0.5 {
         // The pixel, its four neighbours, and for a two-pixel line theirs:
         // each depth read once, held in registers.
         let c = z_at(p);
@@ -416,7 +462,7 @@ fn post_fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 return vec4f(INK, 1.0);
             }
         }
-    } else if u.params.y >= 0.5 {
+    } else if inked() {
         // The line, thickened to the frame's weight.
         for (var dy = -w; dy <= w; dy++) {
             let reach = w - abs(dy);
@@ -437,7 +483,11 @@ fn post_fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     let d = clamp((z - u.depth.z) / u.depth.w, 0.0, 1.0);
     c += (u.page.rgb - c) * (1.0 - d) * u.page.w;
 
-    if u.params.y < 0.5 {
+    if studio() {
+        c *= 1.0 - 0.7 * occlusion(p, z);
+    }
+
+    if soft() {
         var behind = false;
         var open = false;
         for (var i = 0; i < 4; i++) {
