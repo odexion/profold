@@ -559,7 +559,7 @@ impl Style {
         match self {
             Style::Soft => 0.42,
             Style::Illustrative => 0.0,
-            Style::Flat => 0.30,
+            Style::Flat => 0.2,
         }
     }
 
@@ -862,15 +862,15 @@ fn vivid(c: [f32; 3]) -> [f32; 3] {
     hsl_to_rgb(h, (s * 1.5 + 0.18).min(1.0), 0.5 + (l - 0.5) * 0.62)
 }
 
-/// Soften a colour toward paint: less saturated, and lifted into the light
-/// middle so the dark ink outline always stands off it.
+/// Settle a colour into paint: full-bodied but never neon, and drawn toward
+/// a mid lightness so the dark ink outline always stands off it.
 fn chalky(c: [f32; 3]) -> [f32; 3] {
     let (h, s, l) = rgb_to_hsl(c);
-    let l = 0.66 + (l - 0.5) * 0.4;
+    let l = 0.6 + (l - 0.5) * 0.45;
     if s < 0.02 {
         return [l, l, l];
     }
-    hsl_to_rgb(h, (s * 0.8).min(0.72), l)
+    hsl_to_rgb(h, (s * 0.95 + 0.04).min(0.7), l)
 }
 
 fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
@@ -1610,7 +1610,7 @@ fn shade(n: [f32; 3], base: [f32; 3], style: Style) -> [f32; 3] {
         }
         // Barely lit: the shape comes from the outline, with just enough
         // fall-off that a sphere does not read as a disc.
-        Style::Flat => (0.82 + 0.20 * diff, 0.0),
+        Style::Flat => (0.76 + 0.26 * diff, 0.0),
     };
     [base[0] * k + spec, base[1] * k + spec, base[2] * k + spec]
 }

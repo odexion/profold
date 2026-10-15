@@ -64,7 +64,7 @@ fn shade(n: vec3f, base: vec3f) -> vec3f {
         k = 0.34 + 0.70 * diff;
         spec = n8 * n8 * n8 * 0.28;
     } else if u.params.y > 1.5 {
-        k = 0.82 + 0.20 * diff;
+        k = 0.76 + 0.26 * diff;
         spec = 0.0;
     } else {
         let banded = floor(diff * 4.0) / 3.0;
