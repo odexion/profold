@@ -980,11 +980,24 @@ struct Paint<'a> {
     polymer: bool,
     /// Size and opacity, per atom.
     looks: Vec<Look>,
+    /// How many atoms are the structure's own; past them come the boundary
+    /// copies of a crystal, each repeating the atom `images` names.
+    own: usize,
+    images: Vec<u32>,
 }
 
 impl Paint<'_> {
     fn residue(&self, residue: usize) -> [f32; 3] {
         residue_color(self.s, residue, self.coloring, self.palette)
+    }
+
+    /// The structure's own atom that atom `i` is, or is a copy of.
+    fn source(&self, i: usize) -> usize {
+        if i < self.own {
+            i
+        } else {
+            self.images[i - self.own] as usize
+        }
     }
 
     fn atom(&self, i: usize) -> [f32; 3] {
@@ -996,7 +1009,7 @@ impl Paint<'_> {
             Coloring::Element => self.palette.chain(a.kind as usize),
             Coloring::Rainbow if !self.polymer => self
                 .palette
-                .ramp(i as f32 / (self.s.atoms.len().max(2) - 1) as f32),
+                .ramp(self.source(i) as f32 / (self.own.max(2) - 1) as f32),
             // Without chains, each molecule is told apart instead.
             Coloring::Chain if !self.polymer => self.palette.chain(a.residue as usize),
             _ => self.residue(a.residue as usize),
@@ -1044,13 +1057,24 @@ pub fn build_scene(
     cell: bool,
     appearance: &Appearance,
 ) -> Scene {
+    // Colours are settled on the structure's own atoms, so showing the cell
+    // and its boundary copies does not reshuffle them.
+    let elements = element_colors(s, palette, fixed_colors);
+    let own = s.atoms.len();
+    let filled = if cell { with_boundary(s) } else { None };
+    let (s, images) = match &filled {
+        Some((filled, images)) => (filled, images.clone()),
+        None => (s, Vec::new()),
+    };
     let paint = Paint {
         s,
-        elements: element_colors(s, palette, fixed_colors),
+        elements,
         coloring,
         palette,
         polymer: s.has_polymer(),
         looks: appearance.resolve(s),
+        own,
+        images,
     };
     let mut scene = build_primitives(&paint, repr, quality);
     if cell {
@@ -1208,6 +1232,75 @@ fn build_sticks(paint: &Paint, keep: &[bool], licorice: bool) -> Scene {
 }
 
 /// The edges of the simulation cell, as fine dark rods sized to the box.
+/// A crystal with the periodic copies of its atoms that fall on the cell's far
+/// faces, edges and corners, so the cell is drawn full the way crystallographers
+/// draw it: rock salt's eight atoms, all in one corner of the cell, become the
+/// familiar cube of twenty-seven. Also returned, the atom each copy repeats.
+///
+/// Only for crystal files read as one structure. A simulation box's atoms are
+/// not on lattice sites, a protein's cell is not drawn, and the copies of a
+/// trajectory would have to follow it frame by frame.
+fn with_boundary(s: &Structure) -> Option<(Structure, Vec<u32>)> {
+    /// Within this fraction of a cell edge counts as on the face.
+    const ON: f32 = 1e-3;
+    const LIMIT: usize = 100_000;
+    let c = s.cell?;
+    let crystal = matches!(s.format, Some("CIF" | "VASP" | "XSF"));
+    if !crystal || s.has_polymer() || s.frame_count() > 1 || s.atoms.len() > LIMIT {
+        return None;
+    }
+    let [a, b, cv] = c.vectors;
+    let (bc, ca, ab) = (cross(b, cv), cross(cv, a), cross(a, b));
+    let det = dot(a, bc);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+
+    let mut out = s.clone();
+    let mut images = Vec::new();
+    for (i, atom) in s.atoms.iter().enumerate() {
+        let d = sub(atom.pos, c.origin);
+        let f = [dot(d, bc) / det, dot(d, ca) / det, dot(d, ab) / det];
+        // The shifts along each edge that land on the cell: none, and one
+        // across when the atom sits on a face.
+        let shifts = f.map(|x| {
+            if x.abs() < ON {
+                [0.0, 1.0]
+            } else if (x - 1.0).abs() < ON {
+                [0.0, -1.0]
+            } else {
+                [0.0, 0.0]
+            }
+        });
+        for n in 1..8 {
+            let t = [
+                shifts[0][n & 1],
+                shifts[1][(n >> 1) & 1],
+                shifts[2][(n >> 2) & 1],
+            ];
+            // A shift of zero on a bit that asked for one is a repeat of a
+            // smaller combination, already made.
+            if (0..3).any(|k| (n >> k) & 1 == 1 && t[k] == 0.0) {
+                continue;
+            }
+            let mut copy = atom.clone();
+            for k in 0..3 {
+                copy.pos[k] += t[0] * a[k] + t[1] * b[k] + t[2] * cv[k];
+            }
+            out.atoms.push(copy);
+            images.push(i as u32);
+        }
+    }
+    if images.is_empty() {
+        return None;
+    }
+    // The structure's own bonds stand; the copies take theirs from distance.
+    let own = s.atoms.len() as u32;
+    out.bonds
+        .extend(crate::bonds::infer(&out.atoms).into_iter().filter(|&[x, y]| x >= own || y >= own));
+    Some((out, images))
+}
+
 fn cell_edges(cell: &crate::protein::Cell) -> Vec<Capsule> {
     const EDGE: [f32; 3] = [0.30, 0.31, 0.34];
     let longest = cell.lengths().into_iter().fold(0.0f32, f32::max);
@@ -2327,6 +2420,72 @@ mod tests {
     fn pixel(f: &Frame, x: usize, y: usize) -> [u8; 3] {
         let o = (y * f.width + x) * 4;
         [f.bgra[o + 2], f.bgra[o + 1], f.bgra[o]]
+    }
+
+    fn sample(name: &str) -> Structure {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(name);
+        crate::formats::load_bytes(name, std::fs::read(path).unwrap()).unwrap()
+    }
+
+    fn scene(s: &Structure, repr: Repr, coloring: Coloring, cell: bool) -> Scene {
+        build_scene(
+            s, repr, coloring, 1.0, Style::Soft, Palette::Spectrum, false, cell,
+            &Appearance::default(),
+        )
+    }
+
+    #[test]
+    fn a_crystal_fills_its_cell() {
+        let s = sample("rocksalt.cif");
+        assert_eq!(s.atoms.len(), 8);
+        let bare = scene(&s, Repr::BallAndStick, Coloring::Element, false);
+        let full = scene(&s, Repr::BallAndStick, Coloring::Element, true);
+        assert_eq!(bare.spheres.len(), 8);
+        // Fourteen sodium on the corners and faces, thirteen chloride on the
+        // edges and at the centre.
+        assert_eq!(full.spheres.len(), 27);
+        // Every Na-Cl contact in the cube: nine lines of three atoms along
+        // each axis, two bonds to a line, each bond drawn as two halves.
+        assert_eq!(full.capsules.len() - 12, 54 * 2);
+        // Every atom lies within the cell.
+        let c = s.cell.unwrap();
+        let edge = c.lengths()[0];
+        for p in &full.spheres {
+            for k in 0..3 {
+                let x = p.c[k] - c.origin[k];
+                assert!((-1e-3..=edge + 1e-3).contains(&x), "an atom left the cell: {:?}", p.c);
+            }
+        }
+        // The copies wear their originals' colours, and the colours do not
+        // change when the cell is shown.
+        let colours = |sc: &Scene| {
+            let mut v: Vec<[u32; 3]> = sc.spheres.iter().map(|p| p.color.map(f32::to_bits)).collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+        assert_eq!(colours(&bare), colours(&full));
+        // The structure itself is untouched.
+        assert_eq!(s.atoms.len(), 8);
+    }
+
+    #[test]
+    fn only_crystals_take_boundary_copies() {
+        // Proteins, molecules and simulation boxes draw the same atoms with
+        // the cell shown as without; at most the cell's twelve edges are added.
+        for name in ["1crn.pdb.gz", "caffeine.sdf", "c60.xyz", "lj-melt.lammpstrj.gz"] {
+            let s = sample(name);
+            for repr in [Repr::Spacefill, Repr::BallAndStick, Repr::Licorice, Repr::Cartoon] {
+                for coloring in [Coloring::Element, Coloring::Rainbow, Coloring::Chain] {
+                    let bare = scene(&s, repr, coloring, false);
+                    let full = scene(&s, repr, coloring, true);
+                    assert_eq!(bare.spheres.len(), full.spheres.len(), "{name} {repr:?}");
+                    assert!(bare.spheres.iter().zip(&full.spheres).all(|(a, b)| a.c == b.c && a.color == b.color));
+                    let edges = if s.cell.is_some() { 12 } else { 0 };
+                    assert_eq!(full.capsules.len(), bare.capsules.len() + edges, "{name} {repr:?}");
+                }
+            }
+        }
     }
 
     #[test]
