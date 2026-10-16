@@ -415,11 +415,22 @@ impl Workspace {
             .h(px(TAB_BAR))
             .pl(px(LIGHTS))
             .pr(px(12.))
+            .relative()
             .bg(theme::sunken())
-            .border_b_1()
-            .border_color(theme::border())
             // The bar is the title bar: dragging it moves the window.
             .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+            // The hairline is drawn first, under the tabs, so the tab in front
+            // covers it and runs into the toolbar beneath. A border would be
+            // painted over the tabs.
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(1.))
+                    .bg(theme::border()),
+            )
             .children(
                 self.tabs
                     .iter()
@@ -614,9 +625,6 @@ impl Workspace {
             .min_w(px(72.))
             .max_w(px(220.))
             .h(px(31.))
-            // Hangs down over the bar's hairline, so the tab in front runs
-            // into the toolbar beneath it.
-            .mb(px(-1.))
             .pl(px(12.))
             .pr(px(6.))
             .rounded_t(px(8.))
