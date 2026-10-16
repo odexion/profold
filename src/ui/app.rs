@@ -1070,12 +1070,14 @@ impl Viewer {
     }
 
     /// Give a species its own colour, or `None` for its element's. A colour
-    /// shows when colouring by element, so that is switched to.
+    /// shows when colouring by element, or on the ligands beside a polymer;
+    /// without ligands, colouring by element is switched to.
     fn set_color(&mut self, species: Species, color: Option<[f32; 3]>, cx: &mut Context<Self>) {
         let mut look = self.appearance.get(&species);
         look.color = color;
         self.appearance.set(species, look);
-        if self.compare.is_none() {
+        let ligands = self.structure.as_ref().is_some_and(|s| s.has_ligands());
+        if self.compare.is_none() && !ligands {
             self.coloring = Coloring::Element;
         }
         self.rebuild(cx);
@@ -3046,7 +3048,8 @@ impl Viewer {
     /// its colour, its size and opacity as sliders and as figures to type
     /// over, and its count. The colour opens a picker.
     fn species_table(&self, structure: &Structure, cx: &mut Context<Self>) -> impl IntoElement {
-        let by_element = self.coloring == Coloring::Element;
+        let by_element = self.coloring == Coloring::Element
+            || (self.compare.is_none() && structure.has_ligands());
         let palette = self.palette;
         let colors = render::element_colors(structure, palette, self.fixed_colors);
         let mut rows: Vec<(Species, String, [f32; 3], usize)> = structure

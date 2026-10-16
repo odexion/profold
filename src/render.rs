@@ -19,7 +19,8 @@ pub enum Species {
 }
 
 /// How one species is drawn: a multiple of its usual size, how opaque, and
-/// a colour of its own in place of the element's when colouring by element.
+/// a colour of its own in place of the element's when colouring by element,
+/// and on the ligands beside a polymer whatever the colouring.
 /// Size or opacity at zero hides it, and its bonds with it.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Look {
@@ -1012,11 +1013,22 @@ impl Paint<'_> {
 
     fn atom(&self, i: usize) -> [f32; 3] {
         let a = &self.s.atoms[i];
+        // Beside a polymer, ligands and ions keep their elements' colours
+        // under any scheme that colours the polymer itself.
+        let by_element = match self.coloring {
+            Coloring::Element => true,
+            Coloring::Pair | Coloring::Deviation => false,
+            _ => self.polymer && self.s.residues[a.residue as usize].outside_polymer(),
+        };
+        if by_element {
+            return match self.looks[i].color {
+                Some(c) => c,
+                None if a.element.is_known() => self.elements[a.element.0 as usize],
+                // A simulation's anonymous types get a colour each.
+                None => self.palette.chain(a.kind as usize),
+            };
+        }
         match self.coloring {
-            Coloring::Element if self.looks[i].color.is_some() => self.looks[i].color.unwrap(),
-            Coloring::Element if a.element.is_known() => self.elements[a.element.0 as usize],
-            // A simulation's anonymous types get a colour each.
-            Coloring::Element => self.palette.chain(a.kind as usize),
             Coloring::Rainbow if !self.polymer => self
                 .palette
                 .ramp(self.source(i) as f32 / (self.own.max(2) - 1) as f32),
@@ -2673,6 +2685,43 @@ mod tests {
         // Otherwise each palette paints them its own way.
         assert_ne!(colors(Palette::Viridis, false), standard);
         assert_ne!(colors(Palette::Magma, false), colors(Palette::Viridis, false));
+    }
+
+    #[test]
+    fn ligands_keep_element_colours_beside_chains() {
+        let s = crate::formats::load_bytes(
+            "4hhb.pdb.gz",
+            include_bytes!("../samples/4hhb.pdb.gz").to_vec(),
+        )
+        .unwrap();
+        assert!(s.has_ligands());
+        let pink = [1.0, 0.0, 1.0];
+        let mut looks = Appearance::default();
+        looks.set(Species::Element(6), Look { color: Some(pink), ..Look::default() });
+        let colors = build_scene(
+            &s,
+            Repr::Spacefill,
+            Coloring::Chain,
+            1.0,
+            Style::Soft,
+            Palette::Spectrum,
+            false,
+            false,
+            &looks,
+        )
+        .spheres
+        .iter()
+        .map(|p| p.color)
+        .collect::<Vec<_>>();
+        // The haems' carbons take the chosen colour; the chains' keep theirs.
+        for (a, c) in s.atoms.iter().zip(&colors) {
+            let r = &s.residues[a.residue as usize];
+            if r.name == "HEM" && a.element.0 == 6 {
+                assert_eq!(*c, rich(pink));
+            } else if r.ca.is_some() {
+                assert_eq!(*c, rich(Palette::Spectrum.chain(r.chain as usize)));
+            }
+        }
     }
 
     #[test]

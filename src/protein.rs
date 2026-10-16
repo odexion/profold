@@ -113,6 +113,15 @@ impl Residue {
     pub fn backbone(&self) -> Option<(u32, u32, u32, u32)> {
         Some((self.n?, self.ca?, self.c?, self.o?))
     }
+
+    /// Neither an amino acid nor a nucleotide: a ligand, an ion or solvent.
+    pub fn outside_polymer(&self) -> bool {
+        self.ca.is_none()
+            && !matches!(
+                self.name.as_str(),
+                "A" | "C" | "G" | "U" | "T" | "I" | "DA" | "DC" | "DG" | "DT" | "DU" | "DI"
+            )
+    }
 }
 
 #[derive(Clone)]
@@ -243,6 +252,12 @@ impl Structure {
 
     pub fn has_polymer(&self) -> bool {
         self.residues.iter().filter(|r| r.ca.is_some()).take(3).count() >= 3
+    }
+
+    /// A polymer with molecules beside it, which are coloured by element
+    /// whatever the polymer is coloured by.
+    pub fn has_ligands(&self) -> bool {
+        self.has_polymer() && self.residues.iter().any(|r| r.outside_polymer())
     }
 
     pub fn frame_count(&self) -> usize {
