@@ -24,7 +24,7 @@ use crate::align;
 use crate::fetch::{self, Input, Retrieval};
 use crate::formats;
 use crate::job::{self, Event, Outcome};
-use crate::protein::{Source, Structure};
+use crate::protein::{LigandPaint, Source, Structure};
 use crate::render::{
     self, Appearance, Camera, Coloring, Look, Palette, PaletteGroup, Repr, Scene, Species, Style,
 };
@@ -112,7 +112,13 @@ enum Pick {
     Species(Species),
     /// A chain, by index.
     Chain(usize),
+    /// A kind of ligand, by residue name.
+    Ligand(String),
 }
+
+/// The colour a ligand takes when it is first given one: gold, which sits
+/// apart from the standard element colours and most chains.
+const LIGAND_GOLD: [f32; 3] = SWATCHES[2];
 
 /// The colours offered in the picker, after the species' own.
 const SWATCHES: [[f32; 3]; 15] = [
@@ -1092,7 +1098,38 @@ impl Viewer {
         match target {
             Pick::Species(species) => self.set_color(species, color, cx),
             Pick::Chain(i) => self.set_chain_color(i, color, cx),
+            Pick::Ligand(name) => {
+                let carbons = self.structure.as_ref().is_some_and(|s| {
+                    s.atoms.iter().any(|a| {
+                        a.element.0 == 6 && s.residues[a.residue as usize].name == name
+                    })
+                });
+                let paint = color.map(|c| match self.ligand_paint(&name) {
+                    Some(p) => p.with_color(c),
+                    None if carbons => LigandPaint::Carbons(c),
+                    None => LigandPaint::Solid(c),
+                });
+                self.set_ligand_paint(name, paint, cx)
+            }
         }
+    }
+
+    fn ligand_paint(&self, name: &str) -> Option<LigandPaint> {
+        self.structure.as_ref()?.ligand_paint.get(name).copied()
+    }
+
+    /// Paint a kind of ligand, or `None` to give it back its elements'
+    /// colours. It shows under any scheme, so the scheme is left alone.
+    fn set_ligand_paint(&mut self, name: String, paint: Option<LigandPaint>, cx: &mut Context<Self>) {
+        let Some(s) = self.structure.as_mut() else {
+            return;
+        };
+        let s = Arc::make_mut(s);
+        match paint {
+            Some(p) => s.ligand_paint.insert(name, p),
+            None => s.ligand_paint.remove(&name),
+        };
+        self.rebuild(cx);
     }
 
     /// Give chain `i` its own colour, or `None` for the palette's. A colour
@@ -1144,13 +1181,21 @@ impl Viewer {
             .iter()
             .filter(|k| self.appearance.get(&Species::Kind((*k).clone())).color.is_some())
             .map(|k| format!("Type {k}"));
-        chains.chain(elements).chain(kinds).collect()
+        let ligands = s
+            .ligands()
+            .into_iter()
+            .filter(|(name, _)| s.ligand_paint.contains_key(name))
+            .map(|(name, _)| name);
+        chains.chain(ligands).chain(elements).chain(kinds).collect()
     }
 
     /// Give every chain and species back the palette's colour.
     fn reset_colors(&mut self, cx: &mut Context<Self>) {
         self.kept = None;
         self.appearance.clear_colors();
+        if let Some(s) = self.structure.as_mut() {
+            Arc::make_mut(s).ligand_paint.clear();
+        }
         self.reset_chain_colors(cx);
     }
 
@@ -2449,6 +2494,7 @@ impl Viewer {
     fn unpick(&self, row: usize, target: Pick, cx: &mut Context<Self>) -> impl IntoElement {
         let id = match target {
             Pick::Chain(_) => "chain-unpick",
+            Pick::Ligand(_) => "ligand-unpick",
             Pick::Species(_) => "species-unpick",
         };
         let button = div()
@@ -3268,7 +3314,16 @@ impl Viewer {
                                     .font_family(theme::MONO)
                                     .text_size(px(10.))
                                     .text_color(theme::faint())
-                                    .child(format!("{} aa", chain.residues.len())),
+                                    .child(format!(
+                                        "{} aa",
+                                        chain
+                                            .residues
+                                            .iter()
+                                            .filter(|r| {
+                                                !structure.residues[**r as usize].outside_polymer()
+                                            })
+                                            .count()
+                                    )),
                             )
                             .when(chain.color.is_some(), |d| d.child(self.unpick(i, Pick::Chain(i), cx)))
                             .when(picking, |d| {
@@ -3328,6 +3383,154 @@ impl Viewer {
                         }),
                 )
             })
+    }
+
+    /// One row per kind of ligand beside a polymer: its colour, which opens
+    /// a picker, how many there are, and whether the colour goes on its
+    /// carbons, on every atom, or nowhere, leaving its elements' colours.
+    fn ligand_list(&self, structure: &Structure, cx: &mut Context<Self>) -> impl IntoElement {
+        let ligands = structure.ligands();
+        let carbon = render::element_colors(structure, self.palette, self.standard_colors)[6];
+        // An ion or a phosphate has no carbons to colour, so is offered only
+        // its elements' colours or a solid one.
+        let carbonless: Vec<bool> = ligands
+            .iter()
+            .map(|(name, _)| {
+                !structure.atoms.iter().any(|a| {
+                    a.element.0 == 6 && structure.residues[a.residue as usize].name == *name
+                })
+            })
+            .collect();
+        div()
+            .when(!ligands.is_empty(), |d| d.pt(px(14.)))
+            .flex()
+            .flex_col()
+            .gap(px(5.))
+            .when(!ligands.is_empty(), |d| d.child(key("ligands")))
+            .children(ligands.into_iter().enumerate().map(|(i, (name, n))| {
+                let paint = structure.ligand_paint.get(&name).copied();
+                let carbonless = carbonless[i];
+                let picking = self.picking == Some(Pick::Ligand(name.clone()));
+                let mode = |k: usize, label: &'static str, chosen: bool, to: Option<LigandPaint>| {
+                    let name = name.clone();
+                    div()
+                        .id(("ligand-mode", i * 3 + k))
+                        .debug_selector({
+                            let name = name.clone();
+                            move || format!("ligand-{name}-{label}")
+                        })
+                        .px(px(7.))
+                        .py(px(1.))
+                        .rounded(px(5.))
+                        .text_size(px(10.))
+                        .when(chosen, |d| d.bg(theme::surface()).text_color(theme::ink()).shadow_sm())
+                        .when(!chosen, |d| {
+                            d.text_color(theme::muted())
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(theme::ink()))
+                        })
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_ligand_paint(name.clone(), to, cx)
+                        }))
+                };
+                let color = paint.map(|p| p.color()).unwrap_or(LIGAND_GOLD);
+                let pick = Pick::Ligand(name.clone());
+                div()
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .id(("ligand-dot", i))
+                            .debug_selector({
+                                let name = name.clone();
+                                move || format!("ligand-dot-{name}")
+                            })
+                            .flex_none()
+                            .size(px(13.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .when(paint.is_some() && !picking, |d| {
+                                d.border_1().border_color(theme::faint())
+                            })
+                            .when(picking, |d| d.border_1().border_color(theme::ink()))
+                            .hover(|d| d.bg(theme::sunken()))
+                            .child(
+                                div()
+                                    .size(px(8.))
+                                    .rounded_full()
+                                    .bg(swatch(paint.map(|p| p.color()).unwrap_or(carbon))),
+                            )
+                            .tooltip(|_, cx| cx.new(|_| Tip("Choose a colour".into())).into())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.picking = Some(pick.clone());
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .items_baseline()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(theme::text())
+                                    .child(name.clone()),
+                            )
+                            .when(n > 1, |d| {
+                                d.child(
+                                    div()
+                                        .font_family(theme::MONO)
+                                        .text_size(px(10.))
+                                        .text_color(theme::faint())
+                                        .child(format!("×{n}")),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .p(px(2.))
+                            .gap(px(2.))
+                            .rounded(px(7.))
+                            .bg(theme::sunken())
+                            .child(mode(0, "Element", paint.is_none(), None))
+                            .when(!carbonless, |d| {
+                                d.child(mode(
+                                    1,
+                                    "Carbons",
+                                    matches!(paint, Some(LigandPaint::Carbons(_))),
+                                    Some(LigandPaint::Carbons(color)),
+                                ))
+                            })
+                            .child(mode(
+                                2,
+                                "Solid",
+                                matches!(paint, Some(LigandPaint::Solid(_))),
+                                Some(LigandPaint::Solid(color)),
+                            )),
+                    )
+                    .when(paint.is_some(), |d| d.child(self.unpick(i, Pick::Ligand(name.clone()), cx)))
+                    .when(picking, |d| {
+                        d.child(
+                            deferred(self.color_picker(
+                                Pick::Ligand(name.clone()),
+                                name.clone(),
+                                carbon,
+                                paint.map(|p| p.color()),
+                                cx,
+                            ))
+                            .with_priority(3),
+                        )
+                    })
+            }))
     }
 
     /// One row per element — or per type, for atoms of no element — with
@@ -4021,6 +4224,7 @@ impl Viewer {
                 )
             })
             .child(self.legend(structure, cx))
+            .child(self.ligand_list(structure, cx))
             .child(self.species_table(structure, cx))
             .child(
                 div()
@@ -4630,6 +4834,46 @@ mod ui_tests {
         let selector: &'static str = format!("species-unpick-{row}").leak();
         click(cx, selector);
         assert_eq!(carbon(&view, cx), None);
+    }
+
+    #[gpui::test]
+    fn a_ligand_takes_a_colour_on_its_carbons_or_whole(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let bytes = include_bytes!("../../samples/4hhb.pdb.gz").to_vec();
+            this.show(formats::load_bytes("4hhb.pdb.gz", bytes).unwrap(), cx);
+        });
+        cx.run_until_parked();
+        let haem = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.ligand_paint("HEM"))
+        };
+
+        // A colour picked goes on the carbons first, and leaves the scheme be.
+        click(cx, "ligand-dot-HEM");
+        click(cx, "swatch-1");
+        assert_eq!(haem(&view, cx), Some(LigandPaint::Carbons(SWATCHES[0])));
+        assert_eq!(view.update(cx, |this, _| this.coloring), Coloring::Chain);
+        view.update(cx, |this, cx| {
+            this.picking = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        click(cx, "ligand-HEM-Solid");
+        assert_eq!(haem(&view, cx), Some(LigandPaint::Solid(SWATCHES[0])));
+        click(cx, "ligand-HEM-Element");
+        assert_eq!(haem(&view, cx), None);
+        // Straight to Solid with no colour yet: gold.
+        click(cx, "ligand-HEM-Solid");
+        assert_eq!(haem(&view, cx), Some(LigandPaint::Solid(LIGAND_GOLD)));
+        click(cx, "ligand-unpick-0");
+        assert_eq!(haem(&view, cx), None);
+
+        // Phosphate has no carbons, so it goes solid.
+        assert!(cx.debug_bounds("ligand-PO4-Carbons").is_none());
+        view.update(cx, |this, cx| this.paint(Pick::Ligand("PO4".into()), Some(SWATCHES[0]), cx));
+        let phosphate = view.update(cx, |this, _| this.ligand_paint("PO4"));
+        assert_eq!(phosphate, Some(LigandPaint::Solid(SWATCHES[0])));
     }
 
     fn hit(kind: Kind, id: &str, title: &str) -> Hit {

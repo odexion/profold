@@ -6,6 +6,7 @@
 //! atoms, grouped into residues and chains where the file says so, with bonds,
 //! a periodic cell and further frames where it has them.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use crate::elements::Element;
@@ -177,6 +178,32 @@ impl Source {
     }
 }
 
+/// How a kind of ligand is painted when given a colour of its own. Without
+/// one, its atoms wear their elements' colours.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum LigandPaint {
+    /// Carbons in the colour, other atoms in their elements': the usual
+    /// way to set a ligand off in a figure while its chemistry still reads.
+    Carbons([f32; 3]),
+    /// Every atom in the colour.
+    Solid([f32; 3]),
+}
+
+impl LigandPaint {
+    pub fn color(self) -> [f32; 3] {
+        match self {
+            LigandPaint::Carbons(c) | LigandPaint::Solid(c) => c,
+        }
+    }
+
+    pub fn with_color(self, c: [f32; 3]) -> Self {
+        match self {
+            LigandPaint::Carbons(_) => LigandPaint::Carbons(c),
+            LigandPaint::Solid(_) => LigandPaint::Solid(c),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Structure {
     pub id: String,
@@ -192,6 +219,9 @@ pub struct Structure {
     pub deviation: Vec<f32>,
     /// A flat colour, set when this structure is one half of a comparison.
     pub tint: Option<[f32; 3]>,
+    /// Colours of their own for kinds of ligand, by residue name. Kept with
+    /// the structure, like the chains' colours.
+    pub ligand_paint: HashMap<String, LigandPaint>,
     /// Pairs of atom indices, read from the file or worked out from distance.
     pub bonds: Vec<[u32; 2]>,
     pub cell: Option<Cell>,
@@ -221,6 +251,7 @@ impl Structure {
             has_confidence: false,
             deviation: Vec::new(),
             tint: None,
+            ligand_paint: HashMap::new(),
             bonds: Vec::new(),
             cell: None,
             frames: Arc::new(Vec::new()),
@@ -261,6 +292,22 @@ impl Structure {
 
     pub fn has_polymer(&self) -> bool {
         self.residues.iter().filter(|r| r.ca.is_some()).take(3).count() >= 3
+    }
+
+    /// The kinds of ligand and ion beside a polymer, by residue name, with
+    /// how many of each, in the order they first appear. Solvent is left out.
+    pub fn ligands(&self) -> Vec<(String, usize)> {
+        let mut out: Vec<(String, usize)> = Vec::new();
+        if !self.has_polymer() {
+            return out;
+        }
+        for r in self.residues.iter().filter(|r| r.outside_polymer() && !is_solvent(&r.name)) {
+            match out.iter_mut().find(|(name, _)| *name == r.name) {
+                Some((_, n)) => *n += 1,
+                None => out.push((r.name.clone(), 1)),
+            }
+        }
+        out
     }
 
     /// A polymer with molecules beside it, which are coloured by element
@@ -652,4 +699,14 @@ impl Builder {
         }
         structure
     }
+}
+
+/// Residue names that are solvent. Hidden under a cartoon, where a box of
+/// water would bury the protein; shown in the atomistic styles.
+pub fn is_solvent(name: &str) -> bool {
+    matches!(
+        name,
+        "HOH" | "WAT" | "SOL" | "TIP3" | "TIP3P" | "TIP4" | "TIP4P" | "TIP5P" | "SPC" | "SPCE"
+            | "T3P" | "T4P" | "H2O" | "DOD"
+    )
 }

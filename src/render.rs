@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use crate::protein::{Ss, Structure};
+use crate::protein::{is_solvent, LigandPaint, Ss, Structure};
 
 /// What an atom is, as far as its drawing settings go: its element, or for
 /// an atom of no known element, the name of its type.
@@ -1022,12 +1022,23 @@ impl Paint<'_> {
 
     fn atom(&self, i: usize) -> [f32; 3] {
         let a = &self.s.atoms[i];
+        let r = &self.s.residues[a.residue as usize];
+        let ligand = self.polymer && r.outside_polymer();
+        let comparing = matches!(self.coloring, Coloring::Pair | Coloring::Deviation);
+        // A ligand given a colour of its own wears it under every scheme
+        // but the comparison's.
+        if ligand && !comparing {
+            match self.s.ligand_paint.get(&r.name) {
+                Some(LigandPaint::Solid(c)) => return *c,
+                Some(LigandPaint::Carbons(c)) if a.element.0 == 6 => return *c,
+                _ => {}
+            }
+        }
         // Beside a polymer, ligands and ions keep their elements' colours
         // under any scheme that colours the polymer itself.
         let by_element = match self.coloring {
             Coloring::Element => true,
-            Coloring::Pair | Coloring::Deviation => false,
-            _ => self.polymer && self.s.residues[a.residue as usize].outside_polymer(),
+            _ => ligand && !comparing,
         };
         if by_element {
             return match self.looks[i].color {
@@ -1064,15 +1075,6 @@ impl Paint<'_> {
     }
 }
 
-/// Residue names that are solvent. Hidden under a cartoon, where a box of
-/// water would bury the protein; shown in the atomistic styles.
-fn is_solvent(name: &str) -> bool {
-    matches!(
-        name,
-        "HOH" | "WAT" | "SOL" | "TIP3" | "TIP3P" | "TIP4" | "TIP4P" | "TIP5P" | "SPC" | "SPCE"
-            | "T3P" | "T4P" | "H2O" | "DOD"
-    )
-}
 
 /// Build the drawable primitives for a structure. `quality` in 0..=1 trades
 /// tube smoothness for speed on very long chains.
@@ -2729,6 +2731,61 @@ mod tests {
                 assert_eq!(*c, rich(pink));
             } else if r.ca.is_some() {
                 assert_eq!(*c, rich(Palette::Spectrum.chain(r.chain as usize)));
+            }
+        }
+    }
+
+    #[test]
+    fn a_ligand_takes_its_own_colour() {
+        let mut s = crate::formats::load_bytes(
+            "4hhb.pdb.gz",
+            include_bytes!("../samples/4hhb.pdb.gz").to_vec(),
+        )
+        .unwrap();
+        assert_eq!(s.ligands().iter().find(|(n, _)| n == "HEM").map(|l| l.1), Some(4));
+        assert!(s.ligands().iter().all(|(n, _)| n != "HOH"), "water is no ligand");
+        let gold = [0.98, 0.78, 0.20];
+        let paint = |s: &Structure| {
+            build_scene(
+                s,
+                Repr::Spacefill,
+                Coloring::Chain,
+                1.0,
+                Style::Soft,
+                Palette::Spectrum,
+                true,
+                false,
+                &Appearance::default(),
+            )
+            .spheres
+            .iter()
+            .map(|p| p.color)
+            .collect::<Vec<_>>()
+        };
+        let haem = |s: &Structure, i: usize, z: u8| {
+            let a = &s.atoms[i];
+            s.residues[a.residue as usize].name == "HEM" && a.element.0 == z
+        };
+
+        s.ligand_paint.insert("HEM".into(), LigandPaint::Carbons(gold));
+        let colors = paint(&s);
+        let nitrogen = rich(crate::elements::Element(7).color());
+        for (i, c) in colors.iter().enumerate() {
+            if haem(&s, i, 6) {
+                assert_eq!(*c, rich(gold));
+            } else if haem(&s, i, 7) {
+                assert_eq!(*c, nitrogen, "a haem's nitrogens keep their own colour");
+            }
+        }
+
+        s.ligand_paint.insert("HEM".into(), LigandPaint::Solid(gold));
+        let colors = paint(&s);
+        for (i, c) in colors.iter().enumerate() {
+            let r = &s.residues[s.atoms[i].residue as usize];
+            if r.name == "HEM" {
+                assert_eq!(*c, rich(gold));
+            } else if r.ca.is_some() {
+                assert_ne!(*c, rich(gold), "the paint spilt onto the protein");
             }
         }
     }
