@@ -23,11 +23,9 @@ mod ui;
 mod update;
 
 use gpui::{
-    actions, AppContext, point, px, size, App, Application, Bounds, Menu, MenuItem, TitlebarOptions,
-    WindowBounds, WindowOptions,
+    AppContext, point, px, size, App, Application, Bounds, TitlebarOptions, WindowBounds,
+    WindowOptions,
 };
-
-actions!(profold, [Quit]);
 
 fn main() {
     if std::env::args().nth(1).is_some_and(|a| a == "--version" || a == "-V") {
@@ -49,12 +47,6 @@ fn main() {
         set_dock_icon();
         ui::input::bind_keys(cx);
         ui::workspace::bind_keys(cx);
-        cx.bind_keys([
-            gpui::KeyBinding::new("secondary-q", Quit, None),
-            #[cfg(not(target_os = "macos"))]
-            gpui::KeyBinding::new("alt-f4", Quit, None),
-        ]);
-        cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
         // Closing the window quits, except on a Mac, where the app stays in
         // the Dock as Mac apps do.
         #[cfg(not(target_os = "macos"))]
@@ -64,38 +56,7 @@ fn main() {
             }
         })
         .detach();
-        cx.set_menus(vec![
-            Menu {
-                name: "profold".into(),
-                items: vec![
-                    MenuItem::action("Check for Updates…", ui::workspace::CheckForUpdates),
-                    MenuItem::separator(),
-                    MenuItem::action("Quit", Quit),
-                ],
-            },
-            Menu {
-                name: "File".into(),
-                items: {
-                    let mut items = vec![MenuItem::action("New Tab", ui::workspace::NewTab)];
-                    if cfg!(feature = "simplefold") {
-                        items.push(MenuItem::action("New Fold Tab", ui::workspace::NewFoldTab));
-                    }
-                    items.extend([
-                        MenuItem::action("Open…", ui::workspace::OpenFile),
-                        MenuItem::separator(),
-                        MenuItem::action("Close Tab", ui::workspace::CloseTab),
-                    ]);
-                    items
-                },
-            },
-            Menu {
-                name: "Window".into(),
-                items: vec![
-                    MenuItem::action("Next Tab", ui::workspace::NextTab),
-                    MenuItem::action("Previous Tab", ui::workspace::PreviousTab),
-                ],
-            },
-        ]);
+        cx.set_menus(ui::workspace::menus());
 
         let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
         cx.open_window(

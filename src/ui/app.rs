@@ -563,6 +563,48 @@ impl Viewer {
         self.rebuild(cx);
     }
 
+    /// Show the structure another way. A backbone style is refused for a
+    /// structure without a backbone, as its pill is greyed out.
+    pub fn set_repr(&mut self, repr: Repr, cx: &mut Context<Self>) {
+        let Some(s) = self.structure.as_ref() else { return };
+        if repr.needs_polymer() && !s.has_polymer() {
+            return;
+        }
+        self.repr = repr;
+        self.rebuild(cx);
+    }
+
+    pub fn set_style(&mut self, style: Style, cx: &mut Context<Self>) {
+        if self.structure.is_none() {
+            return;
+        }
+        self.style = style;
+        self.rebuild(cx);
+    }
+
+    /// Bring the structure back to the middle, keeping the angle and zoom.
+    pub fn recentre(&mut self, cx: &mut Context<Self>) {
+        self.camera.pan = [0.0, 0.0];
+        self.open = None;
+        cx.notify();
+    }
+
+    /// Back to the angle and framing it opened at.
+    pub fn reset_view(&mut self, cx: &mut Context<Self>) {
+        self.halt();
+        // Framed before the camera is touched, so the borrow of the
+        // structures is over by then.
+        let framed = {
+            let all: Vec<&Structure> = self.visible().into_iter().map(|s| s.as_ref()).collect();
+            (!all.is_empty()).then(|| Camera::frame_all(&all))
+        };
+        if let Some(camera) = framed {
+            self.camera = camera;
+        }
+        self.open = None;
+        cx.notify();
+    }
+
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let residues: usize = self
             .visible()
@@ -1127,7 +1169,7 @@ impl Viewer {
 
     /// Write what is on screen to a PNG, at a multiple of the viewport size.
     /// The molecule only: no panel, no controls, no pointer hints.
-    fn save_image(&mut self, scale: usize, cx: &mut Context<Self>) {
+    pub fn save_image(&mut self, scale: usize, cx: &mut Context<Self>) {
         let (width, height) = self.cache.borrow().size;
         if width == 0 || height == 0 {
             return;
@@ -2033,12 +2075,7 @@ impl Viewer {
                         pill_keyed(("repr", r as usize), r.label(), r == repr)
                             .when(!enabled, |d| d.text_color(theme::faint()))
                             .when(enabled, |d| d.cursor_pointer())
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if enabled {
-                                    this.repr = r;
-                                    this.rebuild(cx);
-                                }
-                            }))
+                            .on_click(cx.listener(move |this, _, _, cx| this.set_repr(r, cx)))
                             .into_any_element()
                     })
                     .collect(),
@@ -2076,10 +2113,7 @@ impl Viewer {
                         let st = *st;
                         pill_keyed(("style", st as usize), st.label(), st == style)
                             .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.style = st;
-                                this.rebuild(cx);
-                            }))
+                            .on_click(cx.listener(move |this, _, _, cx| this.set_style(st, cx)))
                             .into_any_element()
                     })
                     .collect(),
@@ -2255,32 +2289,13 @@ impl Viewer {
             )
             .child(divide())
             .child(
-                item("recentre", "Centre".into(), false).on_click(cx.listener(|this, _, _, cx| {
-                    this.camera.pan = [0.0, 0.0];
-                    this.open = None;
-                    cx.notify();
-                })),
+                item("recentre", "Centre".into(), false)
+                    .on_click(cx.listener(|this, _, _, cx| this.recentre(cx))),
             )
             .child(
                 item("reset-view", "Reset view".into(), false)
                     .debug_selector(|| "reset-view".into())
-                    .on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.halt();
-                        // Framed before the camera is touched, so the borrow
-                        // of the structures is over by then.
-                        let framed = {
-                            let all: Vec<&Structure> =
-                                this.visible().into_iter().map(|s| s.as_ref()).collect();
-                            (!all.is_empty()).then(|| Camera::frame_all(&all))
-                        };
-                        if let Some(camera) = framed {
-                            this.camera = camera;
-                        }
-                        this.open = None;
-                        cx.notify();
-                    },
-                )),
+                    .on_click(cx.listener(|this, _, _, cx| this.reset_view(cx))),
             )
     }
 

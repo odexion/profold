@@ -9,9 +9,11 @@ use std::time::Duration;
 
 use gpui::{
     actions, deferred, div, prelude::*, px, relative, Animation, AnimationExt, App, Context,
-    Entity, ExternalPaths, FocusHandle, Focusable, MouseButton, PathPromptOptions, SharedString,
-    Task, Window,
+    Entity, ExternalPaths, FocusHandle, Focusable, Menu, MenuItem, MouseButton, OsAction,
+    PathPromptOptions, SharedString, SystemMenuType, Task, Window,
 };
+
+use crate::render::{Repr, Style};
 
 use crate::settings;
 use crate::theme;
@@ -37,8 +39,33 @@ actions!(
         Tab8,
         Tab9,
         CheckForUpdates,
+        About,
+        Quit,
+        HideApp,
+        HideOthers,
+        ShowAll,
+        SaveImage,
+        ToggleDark,
+        ShowCartoon,
+        ShowTube,
+        ShowBallAndStick,
+        ShowLicorice,
+        ShowSpacefill,
+        StyleIllustrative,
+        StyleFlat,
+        StyleSoft,
+        StyleStudio,
+        Recentre,
+        ResetView,
+        ToggleFullScreen,
+        Minimize,
+        Zoom,
+        OpenHelp,
+        ReportIssue,
     ]
 );
+
+const REPO: &str = "https://github.com/odexion/profold";
 
 /// Height of the tab row, which is also the window's title bar.
 const TAB_BAR: f32 = 40.0;
@@ -65,7 +92,124 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("secondary-7", Tab7, None),
         gpui::KeyBinding::new("secondary-8", Tab8, None),
         gpui::KeyBinding::new("secondary-9", Tab9, None),
+        gpui::KeyBinding::new("secondary-q", Quit, None),
+        #[cfg(not(target_os = "macos"))]
+        gpui::KeyBinding::new("alt-f4", Quit, None),
+        gpui::KeyBinding::new("secondary-shift-s", SaveImage, None),
+        gpui::KeyBinding::new("secondary-shift-d", ToggleDark, None),
+        // ⌘1 to ⌘9 are the tabs, so the views take ⌥⌘ and the styles ⌃⌘.
+        gpui::KeyBinding::new("alt-secondary-1", ShowCartoon, None),
+        gpui::KeyBinding::new("alt-secondary-2", ShowTube, None),
+        gpui::KeyBinding::new("alt-secondary-3", ShowBallAndStick, None),
+        gpui::KeyBinding::new("alt-secondary-4", ShowLicorice, None),
+        gpui::KeyBinding::new("alt-secondary-5", ShowSpacefill, None),
+        gpui::KeyBinding::new("ctrl-secondary-1", StyleIllustrative, None),
+        gpui::KeyBinding::new("ctrl-secondary-2", StyleFlat, None),
+        gpui::KeyBinding::new("ctrl-secondary-3", StyleSoft, None),
+        gpui::KeyBinding::new("ctrl-secondary-4", StyleStudio, None),
+        gpui::KeyBinding::new("secondary-0", ResetView, None),
     ]);
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        gpui::KeyBinding::new("cmd-h", HideApp, None),
+        gpui::KeyBinding::new("alt-cmd-h", HideOthers, None),
+        gpui::KeyBinding::new("cmd-m", Minimize, None),
+        gpui::KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
+    ]);
+    cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+    cx.on_action(|_: &HideApp, cx: &mut App| cx.hide());
+    cx.on_action(|_: &HideOthers, cx: &mut App| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAll, cx: &mut App| cx.unhide_other_apps());
+    cx.on_action(|_: &OpenHelp, cx: &mut App| cx.open_url(&format!("{REPO}#readme")));
+    cx.on_action(|_: &ReportIssue, cx: &mut App| cx.open_url(&format!("{REPO}/issues/new")));
+}
+
+/// The menu bar. Built again when the theme changes, so its item names the
+/// way it would go.
+pub fn menus() -> Vec<Menu> {
+    use crate::ui::input;
+    vec![
+        Menu {
+            name: "profold".into(),
+            items: vec![
+                MenuItem::action("About profold", About),
+                MenuItem::action("Check for Updates…", CheckForUpdates),
+                MenuItem::separator(),
+                MenuItem::os_submenu("Services", SystemMenuType::Services),
+                MenuItem::separator(),
+                MenuItem::action("Hide profold", HideApp),
+                MenuItem::action("Hide Others", HideOthers),
+                MenuItem::action("Show All", ShowAll),
+                MenuItem::separator(),
+                MenuItem::action("Quit profold", Quit),
+            ],
+        },
+        Menu {
+            name: "File".into(),
+            items: {
+                let mut items = vec![MenuItem::action("New Tab", NewTab)];
+                if cfg!(feature = "simplefold") {
+                    items.push(MenuItem::action("New Fold Tab", NewFoldTab));
+                }
+                items.extend([
+                    MenuItem::action("Open…", OpenFile),
+                    MenuItem::separator(),
+                    MenuItem::action("Save Image…", SaveImage),
+                    MenuItem::separator(),
+                    MenuItem::action("Close Tab", CloseTab),
+                ]);
+                items
+            },
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
+                MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+            ],
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![
+                MenuItem::action(if theme::dark() { "Light Mode" } else { "Dark Mode" }, ToggleDark),
+                MenuItem::separator(),
+                MenuItem::action(Repr::Cartoon.label(), ShowCartoon),
+                MenuItem::action(Repr::Tube.label(), ShowTube),
+                MenuItem::action(Repr::BallAndStick.label(), ShowBallAndStick),
+                MenuItem::action(Repr::Licorice.label(), ShowLicorice),
+                MenuItem::action(Repr::Spacefill.label(), ShowSpacefill),
+                MenuItem::separator(),
+                MenuItem::action(Style::Illustrative.label(), StyleIllustrative),
+                MenuItem::action(Style::Flat.label(), StyleFlat),
+                MenuItem::action(Style::Soft.label(), StyleSoft),
+                MenuItem::action(Style::Studio.label(), StyleStudio),
+                MenuItem::separator(),
+                MenuItem::action("Centre", Recentre),
+                MenuItem::action("Reset View", ResetView),
+                MenuItem::separator(),
+                MenuItem::action("Enter Full Screen", ToggleFullScreen),
+            ],
+        },
+        Menu {
+            name: "Window".into(),
+            items: vec![
+                MenuItem::action("Minimize", Minimize),
+                MenuItem::action("Zoom", Zoom),
+                MenuItem::separator(),
+                MenuItem::action("Next Tab", NextTab),
+                MenuItem::action("Previous Tab", PreviousTab),
+            ],
+        },
+        Menu {
+            name: "Help".into(),
+            items: vec![
+                MenuItem::action("profold Help", OpenHelp),
+                MenuItem::action("Report an Issue…", ReportIssue),
+            ],
+        },
+    ]
 }
 
 pub struct Workspace {
@@ -125,6 +269,7 @@ impl Workspace {
             update_poll: None,
         };
         theme::set_dark(settings::Settings::load().dark);
+        cx.set_menus(menus());
         this.add(Mode::View, window, cx);
         if update::due() {
             this.check_for_updates(cx);
@@ -135,7 +280,16 @@ impl Workspace {
     /// Turn the window light or dark.
     fn toggle_theme(&mut self, cx: &mut Context<Self>) {
         theme::set_dark(!theme::dark());
+        cx.set_menus(menus());
         self.retheme(cx);
+    }
+
+    fn show(&mut self, repr: Repr, cx: &mut Context<Self>) {
+        self.active().update(cx, |tab, cx| tab.set_repr(repr, cx));
+    }
+
+    fn draw_in(&mut self, style: Style, cx: &mut Context<Self>) {
+        self.active().update(cx, |tab, cx| tab.set_style(style, cx));
     }
 
     /// Redraw every tab on the new page.
@@ -933,6 +1087,32 @@ impl Render for Workspace {
                 this.about = true;
                 this.check_for_updates(cx);
             }))
+            .on_action(cx.listener(|this, _: &About, _, cx| {
+                this.about = true;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &ToggleDark, _, cx| this.toggle_theme(cx)))
+            .on_action(cx.listener(|this, _: &SaveImage, _, cx| {
+                this.active().update(cx, |tab, cx| tab.save_image(2, cx))
+            }))
+            .on_action(cx.listener(|this, _: &ShowCartoon, _, cx| this.show(Repr::Cartoon, cx)))
+            .on_action(cx.listener(|this, _: &ShowTube, _, cx| this.show(Repr::Tube, cx)))
+            .on_action(cx.listener(|this, _: &ShowBallAndStick, _, cx| this.show(Repr::BallAndStick, cx)))
+            .on_action(cx.listener(|this, _: &ShowLicorice, _, cx| this.show(Repr::Licorice, cx)))
+            .on_action(cx.listener(|this, _: &ShowSpacefill, _, cx| this.show(Repr::Spacefill, cx)))
+            .on_action(cx.listener(|this, _: &StyleIllustrative, _, cx| this.draw_in(Style::Illustrative, cx)))
+            .on_action(cx.listener(|this, _: &StyleFlat, _, cx| this.draw_in(Style::Flat, cx)))
+            .on_action(cx.listener(|this, _: &StyleSoft, _, cx| this.draw_in(Style::Soft, cx)))
+            .on_action(cx.listener(|this, _: &StyleStudio, _, cx| this.draw_in(Style::Studio, cx)))
+            .on_action(cx.listener(|this, _: &Recentre, _, cx| {
+                this.active().update(cx, |tab, cx| tab.recentre(cx))
+            }))
+            .on_action(cx.listener(|this, _: &ResetView, _, cx| {
+                this.active().update(cx, |tab, cx| tab.reset_view(cx))
+            }))
+            .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
+            .on_action(|_: &Minimize, window, _| window.minimize_window())
+            .on_action(|_: &Zoom, window, _| window.zoom_window())
             // A window that draws its own frame is resized from its edges.
             .when(client_side, |d| {
                 d.capture_any_mouse_down(|e, window, cx| {
@@ -1010,6 +1190,11 @@ mod tests {
         click(cx, "theme");
         assert!(theme::dark());
         click(cx, "theme");
+        assert!(!theme::dark());
+        // And from the keyboard, as the View menu does it.
+        cx.simulate_keystrokes("secondary-shift-d");
+        assert!(theme::dark());
+        cx.simulate_keystrokes("secondary-shift-d");
         assert!(!theme::dark());
     }
 
