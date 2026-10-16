@@ -218,9 +218,11 @@ not have one. *Soft* has smooth shading on paper, with distance washing out. The
 line weight scales with the frame, so it holds on a retina display.
 
 **Colour** by chain (by molecule, without chains), by position along the chain,
-by pLDDT, or by element. Predicted models open coloured by pLDDT. Eight palettes
-drive the ramps and the element colours, or *Fixed colours* switches to the
-standard element colours.
+by pLDDT, or by element. Predicted models open coloured by pLDDT. The palette
+colours the chains and the ramps; elements wear the standard colours (carbon
+grey, oxygen red, nitrogen blue) unless *Element colours* is set to *Palette*.
+Ligands beside a protein keep their element colours whatever the protein is
+coloured by, and any chain or element can be given a colour of its own.
 
 **Atoms.** The side panel lists every element, or every atom type for a
 simulation, with its own size, opacity and colour. Preferences outlive the

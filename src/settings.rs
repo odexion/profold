@@ -17,8 +17,9 @@ pub struct Settings {
     pub momentum: bool,
     pub style: Style,
     pub palette: Palette,
-    /// Elements in their standard colours rather than the palette's.
-    pub fixed_colors: bool,
+    /// Elements in their standard colours rather than the palette's. Only
+    /// elements: the palette still colours chains and ramps.
+    pub standard_colors: bool,
     pub appearance: Appearance,
     /// Drawn dark rather than light.
     pub dark: bool,
@@ -30,7 +31,7 @@ impl Default for Settings {
             momentum: true,
             style: Style::Illustrative,
             palette: Palette::Spectrum,
-            fixed_colors: false,
+            standard_colors: true,
             appearance: Appearance::default(),
             dark: false,
         }
@@ -102,7 +103,7 @@ impl Settings {
             "momentum": self.momentum,
             "style": self.style.label(),
             "palette": self.palette.label(),
-            "fixed_colours": self.fixed_colors,
+            "element_colours": if self.standard_colors { "standard" } else { "palette" },
             "atoms": looks,
         });
         if self.dark {
@@ -122,8 +123,10 @@ impl Settings {
             }
         }
         s.dark = v.get("theme").and_then(Value::as_str) == Some("dark");
-        if let Some(b) = v.get("fixed_colours").and_then(Value::as_bool) {
-            s.fixed_colors = b;
+        // The old "fixed_colours" is not read: it was off unless chosen, and
+        // standard colours are now the default.
+        if let Some(c) = v.get("element_colours").and_then(Value::as_str) {
+            s.standard_colors = c != "palette";
         }
         if let Some(name) = v.get("palette").and_then(Value::as_str) {
             if let Some(p) = Palette::ALL.iter().find(|p| p.label() == name) {
@@ -286,7 +289,7 @@ mod tests {
             momentum: false,
             style: Style::Soft,
             palette: Palette::Viridis,
-            fixed_colors: true,
+            standard_colors: false,
             ..Settings::default()
         };
         s.appearance.set(
@@ -310,7 +313,7 @@ mod tests {
         assert_eq!(back.to_json(), text);
         assert!(!back.momentum);
         assert_eq!(back.style, Style::Soft);
-        assert!(back.fixed_colors);
+        assert!(!back.standard_colors);
         assert_eq!(back.appearance.get(&Species::Kind("2".into())).alpha, 0.25);
     }
 

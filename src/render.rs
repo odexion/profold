@@ -971,14 +971,14 @@ fn catmull_rom(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3], p3: [f32; 3], t: f32) -
 
 /// Colours for one structure under one scheme, with what the scheme needs to
 /// know about the structure worked out once.
-/// The colour of each element: from the palette, the elements present
-/// taking its colours most common first, unless colours are fixed, in which
-/// case the chemists' convention, CPK by way of Jmol.
-pub fn element_colors(s: &Structure, palette: Palette, fixed: bool) -> Vec<[f32; 3]> {
+/// The colour of each element: the chemists' convention, CPK by way of
+/// Jmol, unless `standard` is off, when the elements present take the
+/// palette's colours, most common first.
+pub fn element_colors(s: &Structure, palette: Palette, standard: bool) -> Vec<[f32; 3]> {
     let mut out: Vec<[f32; 3]> = (0..=255u8)
         .map(|z| crate::elements::Element(z).color())
         .collect();
-    if !fixed {
+    if !standard {
         for (rank, (e, _)) in s
             .composition()
             .into_iter()
@@ -1084,13 +1084,13 @@ pub fn build_scene(
     quality: f32,
     style: Style,
     palette: Palette,
-    fixed_colors: bool,
+    standard_colors: bool,
     cell: bool,
     appearance: &Appearance,
 ) -> Scene {
     // Colours are settled on the structure's own atoms, so showing the cell
     // and its boundary copies does not reshuffle them.
-    let elements = element_colors(s, palette, fixed_colors);
+    let elements = element_colors(s, palette, standard_colors);
     let own = s.atoms.len();
     let filled = if cell { with_boundary(s) } else { None };
     let (s, images) = match &filled {

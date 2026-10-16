@@ -215,7 +215,7 @@ pub struct Viewer {
     /// Size and opacity per element or atom type.
     appearance: Appearance,
     /// Elements in their standard colours rather than the palette's.
-    fixed_colors: bool,
+    standard_colors: bool,
     /// The slider being dragged, if any.
     sliding: Option<(Species, Knob)>,
     /// Where each slider was last laid out.
@@ -345,7 +345,7 @@ impl Viewer {
             prompt: None,
             show_cell: true,
             appearance: settings.appearance.clone(),
-            fixed_colors: settings.fixed_colors,
+            standard_colors: settings.standard_colors,
             sliding: None,
             sliders: Rc::new(RefCell::new(HashMap::new())),
             editor,
@@ -644,7 +644,7 @@ impl Viewer {
                 quality,
                 self.style,
                 self.palette,
-                self.fixed_colors,
+                self.standard_colors,
                 self.show_cell,
                 &self.appearance,
             ));
@@ -1013,7 +1013,7 @@ impl Viewer {
             momentum: self.momentum,
             style: self.style,
             palette: self.palette,
-            fixed_colors: self.fixed_colors,
+            standard_colors: self.standard_colors,
             appearance: self.appearance.clone(),
             dark: theme::dark(),
         }
@@ -2364,10 +2364,6 @@ impl Viewer {
                         ),
                 )
             });
-        // Fixed colours leave the palette nothing to do, so it says so by
-        // going pale and staying shut.
-        let fixed = self.fixed_colors;
-
         div()
             .relative()
             .child(
@@ -2384,18 +2380,9 @@ impl Viewer {
                     .border_1()
                     .border_color(theme::border())
                     .shadow_sm()
-                    .when(fixed, |d| d.opacity(0.4))
-                    .when(!fixed, |d| d.cursor_pointer().hover(|s| s.bg(theme::sunken())))
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| {
-                            Tip(if fixed {
-                                "Colours are fixed; turn off Fixed colours to use a palette".into()
-                            } else {
-                                "Palette".into()
-                            })
-                        })
-                        .into()
-                    })
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::sunken()))
+                    .tooltip(|_, cx| cx.new(|_| Tip("Palette".into())).into())
                     .child(div().p(px(3.)).child(swatch_strip(current)))
                     .child(
                         div()
@@ -2409,13 +2396,9 @@ impl Viewer {
                             .text_color(theme::muted())
                             .child(if open { "▾" } else { "▴" }),
                     )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if !this.fixed_colors {
-                            this.toggle(Dropdown::Palette, cx)
-                        }
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle(Dropdown::Palette, cx))),
             )
-            .when(open && !fixed, |d| d.child(deferred(list).with_priority(2)))
+            .when(open, |d| d.child(deferred(list).with_priority(2)))
             .when_some(self.kept.clone().filter(|_| !open), |d, note| {
                 d.child(
                     deferred(
@@ -3354,7 +3337,7 @@ impl Viewer {
         let by_element = self.coloring == Coloring::Element
             || (self.compare.is_none() && structure.has_ligands());
         let palette = self.palette;
-        let colors = render::element_colors(structure, palette, self.fixed_colors);
+        let colors = render::element_colors(structure, palette, self.standard_colors);
         let mut rows: Vec<(Species, String, [f32; 3], usize)> = structure
             .composition()
             .into_iter()
@@ -3529,55 +3512,65 @@ impl Viewer {
                         )
                     })
             }))
-            .child(self.fixed_colors_toggle(cx))
+            .child(self.standard_colors_toggle(cx))
     }
 
-    /// Whether elements wear the palette's colours or the standard ones.
-    fn fixed_colors_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let on = self.fixed_colors;
+    /// Whether elements wear the standard colours or the palette's. Only
+    /// elements: chains and ramps keep the palette either way.
+    fn standard_colors_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let standard = self.standard_colors;
+        let option = |id: &'static str, label: &'static str, chosen: bool, set: bool| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .text_size(px(10.5))
+                .when(chosen, |d| d.bg(theme::surface()).text_color(theme::ink()).shadow_sm())
+                .when(!chosen, |d| {
+                    d.text_color(theme::muted())
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme::ink()))
+                })
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.standard_colors != set {
+                        this.standard_colors = set;
+                        this.rebuild(cx);
+                    }
+                }))
+        };
         div()
-            .id("fixed-colours")
-            .debug_selector(|| "fixed-colours".into())
             .mt(px(4.))
             .flex()
             .items_center()
-            .gap(px(8.))
-            .cursor_pointer()
-            .child(
-                // A switch: a track with the knob at whichever end.
-                div()
-                    .w(px(22.))
-                    .h(px(12.))
-                    .p(px(2.))
-                    .rounded_full()
-                    .flex()
-                    .when(on, |d| d.bg(theme::ink()).justify_end())
-                    .when(!on, |d| d.bg(theme::border()))
-                    .child(div().size(px(8.)).rounded_full().bg(theme::surface())),
-            )
+            .gap(px(10.))
             .child(
                 div()
                     .text_size(px(11.))
-                    .text_color(if on { theme::ink() } else { theme::muted() })
-                    .child("Fixed colours"),
+                    .text_color(theme::muted())
+                    .child("Element colours"),
             )
             .child(
                 div()
-                    .text_size(px(9.5))
-                    .text_color(theme::faint())
-                    .child(if on {
-                        "standard element colours"
-                    } else {
-                        "from the palette"
-                    }),
+                    .flex()
+                    .p(px(2.))
+                    .gap(px(2.))
+                    .rounded(px(7.))
+                    .bg(theme::sunken())
+                    .child(
+                        option("element-colours-standard", "Standard", standard, true).tooltip(
+                            |_, cx| {
+                                cx.new(|_| Tip("Carbon grey, oxygen red, nitrogen blue".into()))
+                                    .into()
+                            },
+                        ),
+                    )
+                    .child(option("element-colours-palette", "Palette", !standard, false).tooltip(
+                        |_, cx| cx.new(|_| Tip("From the palette, most common first".into())).into(),
+                    )),
             )
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.fixed_colors = !this.fixed_colors;
-                if this.fixed_colors && this.open == Some(Dropdown::Palette) {
-                    this.open = None;
-                }
-                this.rebuild(cx);
-            }))
     }
 
     /// Presets, then the colour as hex and as RGB to type over. The first
@@ -4460,6 +4453,7 @@ mod ui_tests {
     #[gpui::test]
     fn palette_menu_recolours_elements(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
+        click(cx, "element-colours-palette");
         let before = colors(&view, cx);
 
         click(cx, "palette-button");
@@ -4510,19 +4504,33 @@ mod ui_tests {
     }
 
     #[gpui::test]
-    fn fixed_colours_hold_elements_still(cx: &mut TestAppContext) {
+    fn standard_element_colours_ignore_the_palette(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
-        click(cx, "fixed-colours");
-        assert!(view.update(cx, |this, _| this.fixed_colors));
-        let fixed = colors(&view, cx);
+        view.update(cx, |this, cx| {
+            this.standard_colors = true;
+            this.rebuild(cx);
+        });
+        // The elements' own colours, before the style and theme tone them,
+        // which another test's dark mode would otherwise change under us.
+        let elements = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| {
+                let s = this.structure.as_ref().unwrap();
+                render::element_colors(s, this.palette, this.standard_colors)
+            })
+        };
+        let standard = elements(&view, cx);
 
-        // The palette is shut while colours are fixed.
+        // The palette stays open to chains and ramps, but leaves elements be.
         click(cx, "palette-button");
-        assert!(view.update(cx, |this, _| this.open.is_none()));
-        assert_eq!(colors(&view, cx), fixed);
+        assert!(view.update(cx, |this, _| this.open == Some(Dropdown::Palette)));
+        click(cx, "palette-Magma");
+        assert_eq!(elements(&view, cx), standard);
 
-        click(cx, "fixed-colours");
-        assert_ne!(colors(&view, cx), fixed);
+        click(cx, "element-colours-palette");
+        assert!(view.update(cx, |this, _| !this.standard_colors));
+        assert_ne!(elements(&view, cx), standard);
+        click(cx, "element-colours-standard");
+        assert_eq!(elements(&view, cx), standard);
     }
 
     #[gpui::test]
