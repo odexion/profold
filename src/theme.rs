@@ -1,54 +1,93 @@
 //! The palette.
 //!
-//! Paper white, ink black, one weight of hairline. The only saturated colour in
-//! the app is the molecule itself.
+//! Paper white, ink black, one weight of hairline; or, dark, the same turned
+//! over. The only saturated colour in the app is the molecule itself.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::Hsla;
 
-/// Window background.
-pub const PAPER: Hsla = Hsla { h: 0.1250, s: 0.3333, l: 0.9765, a: 1.00 };
+/// Whether the window is drawn dark. One switch for the whole app, read by
+/// every colour below and by the rasterizer's page. Light unless asked,
+/// whatever the system is set to.
+static DARK: AtomicBool = AtomicBool::new(false);
 
-/// Cards and panels.
-pub const SURFACE: Hsla = Hsla { h: 0.0000, s: 0.0000, l: 1.0000, a: 1.00 };
+pub fn dark() -> bool {
+    DARK.load(Ordering::Relaxed)
+}
 
-/// Input wells and inactive chips.
-pub const SUNKEN: Hsla = Hsla { h: 0.1333, s: 0.1852, l: 0.9471, a: 1.00 };
+pub fn set_dark(dark: bool) {
+    DARK.store(dark, Ordering::Relaxed);
+}
 
-/// Hairlines.
-pub const BORDER: Hsla = Hsla { h: 0.1111, s: 0.1579, l: 0.8882, a: 1.00 };
+const fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
+    Hsla { h, s, l, a }
+}
 
-/// Focused field outline.
-pub const BORDER_FOCUS: Hsla = Hsla { h: 0.6667, s: 0.0833, l: 0.0941, a: 1.00 };
+/// Each colour as a light and a dark pair. The dark side is the same warm
+/// grey turned over: charcoal paper, chalk ink.
+macro_rules! palette {
+    ($($(#[$doc:meta])* $name:ident: $light:expr, $dark:expr;)*) => {
+        $(
+            $(#[$doc])*
+            pub fn $name() -> Hsla {
+                if dark() { $dark } else { $light }
+            }
+        )*
+    };
+}
 
-/// Primary text, and the fill of primary buttons.
-pub const INK: Hsla = Hsla { h: 0.6667, s: 0.0833, l: 0.0941, a: 1.00 };
+palette! {
+    /// Window background.
+    paper: hsla(0.1250, 0.3333, 0.9765, 1.00), hsla(0.1111, 0.0600, 0.0950, 1.00);
 
-/// Body text.
-pub const TEXT: Hsla = Hsla { h: 0.6667, s: 0.0617, l: 0.1588, a: 1.00 };
+    /// Cards and panels.
+    surface: hsla(0.0000, 0.0000, 1.0000, 1.00), hsla(0.1111, 0.0500, 0.1250, 1.00);
 
-/// Secondary text.
-pub const MUTED: Hsla = Hsla { h: 0.1061, s: 0.0435, l: 0.5039, a: 1.00 };
+    /// Input wells and inactive chips.
+    sunken: hsla(0.1333, 0.1852, 0.9471, 1.00), hsla(0.1111, 0.0600, 0.0700, 1.00);
 
-/// Placeholders and disabled text.
-pub const FAINT: Hsla = Hsla { h: 0.1111, s: 0.0750, l: 0.6863, a: 1.00 };
+    /// Hairlines.
+    border: hsla(0.1111, 0.1579, 0.8882, 1.00), hsla(0.1111, 0.0500, 0.2050, 1.00);
 
-/// Text caret.
-pub const CARET: Hsla = Hsla { h: 0.6667, s: 0.0833, l: 0.0941, a: 1.00 };
+    /// Focused field outline.
+    border_focus: hsla(0.6667, 0.0833, 0.0941, 1.00), hsla(0.1111, 0.1500, 0.9200, 1.00);
 
-/// Text selection.
-pub const SELECTION: Hsla = Hsla { h: 0.6667, s: 0.0833, l: 0.0941, a: 0.14 };
+    /// Primary text, and the fill of primary buttons.
+    ink: hsla(0.6667, 0.0833, 0.0941, 1.00), hsla(0.1111, 0.1500, 0.9200, 1.00);
 
-/// Errors.
-pub const DANGER: Hsla = Hsla { h: 0.0092, s: 0.7005, l: 0.4059, a: 1.00 };
+    /// Body text.
+    text: hsla(0.6667, 0.0617, 0.1588, 1.00), hsla(0.1111, 0.0800, 0.8300, 1.00);
 
-/// Text on an ink-filled surface.
-pub const ON_INK: Hsla = Hsla { h: 0.1250, s: 0.3333, l: 0.9765, a: 1.00 };
+    /// Secondary text.
+    muted: hsla(0.1061, 0.0435, 0.5039, 1.00), hsla(0.1061, 0.0435, 0.5800, 1.00);
 
+    /// Placeholders and disabled text.
+    faint: hsla(0.1111, 0.0750, 0.6863, 1.00), hsla(0.1111, 0.0500, 0.4200, 1.00);
 
-/// The page behind the molecule, in 0..1 RGB for the rasterizer. Both styles
-/// sit on the same flat paper, so switching between them changes the drawing
+    /// Text caret.
+    caret: hsla(0.6667, 0.0833, 0.0941, 1.00), hsla(0.1111, 0.1500, 0.9200, 1.00);
+
+    /// Text selection.
+    selection: hsla(0.6667, 0.0833, 0.0941, 0.14), hsla(0.1111, 0.1500, 0.9200, 0.20);
+
+    /// Errors.
+    danger: hsla(0.0092, 0.7005, 0.4059, 1.00), hsla(0.0092, 0.7500, 0.6200, 1.00);
+
+    /// Text on an ink-filled surface.
+    on_ink: hsla(0.1250, 0.3333, 0.9765, 1.00), hsla(0.1111, 0.0600, 0.0950, 1.00);
+}
+
+/// The page behind the molecule, in 0..1 RGB for the rasterizer. Every style
+/// sits on the same flat paper, so switching between them changes the drawing
 /// and nothing else.
-pub const VIEW: [f32; 3] = [0.992, 0.992, 0.988];
+pub fn view() -> [f32; 3] {
+    if dark() {
+        [0.110, 0.108, 0.104]
+    } else {
+        [0.992, 0.992, 0.988]
+    }
+}
 
 /// Monospace family, used for sequences and identifiers: one that ships
 /// with each system.

@@ -541,7 +541,7 @@ impl Element for TextElement {
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), theme::FAINT)
+            (input.placeholder.clone(), theme::faint())
         } else {
             (content, style.color)
         };
@@ -609,7 +609,7 @@ impl Element for TextElement {
                         point(bounds.left() + cursor_pos, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    theme::CARET,
+                    theme::caret(),
                 )),
             )
         } else {
@@ -625,7 +625,7 @@ impl Element for TextElement {
                             bounds.bottom(),
                         ),
                     ),
-                    theme::SELECTION,
+                    theme::selection(),
                 )),
                 None,
             )

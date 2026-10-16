@@ -15,7 +15,7 @@ use gpui::{
 
 use crate::settings;
 use crate::theme;
-use crate::ui::app::{divide, item, menu, swallow, Mode, Viewer};
+use crate::ui::app::{divide, item, menu, swallow, Mode, Tip, Viewer};
 use crate::update::{self, Status};
 
 actions!(
@@ -83,6 +83,7 @@ pub struct Workspace {
     update: update::Shared,
     /// Whether the version menu is open.
     about: bool,
+
     /// Redraws the bar while the updater works.
     update_poll: Option<Task<()>>,
 }
@@ -100,12 +101,12 @@ impl Render for TabGhost {
             .px(px(12.))
             .py(px(6.))
             .rounded(px(7.))
-            .bg(theme::SURFACE)
+            .bg(theme::surface())
             .border_1()
-            .border_color(theme::BORDER)
+            .border_color(theme::border())
             .shadow_md()
             .text_size(px(11.5))
-            .text_color(theme::INK)
+            .text_color(theme::ink())
             .child(self.0.clone())
     }
 }
@@ -123,11 +124,48 @@ impl Workspace {
             about: false,
             update_poll: None,
         };
+        theme::set_dark(settings::Settings::load().dark);
         this.add(Mode::View, window, cx);
         if update::due() {
             this.check_for_updates(cx);
         }
         this
+    }
+
+    /// Turn the window light or dark.
+    fn toggle_theme(&mut self, cx: &mut Context<Self>) {
+        theme::set_dark(!theme::dark());
+        self.retheme(cx);
+    }
+
+    /// Redraw every tab on the new page.
+    fn retheme(&mut self, cx: &mut Context<Self>) {
+        for tab in &self.tabs {
+            tab.update(cx, |tab, cx| tab.retheme(cx));
+        }
+        cx.notify();
+    }
+
+    fn theme_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let dark = theme::dark();
+        div()
+            .id("theme")
+            .debug_selector(|| "theme".into())
+            .flex_none()
+            .mb(px(6.))
+            .px(px(7.))
+            .py(px(3.))
+            .rounded(px(5.))
+            .text_size(px(11.))
+            .text_color(theme::faint())
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::border()).text_color(theme::ink()))
+            .on_mouse_down(MouseButton::Left, swallow)
+            .tooltip(move |_, cx| {
+                cx.new(|_| Tip(if dark { "Light mode" } else { "Dark mode" }.into())).into()
+            })
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx)))
+            .child(if dark { "☀" } else { "☾" })
     }
 
     /// Look for a new release, and install it where this build can. It runs
@@ -377,9 +415,9 @@ impl Workspace {
             .h(px(TAB_BAR))
             .pl(px(LIGHTS))
             .pr(px(12.))
-            .bg(theme::SUNKEN)
+            .bg(theme::sunken())
             .border_b_1()
-            .border_color(theme::BORDER)
+            .border_color(theme::border())
             // The bar is the title bar: dragging it moves the window.
             .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
             .children(
@@ -395,6 +433,7 @@ impl Workspace {
                     .h_full()
                     .window_control_area(gpui::WindowControlArea::Drag),
             )
+            .child(self.theme_button(cx))
             .child(self.version_button(cx))
             .when(cfg!(not(target_os = "macos")), |d| d.children(window_buttons(window)))
     }
@@ -425,8 +464,8 @@ impl Workspace {
                         .px(px(10.))
                         .py(px(3.))
                         .rounded(px(6.))
-                        .bg(theme::INK)
-                        .text_color(theme::ON_INK)
+                        .bg(theme::ink())
+                        .text_color(theme::on_ink())
                         .text_size(px(11.))
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.85))
@@ -436,7 +475,7 @@ impl Workspace {
                 )
             })
             .when(matches!(status, Status::Available { .. }), |d| {
-                d.child(div().size(px(6.)).rounded_full().bg(theme::INK))
+                d.child(div().size(px(6.)).rounded_full().bg(theme::ink()))
             })
             .child(
                 div()
@@ -446,10 +485,10 @@ impl Workspace {
                     .py(px(3.))
                     .rounded(px(5.))
                     .text_size(px(10.5))
-                    .text_color(theme::FAINT)
+                    .text_color(theme::faint())
                     .cursor_pointer()
-                    .when(open, |d| d.bg(theme::BORDER).text_color(theme::INK))
-                    .hover(|s| s.bg(theme::BORDER).text_color(theme::INK))
+                    .when(open, |d| d.bg(theme::border()).text_color(theme::ink()))
+                    .hover(|s| s.bg(theme::border()).text_color(theme::ink()))
                     .on_mouse_down(MouseButton::Left, swallow)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.about = !this.about;
@@ -465,30 +504,30 @@ impl Workspace {
             div().px(px(8.)).text_size(px(10.5)).text_color(color).child(text)
         };
         let (note, color) = match status {
-            Status::Idle => (None, theme::MUTED),
-            Status::Checking => (Some("Checking for updates…".to_string()), theme::MUTED),
-            Status::UpToDate => (Some("You have the latest version.".to_string()), theme::MUTED),
+            Status::Idle => (None, theme::muted()),
+            Status::Checking => (Some("Checking for updates…".to_string()), theme::muted()),
+            Status::UpToDate => (Some("You have the latest version.".to_string()), theme::muted()),
             Status::Available { version, .. } => (
                 Some(if update::TARGET.is_none() {
                     format!("{version} is out. This build is from source, so it is not replaced.")
                 } else {
                     format!("{version} is out, but this copy cannot be replaced; use the installer.")
                 }),
-                theme::INK,
+                theme::ink(),
             ),
             Status::Downloading { version, fraction } => (
                 Some(match fraction {
                     Some(f) => format!("Downloading {version}… {:.0}%", f * 100.0),
                     None => format!("Downloading {version}…"),
                 }),
-                theme::MUTED,
+                theme::muted(),
             ),
-            Status::Installing { version } => (Some(format!("Installing {version}…")), theme::MUTED),
+            Status::Installing { version } => (Some(format!("Installing {version}…")), theme::muted()),
             Status::Ready { version } => (
                 Some(format!("{version} is installed and starts next time.")),
-                theme::INK,
+                theme::ink(),
             ),
-            Status::Failed(e) => (Some(format!("Could not update: {e}")), theme::DANGER),
+            Status::Failed(e) => (Some(format!("Could not update: {e}")), theme::danger()),
         };
         let busy = status.busy();
         let automatic = update::automatic();
@@ -507,17 +546,17 @@ impl Workspace {
                     .flex()
                     .items_baseline()
                     .gap(px(6.))
-                    .child(div().text_size(px(13.)).text_color(theme::INK).child("profold"))
+                    .child(div().text_size(px(13.)).text_color(theme::ink()).child("profold"))
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(theme::MUTED)
+                            .text_color(theme::muted())
                             .child(format!("version {}", update::VERSION)),
                     ),
             )
             .child(line(
                 update::TARGET.unwrap_or("built from source").to_string(),
-                theme::FAINT,
+                theme::faint(),
             ))
             .when_some(note, |d, note| d.child(div().pt(px(4.)).child(line(note, color))))
             .child(divide())
@@ -583,19 +622,19 @@ impl Workspace {
             .rounded_t(px(8.))
             .cursor_pointer()
             .when(front, |d| {
-                d.bg(theme::SURFACE)
+                d.bg(theme::surface())
                     .border_1()
                     .border_b_0()
-                    .border_color(theme::BORDER)
+                    .border_color(theme::border())
             })
-            .when(!front, |d| d.hover(|s| s.bg(theme::PAPER)))
+            .when(!front, |d| d.hover(|s| s.bg(theme::paper())))
             // Dragged along the bar to reorder; dropped on another tab, it
             // takes that tab's place.
             .on_drag(DraggedTab(i), {
                 let title = title.clone();
                 move |_, _, _, cx| cx.new(|_| TabGhost(title.clone()))
             })
-            .drag_over::<DraggedTab>(|style, _, _, _| style.bg(theme::BORDER))
+            .drag_over::<DraggedTab>(|style, _, _, _| style.bg(theme::border()))
             .on_drop(cx.listener(move |this, dragged: &DraggedTab, _, cx| {
                 this.move_tab(dragged.0, i, cx);
             }))
@@ -619,9 +658,9 @@ impl Workspace {
                         .flex_none()
                         .px(px(4.))
                         .rounded(px(3.))
-                        .bg(if front { theme::SUNKEN } else { theme::BORDER })
+                        .bg(if front { theme::sunken() } else { theme::border() })
                         .text_size(px(8.5))
-                        .text_color(theme::MUTED)
+                        .text_color(theme::muted())
                         .child("FOLD"),
                 )
             })
@@ -631,7 +670,7 @@ impl Workspace {
                     .min_w_0()
                     .truncate()
                     .text_size(px(11.5))
-                    .text_color(if front { theme::INK } else { theme::MUTED })
+                    .text_color(if front { theme::ink() } else { theme::muted() })
                     .child(match (folding, title.strip_prefix("Fold · ")) {
                         (true, Some(rest)) => SharedString::from(rest.to_string()),
                         (true, None) if title.as_ref() == "Fold" => "New fold".into(),
@@ -650,12 +689,12 @@ impl Workspace {
                     .justify_center()
                     .rounded(px(4.))
                     .text_size(px(13.))
-                    .when(front, |d| d.text_color(theme::FAINT))
+                    .when(front, |d| d.text_color(theme::faint()))
                     .when(!front, |d| {
                         d.text_color(gpui::transparent_black())
-                            .group_hover(group, |s| s.text_color(theme::FAINT))
+                            .group_hover(group, |s| s.text_color(theme::faint()))
                     })
-                    .hover(|s| s.bg(theme::SUNKEN).text_color(theme::INK))
+                    .hover(|s| s.bg(theme::sunken()).text_color(theme::ink()))
                     .when(count > 1 || !tab.read(cx).is_blank(), |d| d.child("×"))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| this.close(i, window, cx))),
@@ -680,10 +719,10 @@ impl Workspace {
                     .justify_center()
                     .rounded(px(6.))
                     .text_size(px(16.))
-                    .text_color(theme::MUTED)
+                    .text_color(theme::muted())
                     .cursor_pointer()
-                    .when(open, |d| d.bg(theme::BORDER).text_color(theme::INK))
-                    .hover(|s| s.bg(theme::BORDER).text_color(theme::INK))
+                    .when(open, |d| d.bg(theme::border()).text_color(theme::ink()))
+                    .hover(|s| s.bg(theme::border()).text_color(theme::ink()))
                     .tooltip(|_, cx| cx.new(|_| crate::ui::app::Tip(format!("New tab  {}", theme::keys("⌘T")).into())).into())
                     .on_mouse_down(MouseButton::Left, swallow)
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -712,19 +751,19 @@ impl Workspace {
                 .py(px(6.))
                 .rounded(px(5.))
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::SUNKEN))
+                .hover(|s| s.bg(theme::sunken()))
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(1.))
-                        .child(div().text_size(px(12.)).text_color(theme::INK).child(name))
-                        .child(div().text_size(px(10.)).text_color(theme::FAINT).child(note)),
+                        .child(div().text_size(px(12.)).text_color(theme::ink()).child(name))
+                        .child(div().text_size(px(10.)).text_color(theme::faint()).child(note)),
                 )
                 .child(
                     div()
                         .text_size(px(10.5))
-                        .text_color(theme::FAINT)
+                        .text_color(theme::faint())
                         .child(keys),
                 )
         };
@@ -770,12 +809,12 @@ fn window_buttons(window: &Window) -> Option<impl IntoElement> {
             .items_center()
             .justify_center()
             .text_size(px(12.))
-            .text_color(theme::MUTED)
+            .text_color(theme::muted())
             .window_control_area(area)
             .when(area == Area::Close, |d| {
-                d.hover(|s| s.bg(theme::DANGER).text_color(theme::ON_INK))
+                d.hover(|s| s.bg(theme::danger()).text_color(theme::on_ink()))
             })
-            .when(area != Area::Close, |d| d.hover(|s| s.bg(theme::BORDER).text_color(theme::INK)))
+            .when(area != Area::Close, |d| d.hover(|s| s.bg(theme::border()).text_color(theme::ink())))
             .on_mouse_down(MouseButton::Left, swallow)
             // Windows acts on these areas itself; Linux needs telling.
             .when(cfg!(target_os = "linux"), |d| {
@@ -830,16 +869,16 @@ fn spinner(i: usize, fraction: Option<f32>) -> gpui::AnyElement {
             .w(px(22.))
             .h(px(3.))
             .rounded_full()
-            .bg(theme::BORDER)
+            .bg(theme::border())
             .overflow_hidden()
-            .child(div().h_full().w(relative(f.clamp(0.05, 1.0))).bg(theme::INK))
+            .child(div().h_full().w(relative(f.clamp(0.05, 1.0))).bg(theme::ink()))
             .into_any_element(),
         None => div()
             .id(("tab-busy", i))
             .flex_none()
             .size(px(6.))
             .rounded_full()
-            .bg(theme::INK)
+            .bg(theme::ink())
             .with_animation(
                 ("breathe", i),
                 Animation::new(Duration::from_millis(1100)).repeat(),
@@ -856,8 +895,8 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .size_full()
-            .bg(theme::PAPER)
-            .text_color(theme::TEXT)
+            .bg(theme::paper())
+            .text_color(theme::text())
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &OpenFile, window, cx| this.prompt_open(window, cx)))
             .on_action(cx.listener(|this, _: &NewTab, window, cx| {
@@ -954,6 +993,16 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(cx.debug_bounds("restart-to-update").is_some());
+    }
+
+    #[gpui::test]
+    fn the_moon_turns_the_window_dark_and_back(cx: &mut TestAppContext) {
+        let (_view, cx) = open(cx);
+        assert!(!theme::dark());
+        click(cx, "theme");
+        assert!(theme::dark());
+        click(cx, "theme");
+        assert!(!theme::dark());
     }
 
     fn tabs(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> (usize, usize) {

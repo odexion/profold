@@ -557,6 +557,12 @@ impl Viewer {
         out
     }
 
+    /// Draw again after the theme has changed: the scene's colours are
+    /// settled for the page they sit on.
+    pub fn retheme(&mut self, cx: &mut Context<Self>) {
+        self.rebuild(cx);
+    }
+
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let residues: usize = self
             .visible()
@@ -949,6 +955,7 @@ impl Viewer {
             palette: self.palette,
             fixed_colors: self.fixed_colors,
             appearance: self.appearance.clone(),
+            dark: theme::dark(),
         }
         .to_json();
         if json != self.saved {
@@ -1049,12 +1056,12 @@ impl Viewer {
                 .flex()
                 .items_center()
                 .rounded(px(4.))
-                .bg(theme::SURFACE)
+                .bg(theme::surface())
                 .border_1()
-                .border_color(theme::BORDER_FOCUS)
+                .border_color(theme::border_focus())
                 .font_family(theme::MONO)
                 .text_size(px(10.5))
-                .text_color(theme::INK)
+                .text_color(theme::ink())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(self.editor.clone())
                 .into_any_element();
@@ -1070,9 +1077,9 @@ impl Viewer {
             .rounded(px(4.))
             .font_family(theme::MONO)
             .text_size(px(10.5))
-            .text_color(theme::MUTED)
+            .text_color(theme::muted())
             .cursor(gpui::CursorStyle::IBeam)
-            .hover(|s| s.bg(theme::SUNKEN).text_color(theme::INK))
+            .hover(|s| s.bg(theme::sunken()).text_color(theme::ink()))
             .child(text.clone())
             .on_mouse_down(
                 MouseButton::Left,
@@ -1148,7 +1155,7 @@ impl Viewer {
                 .background_executor()
                 .spawn(async move {
                     let frame =
-                        render::render(&scene, &camera, width, height, theme::VIEW, style);
+                        render::render(&scene, &camera, width, height, theme::view(), style);
                     // The rasterizer hands back BGRA; PNG wants it the other
                     // way round.
                     let mut rgba = frame.bgra;
@@ -1396,10 +1403,10 @@ pub(crate) fn pill(id: &'static str, label: impl Into<SharedString>, active: boo
         .py(px(3.))
         .rounded(px(5.))
         .text_size(px(11.))
-        .when(active, |d| d.bg(theme::INK).text_color(theme::ON_INK))
+        .when(active, |d| d.bg(theme::ink()).text_color(theme::on_ink()))
         .when(!active, |d| {
-            d.text_color(theme::MUTED)
-                .hover(|s| s.bg(theme::SUNKEN).text_color(theme::TEXT))
+            d.text_color(theme::muted())
+                .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
         })
         .child(label.into())
 }
@@ -1416,10 +1423,10 @@ fn pill_keyed(
         .py(px(3.))
         .rounded(px(5.))
         .text_size(px(11.))
-        .when(active, |d| d.bg(theme::INK).text_color(theme::ON_INK))
+        .when(active, |d| d.bg(theme::ink()).text_color(theme::on_ink()))
         .when(!active, |d| {
-            d.text_color(theme::MUTED)
-                .hover(|s| s.bg(theme::SUNKEN).text_color(theme::TEXT))
+            d.text_color(theme::muted())
+                .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
         })
         .child(label.into())
 }
@@ -1433,9 +1440,9 @@ impl Render for Tip {
             .px(px(7.))
             .py(px(3.))
             .rounded(px(5.))
-            .bg(theme::INK)
+            .bg(theme::ink())
             .text_size(px(10.5))
-            .text_color(theme::ON_INK)
+            .text_color(theme::on_ink())
             .child(self.0.clone())
     }
 }
@@ -1452,10 +1459,10 @@ fn tab(id: &'static str, text: &'static str, open: bool) -> gpui::Stateful<gpui:
         .rounded(px(5.))
         .text_size(px(11.5))
         .cursor_pointer()
-        .when(open, |d| d.bg(theme::SUNKEN).text_color(theme::INK))
+        .when(open, |d| d.bg(theme::sunken()).text_color(theme::ink()))
         .when(!open, |d| {
-            d.text_color(theme::MUTED)
-                .hover(|s| s.bg(theme::SUNKEN).text_color(theme::TEXT))
+            d.text_color(theme::muted())
+                .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
         })
         .child(text)
 }
@@ -1469,9 +1476,9 @@ pub(crate) fn menu(width: f32) -> gpui::Div {
         .w(px(width))
         .p(px(3.))
         .rounded(px(8.))
-        .bg(theme::SURFACE)
+        .bg(theme::surface())
         .border_1()
-        .border_color(theme::BORDER)
+        .border_color(theme::border())
         .shadow_md()
         .flex()
         .flex_col()
@@ -1498,21 +1505,21 @@ pub(crate) fn item(id: impl Into<gpui::ElementId>, text: String, chosen: bool) -
         .py(px(4.))
         .rounded(px(5.))
         .cursor_pointer()
-        .when(!chosen, |d| d.hover(|s| s.bg(theme::SUNKEN)))
+        .when(!chosen, |d| d.hover(|s| s.bg(theme::sunken())))
         .child(
             div()
                 .text_size(px(11.5))
-                .text_color(if chosen { theme::INK } else { theme::TEXT })
+                .text_color(if chosen { theme::ink() } else { theme::text() })
                 .child(text),
         )
         .when(chosen, |d| {
-            d.child(div().text_size(px(10.)).text_color(theme::MUTED).child("✓"))
+            d.child(div().text_size(px(10.)).text_color(theme::muted()).child("✓"))
         })
 }
 
 /// The hairline between groups of menu items.
 pub(crate) fn divide() -> impl IntoElement {
-    div().my(px(3.)).h(px(1.)).bg(theme::BORDER)
+    div().my(px(3.)).h(px(1.)).bg(theme::border())
 }
 
 /// An action beside the primary one: same size, outlined rather than filled.
@@ -1525,17 +1532,17 @@ fn secondary(id: &'static str, text: &'static str) -> gpui::Stateful<gpui::Div> 
         .rounded(px(6.))
         .text_size(px(11.5))
         .border_1()
-        .border_color(theme::BORDER)
-        .text_color(theme::MUTED)
+        .border_color(theme::border())
+        .text_color(theme::muted())
         .cursor_pointer()
-        .hover(|s| s.bg(theme::SUNKEN).text_color(theme::TEXT))
+        .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
         .child(text)
 }
 
 pub(crate) fn label(text: impl Into<gpui::SharedString>) -> impl IntoElement {
     div()
         .text_size(px(9.5))
-        .text_color(theme::FAINT)
+        .text_color(theme::faint())
         .child(text.into())
 }
 
@@ -1566,7 +1573,7 @@ fn dot_pill(
         .py(px(3.))
         .rounded(px(5.))
         .cursor_pointer()
-        .when(on, |d| d.bg(theme::SUNKEN))
+        .when(on, |d| d.bg(theme::sunken()))
         .child(
             div()
                 .size(px(7.))
@@ -1577,7 +1584,7 @@ fn dot_pill(
         .child(
             div()
                 .text_size(px(11.))
-                .text_color(if on { theme::TEXT } else { theme::FAINT })
+                .text_color(if on { theme::text() } else { theme::faint() })
                 .child(label),
         )
 }
@@ -1598,7 +1605,7 @@ fn swatch_strip(p: Palette) -> impl IntoElement {
 
 
 fn rule() -> impl IntoElement {
-    div().h(px(1.)).w_full().bg(theme::BORDER)
+    div().h(px(1.)).w_full().bg(theme::border())
 }
 
 /// gpui has no letter spacing, so the small capitals are spaced by hand.
@@ -1617,7 +1624,7 @@ fn spaced(text: &str) -> String {
 fn key(text: &str) -> impl IntoElement {
     div()
         .text_size(px(9.))
-        .text_color(theme::FAINT)
+        .text_color(theme::faint())
         .child(spaced(&text.to_uppercase()))
 }
 
@@ -1631,13 +1638,13 @@ fn spec(field: &str, value: String, mono: bool) -> impl IntoElement {
         .gap(px(10.))
         .py(px(8.))
         .border_b_1()
-        .border_color(theme::BORDER)
+        .border_color(theme::border())
         .child(key(field))
         .child(
             div()
                 .when(mono, |d| d.font_family(theme::MONO))
                 .text_size(px(11.5))
-                .text_color(theme::INK)
+                .text_color(theme::ink())
                 .child(value),
         )
 }
@@ -1804,9 +1811,9 @@ impl Viewer {
             .h(px(TOOLBAR))
             .pl(px(12.))
             .pr(px(16.))
-            .bg(theme::SURFACE)
+            .bg(theme::surface())
             .border_b_1()
-            .border_color(theme::BORDER)
+            .border_color(theme::border())
             .when(viewing, |d| {
                 d.child(
                     tab("open-file", "Open", false)
@@ -1843,7 +1850,7 @@ impl Viewer {
                     div()
                         .font_family(theme::MONO)
                         .text_size(px(10.))
-                        .text_color(theme::FAINT)
+                        .text_color(theme::faint())
                         .child(badge),
                 )
             })
@@ -1856,7 +1863,7 @@ impl Viewer {
         let [x, y] = self.camera.angles();
         let zoom = self.camera.zoom;
         let (fps, live) = self.cache.borrow().fps();
-        let name = |n: &'static str| div().text_size(px(9.)).text_color(theme::FAINT).child(n);
+        let name = |n: &'static str| div().text_size(px(9.)).text_color(theme::faint()).child(n);
         // Rounded first, so a hair either side of zero is not "-0".
         let degrees = |d: f32| format!("{}°", d.round() as i32);
         div()
@@ -1884,7 +1891,7 @@ impl Viewer {
                     .justify_end()
                     .font_family(theme::MONO)
                     .text_size(px(10.5))
-                    .text_color(if live { theme::MUTED } else { theme::FAINT })
+                    .text_color(if live { theme::muted() } else { theme::faint() })
                     .child(format!("{}", fps.round() as u32)),
             )
     }
@@ -1938,17 +1945,17 @@ impl Viewer {
                             .py(px(4.))
                             .rounded(px(5.))
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme::SUNKEN))
+                            .hover(|s| s.bg(theme::sunken()))
                             .child(
                                 div()
                                     .text_size(px(11.5))
-                                    .text_color(theme::TEXT)
+                                    .text_color(theme::text())
                                     .child(sample.name),
                             )
                             .child(
                                 div()
                                     .text_size(px(9.5))
-                                    .text_color(theme::FAINT)
+                                    .text_color(theme::faint())
                                     .child(sample.file),
                             )
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -1993,9 +2000,9 @@ impl Viewer {
                 .gap(px(2.))
                 .p(px(3.))
                 .rounded(px(8.))
-                .bg(theme::SURFACE)
+                .bg(theme::surface())
                 .border_1()
-                .border_color(theme::BORDER)
+                .border_color(theme::border())
                 .shadow_sm()
                 .children(children)
         };
@@ -2024,7 +2031,7 @@ impl Viewer {
                         // A backbone style means nothing without a backbone.
                         let enabled = !r.needs_polymer() || polymer;
                         pill_keyed(("repr", r as usize), r.label(), r == repr)
-                            .when(!enabled, |d| d.text_color(theme::FAINT))
+                            .when(!enabled, |d| d.text_color(theme::faint()))
                             .when(enabled, |d| d.cursor_pointer())
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if enabled {
@@ -2107,17 +2114,17 @@ impl Viewer {
                 .py(px(4.))
                 .rounded(px(5.))
                 .cursor_pointer()
-                .when(!chosen, |d| d.hover(|s| s.bg(theme::SUNKEN)))
+                .when(!chosen, |d| d.hover(|s| s.bg(theme::sunken())))
                 .child(swatch_strip(p))
                 .child(
                     div()
                         .flex_1()
                         .text_size(px(11.5))
-                        .text_color(if chosen { theme::INK } else { theme::TEXT })
+                        .text_color(if chosen { theme::ink() } else { theme::text() })
                         .child(p.label()),
                 )
                 .when(chosen, |d| {
-                    d.child(div().text_size(px(10.)).text_color(theme::MUTED).child("✓"))
+                    d.child(div().text_size(px(10.)).text_color(theme::muted()).child("✓"))
                 })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.palette = p;
@@ -2137,7 +2144,7 @@ impl Viewer {
                 .pt(px(if first { 6. } else { 10. }))
                 .pb(px(2.))
                 .text_size(px(9.))
-                .text_color(theme::FAINT)
+                .text_color(theme::faint())
                 .child(spaced(&g.label().to_uppercase()))
         };
         let members = |g: PaletteGroup| Palette::ALL.into_iter().filter(move |p| p.group() == g);
@@ -2189,12 +2196,12 @@ impl Viewer {
                     .p(px(3.))
                     .pr(px(9.))
                     .rounded(px(8.))
-                    .bg(theme::SURFACE)
+                    .bg(theme::surface())
                     .border_1()
-                    .border_color(theme::BORDER)
+                    .border_color(theme::border())
                     .shadow_sm()
                     .when(fixed, |d| d.opacity(0.4))
-                    .when(!fixed, |d| d.cursor_pointer().hover(|s| s.bg(theme::SUNKEN)))
+                    .when(!fixed, |d| d.cursor_pointer().hover(|s| s.bg(theme::sunken())))
                     .tooltip(move |_, cx| {
                         cx.new(|_| {
                             Tip(if fixed {
@@ -2209,13 +2216,13 @@ impl Viewer {
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(theme::TEXT)
+                            .text_color(theme::text())
                             .child(current.label()),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(theme::MUTED)
+                            .text_color(theme::muted())
                             .child(if open { "▾" } else { "▴" }),
                     )
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -2297,18 +2304,18 @@ impl Viewer {
                     .py(px(4.))
                     .rounded(px(5.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme::SUNKEN))
+                    .hover(|s| s.bg(theme::sunken()))
                     .child(
                         div()
                             .text_size(px(11.5))
-                            .text_color(theme::TEXT)
+                            .text_color(theme::text())
                             .child(format!("Save PNG · {scale}×")),
                     )
                     .child(
                         div()
                             .font_family(theme::MONO)
                             .text_size(px(9.5))
-                            .text_color(theme::FAINT)
+                            .text_color(theme::faint())
                             .child(size),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -2335,11 +2342,11 @@ impl Viewer {
                     .flex()
                     .flex_col()
                     .gap(px(1.))
-                    .child(div().text_size(px(17.)).text_color(theme::INK).child(name))
+                    .child(div().text_size(px(17.)).text_color(theme::ink()).child(name))
                     .child(
                         div()
                             .text_size(px(10.5))
-                            .text_color(theme::FAINT)
+                            .text_color(theme::faint())
                             .child(purpose),
                     ),
             )
@@ -2376,12 +2383,12 @@ impl Viewer {
             .rounded(px(8.))
             .text_size(px(11.5))
             .when(ready && !busy, |d| {
-                d.bg(theme::INK)
-                    .text_color(theme::ON_INK)
+                d.bg(theme::ink())
+                    .text_color(theme::on_ink())
                     .hover(|s| s.opacity(0.86))
                     .cursor_pointer()
             })
-            .when(!ready || busy, |d| d.bg(theme::SUNKEN).text_color(theme::FAINT))
+            .when(!ready || busy, |d| d.bg(theme::sunken()).text_color(theme::faint()))
             .child(action)
             .on_click(cx.listener(|this, _, _, cx| this.submit(cx)));
 
@@ -2390,14 +2397,14 @@ impl Viewer {
             Input::Unknown => Some(
                 div()
                     .text_size(px(10.5))
-                    .text_color(theme::FAINT)
+                    .text_color(theme::faint())
                     .child(detected.detail())
                     .into_any_element(),
             ),
             Input::Query(_) if folding => Some(
                 div()
                     .text_size(px(10.5))
-                    .text_color(theme::FAINT)
+                    .text_color(theme::faint())
                     .child("not a sequence, PDB ID or accession")
                     .into_any_element(),
             ),
@@ -2411,7 +2418,7 @@ impl Viewer {
                         div()
                             .flex_none()
                             .text_size(px(9.))
-                            .text_color(theme::MUTED)
+                            .text_color(theme::muted())
                             .child(match other {
                                 Input::Sequence(_) if !folding => "SEQUENCE SEARCH",
                                 _ => other.kind(),
@@ -2421,7 +2428,7 @@ impl Viewer {
                         div()
                             .font_family(theme::MONO)
                             .text_size(px(11.))
-                            .text_color(theme::TEXT)
+                            .text_color(theme::text())
                             .truncate()
                             .child(match other {
                                 Input::Sequence(s) if !folding => format!("{} aa in the PDB", s.len()),
@@ -2433,7 +2440,7 @@ impl Viewer {
                             div()
                                 .flex_none()
                                 .text_size(px(10.))
-                                .text_color(theme::FAINT)
+                                .text_color(theme::faint())
                                 .child("searching…"),
                         )
                     })
@@ -2462,15 +2469,15 @@ impl Viewer {
                             .h(px(38.))
                             .px(px(11.))
                             .rounded(px(8.))
-                            .bg(if focused { theme::SURFACE } else { theme::SUNKEN })
+                            .bg(if focused { theme::surface() } else { theme::sunken() })
                             .border_1()
                             .border_color(if focused {
-                                theme::BORDER_FOCUS
+                                theme::border_focus()
                             } else {
-                                theme::BORDER
+                                theme::border()
                             })
                             .text_size(px(12.5))
-                            .text_color(theme::TEXT)
+                            .text_color(theme::text())
                             .font_family(theme::MONO)
                             // Back into the field, the list comes back with it.
                             .on_mouse_down(
@@ -2537,8 +2544,8 @@ impl Viewer {
                     .py(px(4.))
                     .rounded(px(6.))
                     .cursor_pointer()
-                    .when(chosen, |d| d.bg(theme::SUNKEN))
-                    .hover(|s| s.bg(theme::SUNKEN))
+                    .when(chosen, |d| d.bg(theme::sunken()))
+                    .hover(|s| s.bg(theme::sunken()))
                     .child(
                         div()
                             .flex()
@@ -2551,7 +2558,7 @@ impl Viewer {
                                     .whitespace_nowrap()
                                     .font_family(theme::MONO)
                                     .text_size(px(10.5))
-                                    .text_color(theme::MUTED)
+                                    .text_color(theme::muted())
                                     .child(hit.label()),
                             )
                             .child(
@@ -2560,7 +2567,7 @@ impl Viewer {
                                         .w_full()
                                         .truncate()
                                         .text_size(px(12.))
-                                        .text_color(theme::INK)
+                                        .text_color(theme::ink())
                                         .child(clip(&hit.title, if i == 0 { 50 } else { 62 })),
                                 ),
                             )
@@ -2569,7 +2576,7 @@ impl Viewer {
                                     div()
                                         .flex_none()
                                         .text_size(px(9.5))
-                                        .text_color(theme::FAINT)
+                                        .text_color(theme::faint())
                                         .child("best match ↵"),
                                 )
                             }),
@@ -2580,7 +2587,7 @@ impl Viewer {
                                 .w_full()
                                 .truncate()
                                 .text_size(px(10.5))
-                                .text_color(theme::FAINT)
+                                .text_color(theme::faint())
                                 .child(clip(&hit.detail, 72)),
                         ),
                     )
@@ -2613,9 +2620,9 @@ impl Viewer {
             .max_h(px(560.))
             .p(px(4.))
             .rounded(px(9.))
-            .bg(theme::SURFACE)
+            .bg(theme::surface())
             .border_1()
-            .border_color(theme::BORDER)
+            .border_color(theme::border())
             .shadow_lg()
             .flex()
             .flex_col()
@@ -2633,9 +2640,9 @@ impl Viewer {
                         .py(px(8.))
                         .text_size(px(11.))
                         .text_color(if self.search_error.is_some() {
-                            theme::DANGER
+                            theme::danger()
                         } else {
-                            theme::FAINT
+                            theme::faint()
                         })
                         .child(note),
                 )
@@ -2647,7 +2654,7 @@ impl Viewer {
                         .pt(px(6.))
                         .pb(px(4.))
                         .text_size(px(9.5))
-                        .text_color(theme::FAINT)
+                        .text_color(theme::faint())
                         .child("↑↓ to choose · ↵ to open · esc to close"),
                 )
             })
@@ -2690,7 +2697,7 @@ impl Viewer {
         div()
             .px(px(20.))
             .when_some(self.error.clone(), |d, err| {
-                d.child(div().text_size(px(11.)).text_color(theme::DANGER).child(err))
+                d.child(div().text_size(px(11.)).text_color(theme::danger()).child(err))
             })
     }
 
@@ -2703,14 +2710,14 @@ impl Viewer {
             .h(px(4.))
             .w_full()
             .rounded_full()
-            .bg(theme::SUNKEN)
+            .bg(theme::sunken())
             .overflow_hidden()
             .child(match fraction {
                 Some(f) => div()
                     .h_full()
                     .w(relative(f.clamp(0.005, 1.0)))
                     .rounded_full()
-                    .bg(theme::INK)
+                    .bg(theme::ink())
                     .into_any_element(),
                 None => div()
                     .id("indeterminate")
@@ -2719,7 +2726,7 @@ impl Viewer {
                     .bottom_0()
                     .w(relative(0.28))
                     .rounded_full()
-                    .bg(theme::INK)
+                    .bg(theme::ink())
                     .with_animation(
                         "travel",
                         Animation::new(Duration::from_millis(1600)).repeat(),
@@ -2745,7 +2752,7 @@ impl Viewer {
         div()
             .absolute()
             .inset_0()
-            .bg(theme::PAPER)
+            .bg(theme::paper())
             .flex()
             .items_center()
             .justify_center()
@@ -2764,7 +2771,7 @@ impl Viewer {
                             .child(
                                 div()
                                     .text_size(px(13.))
-                                    .text_color(theme::INK)
+                                    .text_color(theme::ink())
                                     .child(busy),
                             )
                             .when_some(percent, |d, p| {
@@ -2772,7 +2779,7 @@ impl Viewer {
                                     div()
                                         .font_family(theme::MONO)
                                         .text_size(px(11.5))
-                                        .text_color(theme::MUTED)
+                                        .text_color(theme::muted())
                                         .child(p),
                                 )
                             }),
@@ -2785,7 +2792,7 @@ impl Viewer {
                             .whitespace_nowrap()
                             .font_family(theme::MONO)
                             .text_size(px(10.5))
-                            .text_color(theme::MUTED)
+                            .text_color(theme::muted())
                             .children(detail),
                     )
                     .child(
@@ -2796,7 +2803,7 @@ impl Viewer {
                             .gap(px(1.))
                             .font_family(theme::MONO)
                             .text_size(px(10.))
-                            .text_color(theme::FAINT)
+                            .text_color(theme::faint())
                             .children(self.recent(6).into_iter().map(|line| {
                                 div().overflow_hidden().whitespace_nowrap().child(line)
                             })),
@@ -2835,14 +2842,14 @@ impl Viewer {
                         div()
                             .font_family(theme::MONO)
                             .text_size(px(11.))
-                            .text_color(theme::TEXT)
-                            .hover(|s| s.text_color(theme::INK))
+                            .text_color(theme::text())
+                            .hover(|s| s.text_color(theme::ink()))
                             .child(shown),
                     )
                     .child(
                         div()
                             .text_size(px(10.5))
-                            .text_color(theme::FAINT)
+                            .text_color(theme::faint())
                             .child(*note),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.open(&value, cx)))
@@ -2865,14 +2872,14 @@ impl Viewer {
                     .child(
                         div()
                             .text_size(px(11.5))
-                            .text_color(theme::TEXT)
-                            .hover(|s| s.text_color(theme::INK))
+                            .text_color(theme::text())
+                            .hover(|s| s.text_color(theme::ink()))
                             .child(sample.name),
                     )
                     .child(
                         div()
                             .text_size(px(10.5))
-                            .text_color(theme::FAINT)
+                            .text_color(theme::faint())
                             .child(sample.note),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.open_sample(i, cx)))
@@ -2902,9 +2909,9 @@ impl Viewer {
                         .gap(px(2.))
                         .p(px(3.))
                         .rounded(px(8.))
-                        .bg(theme::SURFACE)
+                        .bg(theme::surface())
                         .border_1()
-                        .border_color(theme::BORDER)
+                        .border_color(theme::border())
                         .shadow_sm()
                         .child(
                             dot_pill(
@@ -2940,13 +2947,13 @@ impl Viewer {
                             div()
                                 .font_family(theme::MONO)
                                 .text_size(px(13.))
-                                .text_color(theme::INK)
+                                .text_color(theme::ink())
                                 .child(format!("{rmsd:.2} Å")),
                         )
                         .child(
                             div()
                                 .text_size(px(10.))
-                                .text_color(theme::MUTED)
+                                .text_color(theme::muted())
                                 .child(format!("Cα RMSD · {matched} residues")),
                         ),
                 ),
@@ -2990,21 +2997,21 @@ impl Viewer {
                                     .rounded_full()
                                     .when(by_chain, |d| d.bg(swatch(palette.chain(i))))
                                     .when(!by_chain, |d| {
-                                        d.border_1().border_color(theme::FAINT)
+                                        d.border_1().border_color(theme::faint())
                                     }),
                             )
                             .child(
                                 div()
                                     .flex_1()
                                     .text_size(px(11.5))
-                                    .text_color(theme::TEXT)
+                                    .text_color(theme::text())
                                     .child(name),
                             )
                             .child(
                                 div()
                                     .font_family(theme::MONO)
                                     .text_size(px(10.))
-                                    .text_color(theme::FAINT)
+                                    .text_color(theme::faint())
                                     .child(format!("{} aa", chain.residues.len())),
                             )
                     }),
@@ -3014,7 +3021,7 @@ impl Viewer {
                     div()
                         .pl(px(16.))
                         .text_size(px(10.5))
-                        .text_color(theme::FAINT)
+                        .text_color(theme::faint())
                         .child(format!("and {rest} more")),
                 )
             })
@@ -3062,9 +3069,9 @@ impl Viewer {
                     .justify_end()
                     .text_size(px(9.5))
                     .when(changed, |d| {
-                        d.text_color(theme::MUTED)
+                        d.text_color(theme::muted())
                             .cursor_pointer()
-                            .hover(|s| s.text_color(theme::INK))
+                            .hover(|s| s.text_color(theme::ink()))
                             .child("Reset")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.appearance.reset();
@@ -3111,8 +3118,8 @@ impl Viewer {
                                     .justify_center()
                                     .rounded_full()
                                     .cursor_pointer()
-                                    .when(picking, |d| d.border_1().border_color(theme::INK))
-                                    .hover(|d| d.bg(theme::SUNKEN))
+                                    .when(picking, |d| d.border_1().border_color(theme::ink()))
+                                    .hover(|d| d.bg(theme::sunken()))
                                     .child(
                                         div()
                                             .size(px(8.))
@@ -3121,7 +3128,7 @@ impl Viewer {
                                                 d.bg(swatch(shown)).opacity(look.alpha.max(0.2))
                                             })
                                             .when(!by_element, |d| {
-                                                d.border_1().border_color(theme::FAINT)
+                                                d.border_1().border_color(theme::faint())
                                             }),
                                     )
                                     .tooltip(|_, cx| {
@@ -3135,7 +3142,7 @@ impl Viewer {
                             .child(
                                 div()
                                     .text_size(px(11.5))
-                                    .text_color(theme::TEXT)
+                                    .text_color(theme::text())
                                     .whitespace_nowrap()
                                     .child(name.clone()),
                             ),
@@ -3177,7 +3184,7 @@ impl Viewer {
                             .justify_end()
                             .font_family(theme::MONO)
                             .text_size(px(10.))
-                            .text_color(theme::FAINT)
+                            .text_color(theme::faint())
                             .child(thousands(n)),
                     )
                     .when(picking, |d| {
@@ -3209,20 +3216,20 @@ impl Viewer {
                     .p(px(2.))
                     .rounded_full()
                     .flex()
-                    .when(on, |d| d.bg(theme::INK).justify_end())
-                    .when(!on, |d| d.bg(theme::BORDER))
-                    .child(div().size(px(8.)).rounded_full().bg(theme::SURFACE)),
+                    .when(on, |d| d.bg(theme::ink()).justify_end())
+                    .when(!on, |d| d.bg(theme::border()))
+                    .child(div().size(px(8.)).rounded_full().bg(theme::surface())),
             )
             .child(
                 div()
                     .text_size(px(11.))
-                    .text_color(if on { theme::INK } else { theme::MUTED })
+                    .text_color(if on { theme::ink() } else { theme::muted() })
                     .child("Fixed colours"),
             )
             .child(
                 div()
                     .text_size(px(9.5))
-                    .text_color(theme::FAINT)
+                    .text_color(theme::faint())
                     .child(if on {
                         "standard element colours"
                     } else {
@@ -3257,8 +3264,8 @@ impl Viewer {
                 .rounded(px(5.))
                 .p(px(2.))
                 .cursor_pointer()
-                .when(chosen, |d| d.border_1().border_color(theme::INK))
-                .when(!chosen, |d| d.hover(|s| s.bg(theme::SUNKEN)))
+                .when(chosen, |d| d.border_1().border_color(theme::ink()))
+                .when(!chosen, |d| d.hover(|s| s.bg(theme::sunken())))
                 .child(div().size_full().rounded(px(3.)).bg(swatch(c)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.set_color(species.clone(), set, cx)
@@ -3268,7 +3275,7 @@ impl Viewer {
             div()
                 .w(px(30.))
                 .text_size(px(9.))
-                .text_color(theme::FAINT)
+                .text_color(theme::faint())
                 .child(t)
         };
 
@@ -3279,9 +3286,9 @@ impl Viewer {
             .w(px(232.))
             .p(px(10.))
             .rounded(px(8.))
-            .bg(theme::SURFACE)
+            .bg(theme::surface())
             .border_1()
-            .border_color(theme::BORDER)
+            .border_color(theme::border())
             .shadow_md()
             .flex()
             .flex_col()
@@ -3299,16 +3306,16 @@ impl Viewer {
                     .child(
                         div()
                             .text_size(px(11.5))
-                            .text_color(theme::INK)
+                            .text_color(theme::ink())
                             .child(format!("Colour of {name}")),
                     )
                     .child(
                         div()
                             .id("picker-done")
                             .text_size(px(10.5))
-                            .text_color(theme::MUTED)
+                            .text_color(theme::muted())
                             .cursor_pointer()
-                            .hover(|s| s.text_color(theme::INK))
+                            .hover(|s| s.text_color(theme::ink()))
                             .child("Done")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.picking = None;
@@ -3341,7 +3348,7 @@ impl Viewer {
                             .rounded(px(3.))
                             .bg(swatch(current))
                             .border_1()
-                            .border_color(theme::BORDER),
+                            .border_color(theme::border()),
                     )
                     .child(self.field(
                         "picker-hex",
@@ -3409,8 +3416,8 @@ impl Viewer {
                     .w_full()
                     .h(px(3.))
                     .rounded_full()
-                    .bg(theme::SUNKEN)
-                    .child(div().h_full().w(relative(t)).rounded_full().bg(theme::MUTED))
+                    .bg(theme::sunken())
+                    .child(div().h_full().w(relative(t)).rounded_full().bg(theme::muted()))
                     // The default, so it can be found by eye.
                     .when(knob == Knob::Size, |d| {
                         d.child(
@@ -3420,7 +3427,7 @@ impl Viewer {
                                 .left(relative(home))
                                 .w(px(1.))
                                 .h(px(7.))
-                                .bg(theme::FAINT),
+                                .bg(theme::faint()),
                         )
                     }),
             )
@@ -3432,7 +3439,7 @@ impl Viewer {
                     .ml(px(-4.))
                     .size(px(8.))
                     .rounded_full()
-                    .bg(theme::INK),
+                    .bg(theme::ink()),
             )
             .on_mouse_down(
                 MouseButton::Left,
@@ -3483,9 +3490,9 @@ impl Viewer {
                         .id("source-link")
                         .debug_selector(|| "source-link".into())
                         .text_size(px(10.5))
-                        .text_color(theme::FAINT)
+                        .text_color(theme::faint())
                         .cursor_pointer()
-                        .hover(|s| s.text_color(theme::TEXT))
+                        .hover(|s| s.text_color(theme::text()))
                         .child(text)
                         .on_click(move |_, _, cx| go(cx)),
                 )
@@ -3548,7 +3555,7 @@ impl Viewer {
                     .pt(px(15.))
                     .pb(px(7.))
                     .text_size(px(9.))
-                    .text_color(theme::FAINT)
+                    .text_color(theme::faint())
                     .child(spaced(&category.to_uppercase())),
             )
             .child(
@@ -3556,7 +3563,7 @@ impl Viewer {
                     .font_family(theme::SERIF)
                     .text_size(px(27.))
                     .line_height(px(31.))
-                    .text_color(theme::INK)
+                    .text_color(theme::ink())
                     .overflow_hidden()
                     .child(name),
             )
@@ -3566,7 +3573,7 @@ impl Viewer {
                         .pt(px(10.))
                         .text_size(px(11.5))
                         .line_height(px(18.))
-                        .text_color(theme::TEXT)
+                        .text_color(theme::text())
                         .child(blurb),
                 )
             })
@@ -3654,7 +3661,7 @@ impl Viewer {
                     .pt(px(15.))
                     .pb(px(7.))
                     .text_size(px(9.))
-                    .text_color(theme::FAINT)
+                    .text_color(theme::faint())
                     .child(spaced(&format!(
                         "{} / {}",
                         structure.source.label().to_uppercase(),
@@ -3672,7 +3679,7 @@ impl Viewer {
                     .font_family(theme::SERIF)
                     .text_size(px(27.))
                     .line_height(px(31.))
-                    .text_color(theme::INK)
+                    .text_color(theme::ink())
                     .child(name),
             )
             .when_some(blurb, |d, blurb| {
@@ -3681,7 +3688,7 @@ impl Viewer {
                         .pt(px(10.))
                         .text_size(px(11.5))
                         .line_height(px(18.))
-                        .text_color(theme::TEXT)
+                        .text_color(theme::text())
                         .child(blurb),
                 )
             })
@@ -3720,7 +3727,7 @@ impl Viewer {
                             .gap(px(10.))
                             .py(px(8.))
                             .border_b_1()
-                            .border_color(theme::BORDER)
+                            .border_color(theme::border())
                             .child(key("sequence"))
                             .child(
                                 div()
@@ -3731,11 +3738,11 @@ impl Viewer {
                                     .text_size(px(10.))
                                     .cursor_pointer()
                                     .when(self.copied, |d| {
-                                        d.text_color(theme::TEXT).bg(theme::SUNKEN)
+                                        d.text_color(theme::text()).bg(theme::sunken())
                                     })
                                     .when(!self.copied, |d| {
-                                        d.text_color(theme::MUTED)
-                                            .hover(|s| s.bg(theme::SUNKEN).text_color(theme::TEXT))
+                                        d.text_color(theme::muted())
+                                            .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
                                     })
                                     .child(if self.copied { "Copied" } else { "Copy" })
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -3751,7 +3758,7 @@ impl Viewer {
                     .whitespace_nowrap()
                     .font_family(theme::MONO)
                     .text_size(px(10.))
-                    .text_color(theme::FAINT)
+                    .text_color(theme::faint())
                     .child(preview),
             )
             .when(structure.frame_count() > 1, |d| {
@@ -3759,7 +3766,7 @@ impl Viewer {
                     div()
                         .pt(px(8.))
                         .text_size(px(10.5))
-                        .text_color(theme::FAINT)
+                        .text_color(theme::faint())
                         .child(format!("{} frames", thousands(structure.frame_count()))),
                 )
             })
@@ -3801,7 +3808,7 @@ impl Viewer {
                         .children(self.empty_message().into_iter().enumerate().map(|(i, line)| {
                             div()
                                 .text_size(px(if i == 0 { 12. } else { 10.5 }))
-                                .text_color(theme::FAINT)
+                                .text_color(theme::faint())
                                 .child(line)
                         })),
                 )
@@ -3818,7 +3825,7 @@ impl Viewer {
                             .items_center()
                             .justify_center()
                             .text_size(px(11.))
-                            .text_color(theme::FAINT)
+                            .text_color(theme::faint())
                             .child("Both structures are hidden"),
                     )
                 },
@@ -3839,7 +3846,7 @@ impl Viewer {
                         .flex()
                         .justify_center()
                         .text_size(px(9.5))
-                        .text_color(theme::FAINT)
+                        .text_color(theme::faint())
                         .child("drag to orbit · shift-drag to pan · scroll to zoom · double-click to reset"),
                 )
             })
@@ -3938,9 +3945,9 @@ impl Viewer {
             .px(px(10.))
             .py(px(6.))
             .rounded(px(8.))
-            .bg(theme::SURFACE)
+            .bg(theme::surface())
             .border_1()
-            .border_color(theme::BORDER)
+            .border_color(theme::border())
             .shadow_sm()
             // The viewport underneath would take this as the start of a drag.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -3987,13 +3994,13 @@ impl Viewer {
                             .w_full()
                             .h(px(4.))
                             .rounded_full()
-                            .bg(theme::SUNKEN)
+                            .bg(theme::sunken())
                             .child(
                                 div()
                                     .h_full()
                                     .w(relative(t))
                                     .rounded_full()
-                                    .bg(theme::INK),
+                                    .bg(theme::ink()),
                             ),
                     )
                     .on_mouse_down(
@@ -4010,7 +4017,7 @@ impl Viewer {
                 div()
                     .font_family(theme::MONO)
                     .text_size(px(10.5))
-                    .text_color(theme::MUTED)
+                    .text_color(theme::muted())
                     .child(format!("{} / {}", frame + 1, count)),
             )
     }
@@ -4031,8 +4038,8 @@ impl Render for Viewer {
             .flex()
             .flex_col()
             .size_full()
-            .bg(theme::PAPER)
-            .text_color(theme::TEXT)
+            .bg(theme::paper())
+            .text_color(theme::text())
             .track_focus(&self.focus)
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -4053,9 +4060,9 @@ impl Render for Viewer {
                     .flex_col()
                     .gap(px(16.))
                     .pt(px(20.))
-                    .bg(theme::SURFACE)
+                    .bg(theme::surface())
                     .border_r_1()
-                    .border_color(theme::BORDER)
+                    .border_color(theme::border())
                     .child(self.masthead())
                     .child(self.search(focused, cx))
                     // Everything under the field scrolls when the window is

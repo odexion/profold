@@ -20,6 +20,8 @@ pub struct Settings {
     /// Elements in their standard colours rather than the palette's.
     pub fixed_colors: bool,
     pub appearance: Appearance,
+    /// Drawn dark rather than light.
+    pub dark: bool,
 }
 
 impl Default for Settings {
@@ -30,6 +32,7 @@ impl Default for Settings {
             palette: Palette::Spectrum,
             fixed_colors: false,
             appearance: Appearance::default(),
+            dark: false,
         }
     }
 }
@@ -95,13 +98,16 @@ impl Settings {
                 })
                 .collect()
         };
-        let v = json!({
+        let mut v = json!({
             "momentum": self.momentum,
             "style": self.style.label(),
             "palette": self.palette.label(),
             "fixed_colours": self.fixed_colors,
             "atoms": looks,
         });
+        if self.dark {
+            v["theme"] = json!("dark");
+        }
         serde_json::to_string_pretty(&v).unwrap_or_default()
     }
 
@@ -115,6 +121,7 @@ impl Settings {
                 s.style = *st;
             }
         }
+        s.dark = v.get("theme").and_then(Value::as_str) == Some("dark");
         if let Some(b) = v.get("fixed_colours").and_then(Value::as_bool) {
             s.fixed_colors = b;
         }

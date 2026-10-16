@@ -326,9 +326,9 @@ fn model_list(fold: &SimpleFold, cx: &mut Context<Viewer>) -> impl IntoElement {
         .w(px(186.))
         .p(px(3.))
         .rounded(px(8.))
-        .bg(theme::SURFACE)
+        .bg(theme::surface())
         .border_1()
-        .border_color(theme::BORDER)
+        .border_color(theme::border())
         .shadow_md()
         .flex()
         .flex_col()
@@ -351,18 +351,18 @@ fn model_list(fold: &SimpleFold, cx: &mut Context<Viewer>) -> impl IntoElement {
                 .py(px(4.))
                 .rounded(px(5.))
                 .cursor_pointer()
-                .when(i == current, |d| d.bg(theme::SUNKEN))
-                .when(i != current, |d| d.hover(|s| s.bg(theme::SUNKEN)))
+                .when(i == current, |d| d.bg(theme::sunken()))
+                .when(i != current, |d| d.hover(|s| s.bg(theme::sunken())))
                 .child(
                     div()
                         .text_size(px(11.5))
-                        .text_color(if i == current { theme::INK } else { theme::TEXT })
+                        .text_color(if i == current { theme::ink() } else { theme::text() })
                         .child(model_label(name).to_string()),
                 )
                 .child(
                     div()
                         .text_size(px(9.))
-                        .text_color(theme::FAINT)
+                        .text_color(theme::faint())
                         .child(if ready { "on disk" } else { "downloads" }),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -391,7 +391,7 @@ pub fn options(fold: &SimpleFold, cx: &mut Context<Viewer>) -> impl IntoElement 
                 .child(
                     pill("model", format!("{model}  ▾"), open)
                         .debug_selector(|| "model".into())
-                        .when(!open, |d| d.border_1().border_color(theme::BORDER))
+                        .when(!open, |d| d.border_1().border_color(theme::border()))
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.simplefold.menu_open = !this.simplefold.menu_open;
@@ -405,7 +405,7 @@ pub fn options(fold: &SimpleFold, cx: &mut Context<Viewer>) -> impl IntoElement 
         .child(
             pill("steps", steps.to_string(), false)
                 .border_1()
-                .border_color(theme::BORDER)
+                .border_color(theme::border())
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| {
                     let f = &mut this.simplefold;
@@ -419,7 +419,7 @@ pub fn options(fold: &SimpleFold, cx: &mut Context<Viewer>) -> impl IntoElement 
         )
         .child(
             pill("plddt", "pLDDT", plddt)
-                .when(!plddt, |d| d.border_1().border_color(theme::BORDER))
+                .when(!plddt, |d| d.border_1().border_color(theme::border()))
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.simplefold.plddt = !this.simplefold.plddt;

@@ -559,13 +559,17 @@ impl Style {
     /// How far the farthest geometry washes toward the paper. A drawn figure
     /// does not fade with distance, so its outlines carry the depth instead;
     /// a painted one fades a little, as the back of a crowded scene does.
+    ///
+    /// On a dark page the wash is toward black, which the back of a dark
+    /// palette is already close to, so it is held to half.
     pub fn fog(self) -> f32 {
-        match self {
+        let fog = match self {
             Style::Soft => 0.26,
             Style::Illustrative => 0.0,
             Style::Flat => 0.2,
             Style::Studio => 0.1,
-        }
+        };
+        if crate::theme::dark() { fog * 0.5 } else { fog }
     }
 
     /// The style as the GPU shader reads it.
@@ -1104,7 +1108,26 @@ pub fn build_scene(
             *c = tone(*c);
         }
     }
+    if crate::theme::dark() {
+        for c in scene
+            .spheres
+            .iter_mut()
+            .map(|p| &mut p.color)
+            .chain(scene.capsules.iter_mut().flat_map(|c| [&mut c.ca, &mut c.cb]))
+            .chain(scene.tris.iter_mut().map(|t| &mut t.c))
+        {
+            *c = lifted(*c);
+        }
+    }
     scene
+}
+
+/// Raise the floor of a colour's lightness for a dark page, so the dark end
+/// of a ramp (magma's black, ice's navy) still stands off the paper. The
+/// order of lightness is kept, so a perceptual palette still reads in order.
+fn lifted(c: [f32; 3]) -> [f32; 3] {
+    let (h, s, l) = rgb_to_hsl(c);
+    hsl_to_rgb(h, s, 0.28 + l * 0.72)
 }
 
 fn build_primitives(paint: &Paint, repr: Repr, quality: f32) -> Scene {
@@ -1308,6 +1331,8 @@ fn with_boundary(s: &Structure) -> Option<(Structure, Vec<u32>)> {
 }
 
 fn cell_edges(cell: &crate::protein::Cell) -> Vec<Capsule> {
+    // Lifted again with every colour on a dark page, which takes it to a
+    // pale grey there.
     const EDGE: [f32; 3] = [0.30, 0.31, 0.34];
     let longest = cell.lengths().into_iter().fold(0.0f32, f32::max);
     let r = (longest * 0.0015).clamp(0.01, 0.5);
@@ -2967,7 +2992,7 @@ mod gallery {
             // Drawn large, then cut to what was drawn and centred on a 4:3
             // page of its own, so every picture sits the same way.
             let (w, h) = (2000, 2000);
-            let frame = render(&scene, &cam, w, h, crate::theme::VIEW, style);
+            let frame = render(&scene, &cam, w, h, crate::theme::view(), style);
             let mut rgba = frame.bgra;
             for px in rgba.chunks_exact_mut(4) {
                 px.swap(0, 2);
@@ -2990,5 +3015,56 @@ mod gallery {
                 .save(dir.join(format!("{name}.png")))
                 .unwrap();
         }
+    }
+
+    /// Every style over a spread of structures, on both pages, side by side:
+    /// `PROFOLD_SHEET=dir cargo test --release contact_sheet -- --ignored`.
+    #[test]
+    #[ignore]
+    fn contact_sheet() {
+        let Some(dir) = std::env::var_os("PROFOLD_SHEET") else { return };
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rows: [(&str, &str, Repr, Coloring, Palette, bool); 9] = [
+            ("haemoglobin", "4hhb.pdb.gz", Repr::Cartoon, Coloring::Chain, Palette::Spectrum, false),
+            ("gfp", "1ema.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Palette::Turbo, false),
+            ("ubq-magma", "1ubq.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Palette::Magma, false),
+            ("ubq-mako", "1ubq.pdb.gz", Repr::Tube, Coloring::Rainbow, Palette::Mako, false),
+            ("crambin", "1crn.pdb.gz", Repr::BallAndStick, Coloring::Element, Palette::Spectrum, false),
+            ("hb-fill", "4hhb.pdb.gz", Repr::Spacefill, Coloring::Chain, Palette::Greyscale, false),
+            ("caffeine", "caffeine.sdf", Repr::BallAndStick, Coloring::Element, Palette::Spectrum, false),
+            ("rocksalt", "rocksalt.cif", Repr::BallAndStick, Coloring::Element, Palette::Spectrum, true),
+            ("silicon", "silicon.vasp", Repr::BallAndStick, Coloring::Element, Palette::Ice, true),
+        ];
+        let tile = 360u32;
+        for dark in [false, true] {
+            crate::theme::set_dark(dark);
+            let mut sheet =
+                image::RgbaImage::new(tile * Style::ALL.len() as u32, tile * rows.len() as u32);
+            for (r, (_, file, repr, coloring, palette, cell)) in rows.iter().enumerate() {
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(file);
+                let s = crate::formats::load_path(&path).unwrap();
+                for (c, style) in Style::ALL.iter().enumerate() {
+                    let scene = build_scene(
+                        &s, *repr, *coloring, 1.0, *style, *palette, false, *cell,
+                        &Appearance::default(),
+                    )
+                    .stamp();
+                    let cam = Camera::frame(&s);
+                    let side = tile as usize * 2;
+                    let frame = render(&scene, &cam, side, side, crate::theme::view(), *style);
+                    let mut rgba = frame.bgra;
+                    for px in rgba.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                    let img = image::RgbaImage::from_raw(side as u32, side as u32, rgba).unwrap();
+                    let small = image::imageops::resize(&img, tile, tile, image::imageops::FilterType::Lanczos3);
+                    image::imageops::overlay(&mut sheet, &small, (c as u32 * tile) as i64, (r as u32 * tile) as i64);
+                }
+            }
+            let name = if dark { "dark.png" } else { "light.png" };
+            sheet.save(dir.join(name)).unwrap();
+        }
+        crate::theme::set_dark(false);
     }
 }

@@ -206,7 +206,7 @@ pub fn viewport(
 fn draw(scene: &Scene, cam: &Camera, width: usize, height: usize, style: Style) -> Arc<RenderImage> {
     let frame = {
         let _timer = Phase::Draw.timer();
-        render::render(scene, cam, width, height, theme::VIEW, style)
+        render::render(scene, cam, width, height, theme::view(), style)
     };
     let buffer = RgbaImage::from_raw(frame.width as u32, frame.height as u32, frame.bgra)
         .expect("frame buffer is width * height * 4");
