@@ -129,6 +129,10 @@ pub struct Chain {
     pub id: String,
     /// Indices into `Structure::residues`, in file order.
     pub residues: Vec<u32>,
+    /// A colour of its own in place of the palette's, when colouring by
+    /// chain. Kept with the structure, since chain A of one protein has
+    /// nothing to do with chain A of the next.
+    pub color: Option<[f32; 3]>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -248,6 +252,11 @@ impl Structure {
             ),
             Source::SimpleFold | Source::File | Source::Sample => return None,
         })
+    }
+
+    /// The colour chain `i` is painted when colouring by chain.
+    pub fn chain_color(&self, i: usize, palette: crate::render::Palette) -> [f32; 3] {
+        self.chains.get(i).and_then(|c| c.color).unwrap_or(palette.chain(i))
     }
 
     pub fn has_polymer(&self) -> bool {
@@ -539,6 +548,7 @@ impl Builder {
                     self.chains.push(Chain {
                         id: r.chain.to_string(),
                         residues: Vec::new(),
+                        color: None,
                     });
                     self.chains.len() - 1
                 }

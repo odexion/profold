@@ -295,6 +295,7 @@ fn assemble(parts: Vec<(String, Structure)>, id: String, title: String) -> Struc
         out.chains.push(Chain {
             id: name,
             residues: order.iter().map(|i| i + residue0).collect(),
+            color: None,
         });
         out.residues.extend(part.residues.iter().map(|r| {
             let mut r = r.clone();

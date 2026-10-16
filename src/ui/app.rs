@@ -102,8 +102,16 @@ enum Field {
     /// Rotation about the screen's x (0) or y (1) axis.
     Angle(usize),
     Zoom,
-    Hex(Species),
-    Rgb(Species),
+    Hex(Pick),
+    Rgb(Pick),
+}
+
+/// What a colour picker colours.
+#[derive(Clone, PartialEq)]
+enum Pick {
+    Species(Species),
+    /// A chain, by index.
+    Chain(usize),
 }
 
 /// The colours offered in the picker, after the species' own.
@@ -215,8 +223,10 @@ pub struct Viewer {
     /// One text field, moved to whichever value is being typed.
     editor: Entity<TextInput>,
     editing: Option<Field>,
-    /// The species whose colour picker is open.
-    picking: Option<Species>,
+    /// What the open colour picker colours.
+    picking: Option<Pick>,
+    /// Every chain listed, rather than the first few.
+    all_chains: bool,
     /// The settings as last written, so they are written only on change.
     saved: String,
 
@@ -337,6 +347,7 @@ impl Viewer {
             editor,
             editing: None,
             picking: None,
+            all_chains: false,
             saved: settings.to_json(),
             playing: false,
             play_task: None,
@@ -516,6 +527,7 @@ impl Viewer {
         self.show_cell = !polymer;
         self.stop_playing();
         self.camera = Camera::frame(&structure);
+        self.all_chains = false;
         self.structure = Some(Arc::new(structure));
         self.compare = None;
         self.fit = None;
@@ -1055,18 +1067,51 @@ impl Viewer {
                     self.camera.zoom = z.clamp(0.12, 24.0);
                 }
             }
-            Field::Hex(species) => {
+            Field::Hex(target) => {
                 if let Some(c) = settings::parse_hex(&text) {
-                    self.set_color(species, Some(c), cx);
+                    self.paint(target, Some(c), cx);
                 }
             }
-            Field::Rgb(species) => {
+            Field::Rgb(target) => {
                 if let Some(c) = settings::parse_rgb(&text) {
-                    self.set_color(species, Some(c), cx);
+                    self.paint(target, Some(c), cx);
                 }
             }
         }
         cx.notify();
+    }
+
+    /// Colour what a picker is on, or `None` to give it back its own colour.
+    fn paint(&mut self, target: Pick, color: Option<[f32; 3]>, cx: &mut Context<Self>) {
+        match target {
+            Pick::Species(species) => self.set_color(species, color, cx),
+            Pick::Chain(i) => self.set_chain_color(i, color, cx),
+        }
+    }
+
+    /// Give chain `i` its own colour, or `None` for the palette's. A colour
+    /// shows when colouring by chain, so that is switched to.
+    fn set_chain_color(&mut self, i: usize, color: Option<[f32; 3]>, cx: &mut Context<Self>) {
+        let Some(s) = self.structure.as_mut() else {
+            return;
+        };
+        if let Some(chain) = Arc::make_mut(s).chains.get_mut(i) {
+            chain.color = color;
+        }
+        if self.compare.is_none() {
+            self.coloring = Coloring::Chain;
+        }
+        self.rebuild(cx);
+    }
+
+    /// Give every chain back the palette's colour.
+    fn reset_chain_colors(&mut self, cx: &mut Context<Self>) {
+        if let Some(s) = self.structure.as_mut() {
+            for chain in &mut Arc::make_mut(s).chains {
+                chain.color = None;
+            }
+        }
+        self.rebuild(cx);
     }
 
     /// Give a species its own colour, or `None` for its element's. A colour
@@ -2979,50 +3024,78 @@ impl Viewer {
 
     /// One row per chain, in the colour that chain is painted. The dots go
     /// hollow when the model is coloured by something other than chain, so the
-    /// key never claims a colour the viewport is not using.
-    fn legend(&self, structure: &Structure) -> impl IntoElement {
+    /// key never claims a colour the viewport is not using. A dot opens a
+    /// picker for that chain's colour.
+    fn legend(&self, structure: &Structure, cx: &mut Context<Self>) -> impl IntoElement {
         let by_chain = self.coloring == Coloring::Chain;
         let palette = self.palette;
         let total = structure.chains.len();
-        let shown = total.min(6);
+        let shown = if self.all_chains { total } else { total.min(6) };
         let rest = total - shown;
+        let changed = structure.chains.iter().any(|c| c.color.is_some());
 
         div()
             .pt(px(14.))
             .flex()
             .flex_col()
-            .gap(px(7.))
+            .gap(px(5.))
             .children(
                 structure
                     .chains
                     .iter()
                     .take(shown)
                     .enumerate()
-                    .map(move |(i, chain)| {
+                    .map(|(i, chain)| {
                         let name = if chain.id.trim().is_empty() {
                             format!("Chain {}", i + 1)
                         } else {
                             format!("Chain {}", chain.id)
                         };
+                        let picking = self.picking == Some(Pick::Chain(i));
+                        let default = palette.chain(i);
                         div()
+                            .relative()
                             .flex()
                             .items_center()
-                            .gap(px(9.))
+                            .gap(px(8.))
                             .child(
                                 div()
-                                    .size(px(7.))
+                                    .id(("chain-dot", i))
+                                    .debug_selector(move || format!("chain-dot-{i}"))
+                                    .flex_none()
+                                    .size(px(13.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .rounded_full()
-                                    .when(by_chain, |d| d.bg(swatch(palette.chain(i))))
-                                    .when(!by_chain, |d| {
-                                        d.border_1().border_color(theme::faint())
-                                    }),
+                                    .cursor_pointer()
+                                    .when(picking, |d| d.border_1().border_color(theme::ink()))
+                                    .hover(|d| d.bg(theme::sunken()))
+                                    .child(
+                                        div()
+                                            .size(px(8.))
+                                            .rounded_full()
+                                            .when(by_chain, |d| {
+                                                d.bg(swatch(structure.chain_color(i, palette)))
+                                            })
+                                            .when(!by_chain, |d| {
+                                                d.border_1().border_color(theme::faint())
+                                            }),
+                                    )
+                                    .tooltip(|_, cx| {
+                                        cx.new(|_| Tip("Choose a colour".into())).into()
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.picking = Some(Pick::Chain(i));
+                                        cx.notify();
+                                    })),
                             )
                             .child(
                                 div()
                                     .flex_1()
                                     .text_size(px(11.5))
                                     .text_color(theme::text())
-                                    .child(name),
+                                    .child(name.clone()),
                             )
                             .child(
                                 div()
@@ -3031,15 +3104,61 @@ impl Viewer {
                                     .text_color(theme::faint())
                                     .child(format!("{} aa", chain.residues.len())),
                             )
+                            .when(picking, |d| {
+                                d.child(
+                                    deferred(self.color_picker(
+                                        Pick::Chain(i),
+                                        name,
+                                        default,
+                                        chain.color,
+                                        cx,
+                                    ))
+                                    .with_priority(3),
+                                )
+                            })
                     }),
             )
-            .when(rest > 0, |d| {
+            .when(rest > 0 || changed, |d| {
                 d.child(
                     div()
-                        .pl(px(16.))
+                        .pl(px(21.))
+                        .flex()
+                        .items_center()
                         .text_size(px(10.5))
-                        .text_color(theme::faint())
-                        .child(format!("and {rest} more")),
+                        .child(
+                            div()
+                                .flex_1()
+                                .when(rest > 0, |d| {
+                                    d.child(
+                                        div()
+                                            .id("more-chains")
+                                            .debug_selector(|| "more-chains".into())
+                                            .text_color(theme::faint())
+                                            .cursor_pointer()
+                                            .hover(|s| s.text_color(theme::ink()))
+                                            .child(format!("and {rest} more"))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.all_chains = true;
+                                                cx.notify();
+                                            })),
+                                    )
+                                }),
+                        )
+                        .when(changed, |d| {
+                            d.child(
+                                div()
+                                    .id("reset-chains")
+                                    .debug_selector(|| "reset-chains".into())
+                                    .text_size(px(9.5))
+                                    .text_color(theme::muted())
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(theme::ink()))
+                                    .child("Reset")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.reset_chain_colors(cx);
+                                    })),
+                            )
+                        }),
                 )
             })
     }
@@ -3107,8 +3226,8 @@ impl Viewer {
             .children(rows.into_iter().enumerate().map(|(i, (species, name, default, n))| {
                 let look = self.appearance.get(&species);
                 let shown = look.color.unwrap_or(default);
-                let picking = self.picking.as_ref() == Some(&species);
-                let pick = species.clone();
+                let picking = self.picking.as_ref() == Some(&Pick::Species(species.clone()));
+                let pick = Pick::Species(species.clone());
                 div()
                     .relative()
                     .flex()
@@ -3207,7 +3326,13 @@ impl Viewer {
                     )
                     .when(picking, |d| {
                         d.child(
-                            deferred(self.color_picker(species.clone(), name, default, look, cx))
+                            deferred(self.color_picker(
+                                Pick::Species(species.clone()),
+                                name,
+                                default,
+                                look.color,
+                                cx,
+                            ))
                                 .with_priority(3),
                         )
                     })
@@ -3264,17 +3389,17 @@ impl Viewer {
     }
 
     /// Presets, then the colour as hex and as RGB to type over. The first
-    /// preset is the species' own colour, which clears any choice.
+    /// preset is the species' or chain's own colour, which clears any choice.
     fn color_picker(
         &self,
-        species: Species,
+        target: Pick,
         name: String,
         default: [f32; 3],
-        look: Look,
+        chosen: Option<[f32; 3]>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let current = look.color.unwrap_or(default);
-        let swatch_button = |id: usize, c: [f32; 3], chosen: bool, set: Option<[f32; 3]>, species: Species| {
+        let current = chosen.unwrap_or(default);
+        let swatch_button = |id: usize, c: [f32; 3], chosen: bool, set: Option<[f32; 3]>, target: Pick| {
             div()
                 .id(("swatch", id))
                 .debug_selector(move || format!("swatch-{id}"))
@@ -3286,7 +3411,7 @@ impl Viewer {
                 .when(!chosen, |d| d.hover(|s| s.bg(theme::sunken())))
                 .child(div().size_full().rounded(px(3.)).bg(swatch(c)))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_color(species.clone(), set, cx)
+                    this.paint(target.clone(), set, cx)
                 }))
         };
         let label = |t: &'static str| {
@@ -3347,11 +3472,11 @@ impl Viewer {
                     .flex_wrap()
                     .gap(px(5.))
                     .child(
-                        swatch_button(0, default, look.color.is_none(), None, species.clone())
+                        swatch_button(0, default, chosen.is_none(), None, target.clone())
                             .tooltip(|_, cx| cx.new(|_| Tip("Its own colour".into())).into()),
                     )
                     .children(SWATCHES.iter().enumerate().map(|(k, c)| {
-                        swatch_button(k + 1, *c, look.color == Some(*c), Some(*c), species.clone())
+                        swatch_button(k + 1, *c, chosen == Some(*c), Some(*c), target.clone())
                     })),
             )
             .child(
@@ -3370,7 +3495,7 @@ impl Viewer {
                     )
                     .child(self.field(
                         "picker-hex",
-                        Field::Hex(species.clone()),
+                        Field::Hex(target.clone()),
                         settings::hex(current),
                         150.,
                         cx,
@@ -3385,7 +3510,7 @@ impl Viewer {
                     .child(div().size(px(14.)))
                     .child(self.field(
                         "picker-rgb",
-                        Field::Rgb(species),
+                        Field::Rgb(target),
                         settings::rgb(current),
                         150.,
                         cx,
@@ -3710,7 +3835,7 @@ impl Viewer {
                         .child(blurb),
                 )
             })
-            .child(self.legend(structure))
+            .child(self.legend(structure, cx))
             .child(self.species_table(structure, cx))
             .child(
                 div()
@@ -4222,6 +4347,36 @@ mod ui_tests {
             // The inked styles tone colours; the scene holds the toned one.
             view.update(cx, |this, _| this.style.inked())
         });
+    }
+
+    #[gpui::test]
+    fn picking_a_colour_paints_the_chain(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let bytes = include_bytes!("../../samples/4hhb.pdb.gz").to_vec();
+            this.show(formats::load_bytes("4hhb.pdb.gz", bytes).unwrap(), cx);
+            this.coloring = Coloring::Rainbow;
+        });
+        cx.run_until_parked();
+        click(cx, "chain-dot-1");
+        assert!(view.update(cx, |this, _| this.picking == Some(Pick::Chain(1))));
+        click(cx, "swatch-1");
+        let (coloring, chain) = view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            (this.coloring, s.chains[1].color)
+        });
+        // A chain's colour shows only when colouring by chain.
+        assert_eq!(coloring, Coloring::Chain);
+        assert_eq!(chain, Some(SWATCHES[0]));
+
+        view.update(cx, |this, cx| {
+            this.picking = None;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        click(cx, "reset-chains");
+        let chain = view.update(cx, |this, _| this.structure.as_ref().unwrap().chains[1].color);
+        assert_eq!(chain, None);
     }
 
     fn hit(kind: Kind, id: &str, title: &str) -> Hit {

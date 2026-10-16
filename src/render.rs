@@ -925,13 +925,13 @@ fn residue_color(
 ) -> [f32; 3] {
     let r = &s.residues[residue];
     match coloring {
-        Coloring::Pair => s.tint.unwrap_or(palette.chain(r.chain as usize)),
+        Coloring::Pair => s.tint.unwrap_or(s.chain_color(r.chain as usize, palette)),
         Coloring::Deviation => match s.deviation.get(residue) {
             Some(d) if *d >= 0.0 => deviation_color(*d, palette),
             // No counterpart to compare against.
             _ => [0.74, 0.73, 0.71],
         },
-        Coloring::Chain => palette.chain(r.chain as usize),
+        Coloring::Chain => s.chain_color(r.chain as usize, palette),
         Coloring::Rainbow => palette.ramp(residue as f32 / (s.residues.len().max(2) - 1) as f32),
         // pLDDT keeps AlphaFold's own bands: they are a published convention
         // and a reader knows them by sight.
@@ -939,7 +939,7 @@ fn residue_color(
             if s.has_confidence {
                 plddt_color(r.b)
             } else {
-                palette.chain(r.chain as usize)
+                s.chain_color(r.chain as usize, palette)
             }
         }
         Coloring::Element => [0.42, 0.44, 0.47],
