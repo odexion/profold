@@ -2461,25 +2461,38 @@ impl Viewer {
     }
 
     /// A small button on a row with a colour of its own, giving it back
-    /// the palette's.
+    /// the palette's. It stands in the margin left of the row's dot, so the
+    /// buttons of the chains and of the atoms line up whatever their names.
     fn unpick(&self, row: usize, target: Pick, cx: &mut Context<Self>) -> impl IntoElement {
         let id = match target {
             Pick::Chain(_) => "chain-unpick",
             Pick::Species(_) => "species-unpick",
         };
-        div()
+        let button = div()
             .id((id, row))
             .debug_selector(move || format!("{id}-{row}"))
             .flex_none()
-            .px(px(3.))
-            .rounded(px(3.))
+            .size(px(16.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
             .text_size(px(11.))
+            .line_height(px(16.))
             .text_color(theme::faint())
             .cursor_pointer()
             .hover(|s| s.text_color(theme::ink()).bg(theme::sunken()))
             .child("↺")
             .tooltip(|_, cx| cx.new(|_| Tip("Back to the palette's colour".into())).into())
-            .on_click(cx.listener(move |this, _, _, cx| this.paint(target.clone(), None, cx)))
+            .on_click(cx.listener(move |this, _, _, cx| this.paint(target.clone(), None, cx)));
+        div()
+            .absolute()
+            .left(px(-20.))
+            .top_0()
+            .bottom_0()
+            .flex()
+            .items_center()
+            .child(button)
     }
 
     fn camera_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3267,7 +3280,6 @@ impl Viewer {
                                     .text_color(theme::text())
                                     .child(name.clone()),
                             )
-                            .when(chain.color.is_some(), |d| d.child(self.unpick(i, Pick::Chain(i), cx)))
                             .child(
                                 div()
                                     .font_family(theme::MONO)
@@ -3275,6 +3287,7 @@ impl Viewer {
                                     .text_color(theme::faint())
                                     .child(format!("{} aa", chain.residues.len())),
                             )
+                            .when(chain.color.is_some(), |d| d.child(self.unpick(i, Pick::Chain(i), cx)))
                             .when(picking, |d| {
                                 d.child(
                                     deferred(self.color_picker(
@@ -3452,15 +3465,17 @@ impl Viewer {
                             )
                             .child(
                                 div()
+                                    .flex_1()
+                                    .overflow_hidden()
                                     .text_size(px(11.5))
                                     .text_color(theme::text())
                                     .whitespace_nowrap()
                                     .child(name.clone()),
                             )
-                            .when(look.color.is_some(), |d| {
-                                d.child(self.unpick(i, Pick::Species(species.clone()), cx))
-                            }),
                     )
+                    .when(look.color.is_some(), |d| {
+                        d.child(self.unpick(i, Pick::Species(species.clone()), cx))
+                    })
                     .child(
                         div()
                             .w(px(96.))
