@@ -74,6 +74,15 @@ impl Appearance {
         self.looks.clear();
     }
 
+    /// Give every species back its element's colour, keeping sizes and
+    /// opacities.
+    pub fn clear_colors(&mut self) {
+        for look in self.looks.values_mut() {
+            look.color = None;
+        }
+        self.looks.retain(|_, look| *look != Look::default());
+    }
+
     /// Every species that differs from the default, for saving.
     pub fn entries(&self) -> impl Iterator<Item = (&Species, &Look)> {
         self.looks.iter()

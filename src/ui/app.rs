@@ -1114,6 +1114,39 @@ impl Viewer {
         self.rebuild(cx);
     }
 
+    /// The chains and species in view that keep a colour of their own,
+    /// whatever the palette, by name.
+    fn own_colors(&self) -> Vec<String> {
+        let Some(s) = &self.structure else {
+            return Vec::new();
+        };
+        let chains = s.chains.iter().enumerate().filter(|(_, c)| c.color.is_some()).map(|(i, c)| {
+            if c.id.trim().is_empty() {
+                format!("Chain {}", i + 1)
+            } else {
+                format!("Chain {}", c.id)
+            }
+        });
+        let elements = s
+            .composition()
+            .into_iter()
+            .filter(|(e, _)| e.is_known())
+            .filter(|(e, _)| self.appearance.get(&Species::Element(e.0)).color.is_some())
+            .map(|(e, _)| e.symbol().to_string());
+        let kinds = s
+            .kinds
+            .iter()
+            .filter(|k| self.appearance.get(&Species::Kind((*k).clone())).color.is_some())
+            .map(|k| format!("Type {k}"));
+        chains.chain(elements).chain(kinds).collect()
+    }
+
+    /// Give every chain and species back the palette's colour.
+    fn reset_colors(&mut self, cx: &mut Context<Self>) {
+        self.appearance.clear_colors();
+        self.reset_chain_colors(cx);
+    }
+
     /// Give a species its own colour, or `None` for its element's. A colour
     /// shows when colouring by element, or on the ligands beside a polymer;
     /// without ligands, colouring by element is switched to.
@@ -1557,6 +1590,17 @@ fn tab(id: &'static str, text: &'static str, open: bool) -> gpui::Stateful<gpui:
 }
 
 /// The card a menu is drawn on, hanging under its title.
+/// "Chain B, C and O keep their own colours", or nothing when none do.
+fn kept_note(names: &[String]) -> Option<String> {
+    let list = match names {
+        [] => return None,
+        [one] => return Some(format!("{one} keeps its own colour")),
+        [rest @ .., last] if names.len() <= 4 => format!("{} and {last}", rest.join(", ")),
+        _ => format!("{} and {} more", names[..3].join(", "), names.len() - 3),
+    };
+    Some(format!("{list} keep their own colours"))
+}
+
 pub(crate) fn menu(width: f32) -> gpui::Div {
     div()
         .absolute()
@@ -2260,7 +2304,41 @@ impl Viewer {
                 cx.notify();
             }))
             .child(top)
-            .child(div().flex().items_start().gap(px(4.)).child(left).child(right));
+            .child(div().flex().items_start().gap(px(4.)).child(left).child(right))
+            .when_some(kept_note(&self.own_colors()), |d, note| {
+                // Picked colours outlast a change of palette; say which, so
+                // the ones that did not move are not a surprise.
+                d.child(
+                    div()
+                        .mt(px(6.))
+                        .mx(px(8.))
+                        .pt(px(8.))
+                        .pb(px(2.))
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(10.5))
+                                .text_color(theme::muted())
+                                .child(note),
+                        )
+                        .child(
+                            div()
+                                .id("reset-colours")
+                                .debug_selector(|| "reset-colours".into())
+                                .text_size(px(10.5))
+                                .text_color(theme::muted())
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(theme::ink()))
+                                .child("Reset")
+                                .on_click(cx.listener(|this, _, _, cx| this.reset_colors(cx))),
+                        ),
+                )
+            });
         // Fixed colours leave the palette nothing to do, so it says so by
         // going pale and staying shut.
         let fixed = self.fixed_colors;
@@ -3069,6 +3147,9 @@ impl Viewer {
                                     .justify_center()
                                     .rounded_full()
                                     .cursor_pointer()
+                                    .when(chain.color.is_some() && !picking, |d| {
+                                        d.border_1().border_color(theme::faint())
+                                    })
                                     .when(picking, |d| d.border_1().border_color(theme::ink()))
                                     .hover(|d| d.bg(theme::sunken()))
                                     .child(
@@ -3255,6 +3336,9 @@ impl Viewer {
                                     .justify_center()
                                     .rounded_full()
                                     .cursor_pointer()
+                                    .when(look.color.is_some() && !picking, |d| {
+                                        d.border_1().border_color(theme::faint())
+                                    })
                                     .when(picking, |d| d.border_1().border_color(theme::ink()))
                                     .hover(|d| d.bg(theme::sunken()))
                                     .child(
@@ -4377,6 +4461,37 @@ mod ui_tests {
         click(cx, "reset-chains");
         let chain = view.update(cx, |this, _| this.structure.as_ref().unwrap().chains[1].color);
         assert_eq!(chain, None);
+    }
+
+    #[test]
+    fn the_palette_names_what_keeps_its_colour() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(kept_note(&[]), None);
+        assert_eq!(kept_note(&names(&["C"])).unwrap(), "C keeps its own colour");
+        assert_eq!(
+            kept_note(&names(&["Chain B", "C", "O"])).unwrap(),
+            "Chain B, C and O keep their own colours"
+        );
+        assert_eq!(
+            kept_note(&names(&["A", "B", "C", "D", "E"])).unwrap(),
+            "A, B, C and 2 more keep their own colours"
+        );
+    }
+
+    #[gpui::test]
+    fn a_palette_change_keeps_picked_colours_until_reset(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        view.update(cx, |this, cx| this.set_color(Species::Element(6), Some(SWATCHES[0]), cx));
+        click(cx, "palette-button");
+        click(cx, "palette-Viridis");
+        let carbon = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.appearance.get(&Species::Element(6)).color)
+        };
+        assert_eq!(carbon(&view, cx), Some(SWATCHES[0]));
+
+        click(cx, "palette-button");
+        click(cx, "reset-colours");
+        assert_eq!(carbon(&view, cx), None);
     }
 
     fn hit(kind: Kind, id: &str, title: &str) -> Hit {
