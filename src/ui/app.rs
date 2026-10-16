@@ -242,6 +242,10 @@ pub struct Viewer {
 
     copied: bool,
     copy_reset: Option<Task<()>>,
+    /// What kept its own colour through the last change of palette, said
+    /// for a moment beside the palette button.
+    kept: Option<String>,
+    kept_task: Option<Task<()>>,
     busy: Option<SharedString>,
     progress: Option<job::Progress>,
     log: Vec<SharedString>,
@@ -357,6 +361,8 @@ impl Viewer {
             simplefold: SimpleFold::new(),
             copied: false,
             copy_reset: None,
+            kept: None,
+            kept_task: None,
             busy: None,
             progress: None,
             log: Vec::new(),
@@ -1143,6 +1149,7 @@ impl Viewer {
 
     /// Give every chain and species back the palette's colour.
     fn reset_colors(&mut self, cx: &mut Context<Self>) {
+        self.kept = None;
         self.appearance.clear_colors();
         self.reset_chain_colors(cx);
     }
@@ -1302,6 +1309,23 @@ impl Viewer {
                     }
                     Err(e) => this.error = Some(format!("{e}").into()),
                 }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// After a change of palette, say for a few seconds what kept its own
+    /// colour through it, so the colours that did not move are no surprise.
+    fn say_kept(&mut self, cx: &mut Context<Self>) {
+        self.kept = kept_note(&self.own_colors());
+        if self.kept.is_none() {
+            self.kept_task = None;
+            return;
+        }
+        self.kept_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(5)).await;
+            let _ = this.update(cx, |this, cx| {
+                this.kept = None;
                 cx.notify();
             });
         }));
@@ -2255,6 +2279,7 @@ impl Viewer {
                     this.palette = p;
                     this.open = None;
                     this.rebuild(cx);
+                    this.say_kept(cx);
                 }))
                 .into_any_element()
         };
@@ -2391,6 +2416,70 @@ impl Viewer {
                     })),
             )
             .when(open && !fixed, |d| d.child(deferred(list).with_priority(2)))
+            .when_some(self.kept.clone().filter(|_| !open), |d, note| {
+                d.child(
+                    deferred(
+                        div()
+                            .id("kept-notice")
+                            .debug_selector(|| "kept-notice".into())
+                            .absolute()
+                            .bottom(px(34.))
+                            .left_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .px(px(10.))
+                            .py(px(6.))
+                            .rounded(px(8.))
+                            .bg(theme::surface())
+                            .border_1()
+                            .border_color(theme::border())
+                            .shadow_md()
+                            .whitespace_nowrap()
+                            .on_mouse_down(MouseButton::Left, swallow)
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme::text())
+                                    .child(note),
+                            )
+                            .child(
+                                div()
+                                    .id("kept-reset")
+                                    .debug_selector(|| "kept-reset".into())
+                                    .text_size(px(11.))
+                                    .text_color(theme::ink())
+                                    .cursor_pointer()
+                                    .hover(|s| s.underline())
+                                    .child("Reset")
+                                    .on_click(cx.listener(|this, _, _, cx| this.reset_colors(cx))),
+                            ),
+                    )
+                    .with_priority(2),
+                )
+            })
+    }
+
+    /// A small button on a row with a colour of its own, giving it back
+    /// the palette's.
+    fn unpick(&self, row: usize, target: Pick, cx: &mut Context<Self>) -> impl IntoElement {
+        let id = match target {
+            Pick::Chain(_) => "chain-unpick",
+            Pick::Species(_) => "species-unpick",
+        };
+        div()
+            .id((id, row))
+            .debug_selector(move || format!("{id}-{row}"))
+            .flex_none()
+            .px(px(3.))
+            .rounded(px(3.))
+            .text_size(px(11.))
+            .text_color(theme::faint())
+            .cursor_pointer()
+            .hover(|s| s.text_color(theme::ink()).bg(theme::sunken()))
+            .child("↺")
+            .tooltip(|_, cx| cx.new(|_| Tip("Back to the palette's colour".into())).into())
+            .on_click(cx.listener(move |this, _, _, cx| this.paint(target.clone(), None, cx)))
     }
 
     fn camera_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3178,6 +3267,7 @@ impl Viewer {
                                     .text_color(theme::text())
                                     .child(name.clone()),
                             )
+                            .when(chain.color.is_some(), |d| d.child(self.unpick(i, Pick::Chain(i), cx)))
                             .child(
                                 div()
                                     .font_family(theme::MONO)
@@ -3366,7 +3456,10 @@ impl Viewer {
                                     .text_color(theme::text())
                                     .whitespace_nowrap()
                                     .child(name.clone()),
-                            ),
+                            )
+                            .when(look.color.is_some(), |d| {
+                                d.child(self.unpick(i, Pick::Species(species.clone()), cx))
+                            }),
                     )
                     .child(
                         div()
@@ -4488,9 +4581,31 @@ mod ui_tests {
             view.update(cx, |this, _| this.appearance.get(&Species::Element(6)).color)
         };
         assert_eq!(carbon(&view, cx), Some(SWATCHES[0]));
+        // Said straight away, with a way back.
+        assert!(view.update(cx, |this, _| this.kept.is_some()));
+        click(cx, "kept-reset");
+        assert_eq!(carbon(&view, cx), None);
+        assert!(view.update(cx, |this, _| this.kept.is_none()));
 
+        // A palette change with nothing picked says nothing.
+        click(cx, "palette-button");
+        click(cx, "palette-Magma");
+        assert!(view.update(cx, |this, _| this.kept.is_none()));
+
+        // The menu's own Reset, and a row's own.
+        view.update(cx, |this, cx| this.set_color(Species::Element(6), Some(SWATCHES[0]), cx));
         click(cx, "palette-button");
         click(cx, "reset-colours");
+        assert_eq!(carbon(&view, cx), None);
+        click(cx, "palette-button");
+        view.update(cx, |this, cx| this.set_color(Species::Element(6), Some(SWATCHES[0]), cx));
+        cx.run_until_parked();
+        let row = view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            s.composition().iter().position(|(e, _)| e.0 == 6).unwrap()
+        });
+        let selector: &'static str = format!("species-unpick-{row}").leak();
+        click(cx, selector);
         assert_eq!(carbon(&view, cx), None);
     }
 
