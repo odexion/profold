@@ -332,7 +332,7 @@ impl Workspace {
             .hover(|s| s.bg(theme::border()).text_color(theme::ink()))
             .on_mouse_down(MouseButton::Left, swallow)
             .tooltip(move |_, cx| {
-                cx.new(|_| Tip(if dark { "Light mode" } else { "Dark mode" }.into())).into()
+                Tip::new(if dark { "Light mode" } else { "Dark mode" }).view(cx)
             })
             .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx)))
             .child(if dark { "☀" } else { "☾" })
@@ -901,7 +901,7 @@ impl Workspace {
                     .cursor_pointer()
                     .when(open, |d| d.bg(theme::border()).text_color(theme::ink()))
                     .hover(|s| s.bg(theme::border()).text_color(theme::ink()))
-                    .tooltip(|_, cx| cx.new(|_| crate::ui::app::Tip(format!("New tab  {}", theme::keys("⌘T")).into())).into())
+                    .tooltip(|_, cx| Tip::new("New tab").keys("⌘T").view(cx))
                     .on_mouse_down(MouseButton::Left, swallow)
                     .on_click(cx.listener(|this, _, window, cx| {
                         if cfg!(feature = "simplefold") {

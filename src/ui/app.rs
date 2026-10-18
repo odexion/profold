@@ -3116,19 +3116,77 @@ fn pill_keyed(
         .child(label.into())
 }
 
-/// A one-line label on a dark ground, for hover hints.
-pub(crate) struct Tip(pub(crate) SharedString);
+/// A hover hint: a small card like the menus, naming the thing, with its
+/// shortcut in a keycap and, where the name is not enough, a quieter line
+/// under it.
+pub(crate) struct Tip {
+    label: SharedString,
+    keys: Option<SharedString>,
+    hint: Option<SharedString>,
+}
+
+impl Tip {
+    pub(crate) fn new(label: impl Into<SharedString>) -> Self {
+        Tip { label: label.into(), keys: None, hint: None }
+    }
+
+    /// The shortcut, written the Mac way and spelled out elsewhere.
+    pub(crate) fn keys(mut self, mac: &str) -> Self {
+        self.keys = Some(theme::keys(mac).into());
+        self
+    }
+
+    pub(crate) fn hint(mut self, hint: impl Into<SharedString>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    /// As `.tooltip` wants it.
+    pub(crate) fn view(self, cx: &mut App) -> gpui::AnyView {
+        cx.new(|_| self).into()
+    }
+}
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
-            .px(px(7.))
-            .py(px(3.))
-            .rounded(px(5.))
-            .bg(theme::ink())
-            .text_size(px(10.5))
-            .text_color(theme::on_ink())
-            .child(self.0.clone())
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .max_w(px(240.))
+            .px(px(8.))
+            .py(px(5.))
+            .rounded(px(6.))
+            .bg(theme::surface())
+            .border_1()
+            .border_color(theme::border())
+            .shadow_md()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_size(px(11.5))
+                    .text_color(theme::text())
+                    .child(self.label.clone())
+                    .children(self.keys.clone().map(|k| {
+                        div()
+                            .px(px(4.))
+                            .rounded(px(3.))
+                            .bg(theme::sunken())
+                            .border_1()
+                            .border_color(theme::border())
+                            .font_family(theme::MONO)
+                            .text_size(px(10.))
+                            .text_color(theme::muted())
+                            .child(k)
+                    })),
+            )
+            .children(
+                self.hint
+                    .clone()
+                    .map(|h| div().text_size(px(10.5)).text_color(theme::muted()).child(h)),
+            )
     }
 }
 
@@ -4017,7 +4075,7 @@ impl Viewer {
                     .shadow_sm()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::sunken()))
-                    .tooltip(|_, cx| cx.new(|_| Tip("Palette".into())).into())
+                    .tooltip(|_, cx| Tip::new("Palette").view(cx))
                     .child(div().p(px(3.)).child(swatch_strip(current)))
                     .child(
                         div()
@@ -4102,7 +4160,7 @@ impl Viewer {
             .cursor_pointer()
             .hover(|s| s.text_color(theme::ink()).bg(theme::sunken()))
             .child("↺")
-            .tooltip(|_, cx| cx.new(|_| Tip("Back to the palette's colour".into())).into())
+            .tooltip(|_, cx| Tip::new("Reset colour").hint("Back to the palette's colour").view(cx))
             .on_click(cx.listener(move |this, _, _, cx| this.paint(target.clone(), None, cx)));
         div()
             .absolute()
@@ -4933,7 +4991,7 @@ impl Viewer {
                         .cursor_pointer()
                         .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
                         .child("×")
-                        .tooltip(|_, cx| cx.new(|_| Tip("Show the first alone".into())).into())
+                        .tooltip(|_, cx| Tip::new("Close the comparison").hint("Show the first alone").view(cx))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(|this, _, _, cx| this.remove_overlay(cx))),
                 ),
@@ -5239,7 +5297,7 @@ impl Viewer {
                                 .cursor_pointer()
                                 .hover(|d| d.bg(theme::sunken()))
                                 .child(div().size(px(8.)).rounded_full().when_some(color, |d, c| d.bg(swatch(c))).when(color.is_none(), |d| d.border_1().border_color(theme::faint())))
-                                .tooltip(|_, cx| cx.new(|_| Tip("Its elements' colours, or one of its own".into())).into())
+                                .tooltip(|_, cx| Tip::new("Colour").hint("Its elements' colours, or one of its own").view(cx))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if let Some(l) = this.layers.get_mut(i) {
                                         let at = LAYER_COLORS.iter().position(|c| *c == l.color).unwrap_or(0);
@@ -5497,7 +5555,7 @@ impl Viewer {
                                             }),
                                     )
                                     .tooltip(|_, cx| {
-                                        cx.new(|_| Tip("Choose a colour".into())).into()
+                                        Tip::new("Choose a colour").view(cx)
                                     })
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.picking = Some(Pick::Chain(i));
@@ -5668,7 +5726,7 @@ impl Viewer {
                                     .rounded_full()
                                     .bg(swatch(paint.map(|p| p.color()).unwrap_or(carbon))),
                             )
-                            .tooltip(|_, cx| cx.new(|_| Tip("Choose a colour".into())).into())
+                            .tooltip(|_, cx| Tip::new("Choose a colour").view(cx))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.picking = Some(pick.clone());
                                 cx.notify();
@@ -5710,7 +5768,7 @@ impl Viewer {
                                     .cursor_pointer()
                                     .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
                                     .child("Site")
-                                    .tooltip(|_, cx| cx.new(|_| Tip("Its binding site".into())).into())
+                                    .tooltip(|_, cx| Tip::new("Its binding site").view(cx))
                                     .on_click(cx.listener(move |this, _, _, cx| this.next_site(&name, cx)))
                             }),
                     )
@@ -5862,7 +5920,7 @@ impl Viewer {
                                             }),
                                     )
                                     .tooltip(|_, cx| {
-                                        cx.new(|_| Tip("Choose a colour".into())).into()
+                                        Tip::new("Choose a colour").view(cx)
                                     })
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.picking = Some(pick.clone());
@@ -6050,13 +6108,12 @@ impl Viewer {
                     .child(
                         option("element-colours-standard", "Standard", standard, true).tooltip(
                             |_, cx| {
-                                cx.new(|_| Tip("Carbon grey, oxygen red, nitrogen blue".into()))
-                                    .into()
+                                Tip::new("Carbon grey, oxygen red, nitrogen blue").view(cx)
                             },
                         ),
                     )
                     .child(option("element-colours-palette", "Palette", !standard, false).tooltip(
-                        |_, cx| cx.new(|_| Tip("From the palette, most common first".into())).into(),
+                        |_, cx| Tip::new("From the palette, most common first").view(cx),
                     )),
             )
     }
@@ -6146,7 +6203,7 @@ impl Viewer {
                     .gap(px(5.))
                     .child(
                         swatch_button(0, default, chosen.is_none(), None, target.clone())
-                            .tooltip(|_, cx| cx.new(|_| Tip("Its own colour".into())).into()),
+                            .tooltip(|_, cx| Tip::new("Its own colour").view(cx)),
                     )
                     .children(SWATCHES.iter().enumerate().map(|(k, c)| {
                         swatch_button(k + 1, *c, chosen == Some(*c), Some(*c), target.clone())
@@ -6215,7 +6272,7 @@ impl Viewer {
             .flex()
             .items_center()
             .cursor_pointer()
-            .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone())).into())
+            .tooltip(move |_, cx| Tip::new(tip.clone()).view(cx))
             .child(
                 canvas(
                     move |bounds, _, _| {
@@ -6485,7 +6542,7 @@ impl Viewer {
                                 .when(!on && near, |d| d.bg(theme::sunken()).text_color(theme::ink()))
                                 .when(!on && !near, |d| d.text_color(theme::muted()))
                                 .child(residue_letter(r).to_string())
-                                .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone())).into())
+                                .tooltip(move |_, cx| Tip::new(tip.clone()).view(cx))
                                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                                     if *hovered {
                                         this.set_seq_hover(Some(ri), cx);
@@ -7227,7 +7284,7 @@ impl Viewer {
                                     )
                                     .child(format!("{n} {}", kind.label(n)))
                                     .tooltip(move |_, cx| {
-                                        cx.new(|_| Tip(if shown { "Hide these" } else { "Show these" }.into())).into()
+                                        Tip::new(if shown { "Hide these" } else { "Show these" }).view(cx)
                                     })
                                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_contacts(kind, cx))),
                             )
