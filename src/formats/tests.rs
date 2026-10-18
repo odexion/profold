@@ -417,14 +417,9 @@ fn each_base_ends_at_the_atom_that_pairs() {
     assert_eq!(s.atoms[s.residues[1].base.unwrap() as usize].residue, 1);
 }
 
-/// 7BHO, a DNA origami of 14,450 nucleotides, froze the app: every base was
-/// looked for among all the atoms, while building the cartoon and again on
-/// each move of the pointer. Thousands of nucleotides draw and pick at once.
-#[test]
-fn a_large_dna_cartoon_builds_and_picks_at_once() {
-    use crate::render::{build_scene, pick, Appearance, Camera, Coloring, Palette, Repr, Style};
-    // The three nucleotides, copied 1,700 times 40 Å apart on a grid in each
-    // of four chains: 20,400 nucleotides, more than 7BHO has.
+/// The three nucleotides, copied 1,700 times 40 Å apart on a grid in each of
+/// four chains: 20,400 nucleotides, more than 7BHO has.
+fn many_nucleotides() -> String {
     let mut text = String::new();
     for (c, chain) in ["A", "B", "C", "D"].iter().enumerate() {
         for copy in 0..1700 {
@@ -436,7 +431,16 @@ fn a_large_dna_cartoon_builds_and_picks_at_once() {
             }
         }
     }
-    let s = read(&text, Format::Pdb);
+    text
+}
+
+/// 7BHO, a DNA origami of 14,450 nucleotides, froze the app: every base was
+/// looked for among all the atoms, while building the cartoon and again on
+/// each move of the pointer. Thousands of nucleotides draw and pick at once.
+#[test]
+fn a_large_dna_cartoon_builds_and_picks_at_once() {
+    use crate::render::{build_scene, pick, Appearance, Camera, Coloring, Palette, Repr, Style};
+    let s = read(&many_nucleotides(), Format::Pdb);
     assert_eq!(s.residues.iter().filter(|r| r.base.is_some()).count(), 20400);
     let t = std::time::Instant::now();
     let scene = build_scene(&s, Repr::Cartoon, Coloring::Chain, 1.0, Style::Soft, Palette::Spectrum, false, false, &Appearance::default());
@@ -447,6 +451,44 @@ fn a_large_dna_cartoon_builds_and_picks_at_once() {
     }
     // Searching every atom for every base took over ten seconds here.
     assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+}
+
+/// Building a biological assembly copies residue after residue, and each
+/// residue's atoms were once looked for among all the atoms: a large entry's
+/// assembly took minutes.
+#[test]
+fn a_large_assembly_builds_at_once() {
+    use crate::assembly::{build, Assembly, Part, IDENTITY};
+    let s = read(&many_nucleotides(), Format::Pdb);
+    let mut moved = IDENTITY;
+    moved[0][3] = 1000.0;
+    let chains: Vec<String> = s.chains.iter().map(|c| c.id.clone()).collect();
+    let a = Assembly { id: "1".into(), name: String::new(), parts: vec![Part { chains, ops: vec![IDENTITY, moved] }] };
+    let t = std::time::Instant::now();
+    let built = build(&s, &a);
+    assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+    // Each copy has every atom, in file order.
+    let n = s.atoms.len();
+    assert_eq!(built.atoms.len(), 2 * n);
+    assert_eq!(built.residues.len(), 2 * s.residues.len());
+    assert!((0..n).all(|i| built.atoms[i].pos == s.atoms[i].pos && built.atoms[i].name() == s.atoms[i].name()));
+    assert!((0..n).all(|i| built.atoms[n + i].pos[0] == s.atoms[i].pos[0] + 1000.0));
+}
+
+/// The atoms of each residue in one pass are those found one residue at a
+/// time, in file order, even where a residue's atoms are not side by side.
+#[test]
+fn atoms_by_residue_are_each_residues_atoms() {
+    let mut s = read(CGC, Format::Pdb);
+    // The last atom of the first residue handed to the third.
+    s.atoms[15].residue = 2;
+    let by = s.atoms_by_residue();
+    for r in 0..s.residues.len() + 2 {
+        let one: Vec<u32> = s.residue_atoms(r).into_iter().map(|i| i as u32).collect();
+        assert_eq!(by.of(r), &one[..], "residue {r}");
+    }
+    assert_eq!(*by.of(2).last().unwrap(), 56);
+    assert!(by.of(2).contains(&15));
 }
 
 #[test]

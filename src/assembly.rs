@@ -190,6 +190,7 @@ pub fn build(s: &Structure, a: &Assembly) -> Structure {
     // only within one copy of a part.
     let chain_of_atom: Vec<usize> = s.atoms.iter().map(|a| s.residues[a.residue as usize].chain as usize).collect();
     let mut between: Vec<[u32; 2]> = Vec::new();
+    let atoms_of = s.atoms_by_residue();
     for &[x, y] in &s.bonds {
         let (cx, cy) = (chain_of_atom[x as usize], chain_of_atom[y as usize]);
         if cx == cy {
@@ -215,12 +216,11 @@ pub fn build(s: &Structure, a: &Assembly) -> Structure {
                     let new_r = out.residues.len() as u32;
                     let mut res = old.clone();
                     res.chain = new_chain;
-                    let atoms: Vec<usize> = s.residue_atoms(r as usize);
-                    for &i in &atoms {
-                        let mut atom = s.atoms[i];
+                    for &i in atoms_of.of(r as usize) {
+                        let mut atom = s.atoms[i as usize];
                         atom.pos = apply(op, atom.pos);
                         atom.residue = new_r;
-                        index.insert(i as u32, out.atoms.len() as u32);
+                        index.insert(i, out.atoms.len() as u32);
                         out.atoms.push(atom);
                     }
                     let remap = |x: Option<u32>| x.and_then(|x| index.get(&x).copied());

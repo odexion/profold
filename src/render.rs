@@ -1947,11 +1947,12 @@ pub fn build_site(
         return Scene::default();
     }
     let mut keep = vec![false; s.atoms.len()];
+    let atoms_of = s.atoms_by_residue();
     for &r in residues {
         let Some(res) = s.residues.get(r) else { continue };
         let backbone = [res.n, res.c, res.o];
-        for i in s.residue_atoms(r) {
-            keep[i] = !backbone.contains(&Some(i as u32));
+        for &i in atoms_of.of(r) {
+            keep[i as usize] = !backbone.contains(&Some(i));
         }
     }
     let paint = Paint {

@@ -110,8 +110,9 @@ pub fn between(s: &Structure, ligand: usize, around: &[usize]) -> Vec<Contact> {
         bonded[a as usize].push(b as usize);
         bonded[b as usize].push(a as usize);
     }
-    let own = s.residue_atoms(ligand);
-    let others: Vec<usize> = around.iter().flat_map(|&r| s.residue_atoms(r)).collect();
+    let atoms_of = s.atoms_by_residue();
+    let own: Vec<usize> = atoms_of.of(ligand).iter().map(|&i| i as usize).collect();
+    let others: Vec<usize> = around.iter().flat_map(|&r| atoms_of.of(r)).map(|&i| i as usize).collect();
     let mut out = Vec::new();
     for &a in &own {
         let (pa, ea) = (s.atoms[a].pos, s.atoms[a].element);

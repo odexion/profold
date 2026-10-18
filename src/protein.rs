@@ -236,6 +236,23 @@ impl LigandPaint {
     }
 }
 
+/// Each residue's atoms, by `Structure::atoms_by_residue`.
+#[derive(Clone, Debug, Default)]
+pub struct ResidueAtoms {
+    start: Vec<u32>,
+    atoms: Vec<u32>,
+}
+
+impl ResidueAtoms {
+    /// The atoms of residue `r`, in file order: none for one it has not.
+    pub fn of(&self, r: usize) -> &[u32] {
+        match (self.start.get(r), self.start.get(r + 1)) {
+            (Some(&a), Some(&b)) => &self.atoms[a as usize..b as usize],
+            _ => &[],
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Structure {
     pub id: String,
@@ -471,9 +488,30 @@ impl Structure {
             .collect()
     }
 
-    /// The atoms of a residue.
+    /// The atoms of a residue. It looks through every atom: anything that
+    /// asks for residue after residue takes `atoms_by_residue` instead.
     pub fn residue_atoms(&self, residue: usize) -> Vec<usize> {
         (0..self.atoms.len()).filter(|&i| self.atoms[i].residue as usize == residue).collect()
+    }
+
+    /// Every residue's atoms, in file order, found in one pass over them.
+    pub fn atoms_by_residue(&self) -> ResidueAtoms {
+        let n = self.atoms.iter().map(|a| a.residue as usize + 1).max().unwrap_or(0).max(self.residues.len());
+        let mut start = vec![0u32; n + 1];
+        for a in &self.atoms {
+            start[a.residue as usize + 1] += 1;
+        }
+        for r in 0..n {
+            start[r + 1] += start[r];
+        }
+        let mut next = start.clone();
+        let mut atoms = vec![0u32; self.atoms.len()];
+        for (i, a) in self.atoms.iter().enumerate() {
+            let k = &mut next[a.residue as usize];
+            atoms[*k as usize] = i as u32;
+            *k += 1;
+        }
+        ResidueAtoms { start, atoms }
     }
 
     /// The binding site of residue `of`: the polymer residues with an atom
