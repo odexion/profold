@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-10-18
 
 ### Looking at a structure
 - **Picking.** Hovering the viewport names the atom or residue under the
   pointer; a click picks it out, its residue painted white on the ribbon.
+- **Hover card.** The card under the pointer gives a residue's one-letter
+  code and full name, its kind, fold, pLDDT or B-factor and position; water,
+  ions, common ligands and modified bases go by their names.
 - **Sequence.** The whole sequence, chain by chain, in numbered blocks of ten,
   linked both ways with the viewport.
 - **Measurements.** Distances, angles and dihedrals between picked atoms,
@@ -16,9 +19,15 @@
   (`chain`, `resi`, `resn`, `name`, `elem`, `within N of`, `byres`, `and`,
   `or`, `not`…); each selection drawn as sticks or spheres, or hidden.
 - **Plots.** A Ramachandran plot, and AlphaFold DB's predicted aligned error
-  for AlphaFold models, both linked to the viewport.
+  for AlphaFold models, both linked to the viewport, each folded under a row
+  of the facts table.
 
 ### Drawing
+- **Dark mode**, a ☾/☀ switch in the tab bar, remembered between launches.
+- **Colours of your own** for each chain and each kind of ligand, picked
+  from its dot in the legend; ligands listed under the chains (HEM ×4).
+- **Elements** in their standard colours by default, with a Standard /
+  Palette switch; the palette always colours chains and ramps.
 - **Surface** style: a Gaussian molecular surface, coloured by any scheme.
 - **Nucleic acids** drawn as a tube along the backbone with a rung to each
   base; modified bases found by linkage.
@@ -44,6 +53,8 @@
 - **Recent** files and entries in the Samples menu.
 
 ### Working
+- **A full menu bar**: File, Edit, View, Window and Help, with a shortcut
+  for every view and style.
 - **Undo and redo** (⌘Z, ⇧⌘Z) of how a structure is shown.
 - **Console** (⌘K) of commands, and `profold --run script.txt` to run a
   script of them.
@@ -53,6 +64,7 @@
 - Force-field names for histidine and the like (HSD, HIE, CYX…) are read
   as amino acids, not ligands.
 - Rainbow colouring runs over the polymer alone.
+- Large assemblies build at once, and large DNA cartoons no longer freeze.
 
 ## 0.2.1
 

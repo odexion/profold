@@ -117,5 +117,11 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" dist/* --title "profold ${TAG#v}" --generate-notes --verify-tag
+            # The release notes are this version's section of CHANGELOG.md.
+            awk -v v="${TAG#v}" '/^## /{p = index($0, "## " v) == 1; next} p' CHANGELOG.md > notes.md
+            if [ -s notes.md ]; then
+              gh release create "$TAG" dist/* --title "profold ${TAG#v}" --notes-file notes.md --verify-tag
+            else
+              gh release create "$TAG" dist/* --title "profold ${TAG#v}" --generate-notes --verify-tag
+            fi
           fi
