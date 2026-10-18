@@ -186,6 +186,7 @@ enum Dropdown {
     Palette,
     Camera,
     Image,
+    Overlay,
 }
 
 pub struct Viewer {
@@ -274,6 +275,9 @@ pub struct Viewer {
     /// is shown in its place; and which.
     deposited: Option<Arc<Structure>>,
     assembly: Option<usize>,
+    /// Whether what is opened next is laid over the structure shown rather
+    /// than taking its place.
+    overlay_next: bool,
     /// The triangles and capsules of `base` each structure was built into,
     /// by `Target::which`, for painting one of its residues.
     parts: [(std::ops::Range<usize>, std::ops::Range<usize>); 2],
@@ -426,6 +430,7 @@ impl Viewer {
             fly_task: None,
             deposited: None,
             assembly: None,
+            overlay_next: false,
             parts: [(0..0, 0..0), (0..0, 0..0)],
             open: None,
             export: None,
@@ -1078,6 +1083,11 @@ impl Viewer {
         self.busy = None;
         self.progress = None;
         match result {
+            Ok(s) if std::mem::take(&mut self.overlay_next) => {
+                // The tab still reopens as what it was opened as.
+                self.opening = None;
+                self.overlay_with(s, cx);
+            }
             Ok(s) => {
                 self.origin = self.opening.take();
                 let frames = s.frame_count();
@@ -1095,10 +1105,125 @@ impl Viewer {
             }
             Err(e) => {
                 self.opening = None;
+                self.overlay_next = false;
                 self.error = Some(format!("{e:#}").into());
                 cx.notify();
             }
         }
+    }
+
+    /// Lay a structure over the one shown, paired residue by residue where
+    /// their sequences align, and show the two as a comparison.
+    fn overlay_with(&mut self, other: Structure, cx: &mut Context<Self>) {
+        let Some(shown) = self.structure.as_ref() else {
+            self.show(other, cx);
+            return;
+        };
+        let mut reference = Structure::clone(shown);
+        let mut mobile = other;
+        match align::superpose(&mut reference, &mut mobile) {
+            Ok(fit) => {
+                self.note(format!(
+                    "{} on {} · {:.2} Å over {} of {} paired, {}% identical",
+                    mobile.id,
+                    reference.id,
+                    fit.rmsd,
+                    fit.matched,
+                    fit.aligned,
+                    fit.identical * 100 / fit.aligned.max(1)
+                ));
+                let origin = self.origin.clone();
+                self.show_comparison(reference, mobile, fit.rmsd, fit.matched, cx);
+                self.origin = origin;
+            }
+            Err(e) => {
+                self.error = Some(format!("{e:#}").into());
+                cx.notify();
+            }
+        }
+    }
+
+    /// Take the overlaid structure away, and show the one under it alone.
+    fn remove_overlay(&mut self, cx: &mut Context<Self>) {
+        if self.compare.take().is_none() {
+            return;
+        }
+        self.fit = None;
+        if let Some(s) = self.structure.as_mut() {
+            let s = Arc::make_mut(s);
+            s.tint = None;
+            s.deviation.clear();
+        }
+        self.show_reference = true;
+        self.show_prediction = true;
+        self.coloring = if self.structure.as_ref().is_some_and(|s| s.has_polymer()) {
+            Coloring::Chain
+        } else {
+            Coloring::Element
+        };
+        self.selected = None;
+        self.measurements.clear();
+        self.pending.clear();
+        self.rebuild(cx);
+    }
+
+    /// Pick a file to lay over the structure shown.
+    fn prompt_overlay(&mut self, cx: &mut Context<Self>) {
+        self.open = None;
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Overlay".into()),
+        });
+        self.prompt = Some(cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            if let Some(path) = paths.into_iter().next() {
+                let _ = this.update(cx, |this, cx| {
+                    this.overlay_next = true;
+                    this.open_path(path, cx);
+                });
+            }
+        }));
+    }
+
+    /// The overlay menu: a file, or whatever is typed next into the field.
+    fn overlay_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let comparing = self.compare.is_some();
+        menu(240.)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.open = None;
+                cx.notify();
+            }))
+            .child(
+                item("overlay-file", "Overlay a file…".into(), false)
+                    .debug_selector(|| "overlay-file".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.prompt_overlay(cx))),
+            )
+            .child(
+                item("overlay-entry", "Overlay an entry by ID or name…".into(), self.overlay_next)
+                    .debug_selector(|| "overlay-entry".into())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open = None;
+                        this.overlay_next = !this.overlay_next;
+                        if this.overlay_next {
+                            window.focus(&this.input.read(cx).focus_handle(cx));
+                        }
+                        cx.notify();
+                    })),
+            )
+            .when(comparing, |d| {
+                d.child(divide()).child(
+                    item("overlay-remove", "Remove the overlay".into(), false)
+                        .debug_selector(|| "overlay-remove".into())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.open = None;
+                            this.remove_overlay(cx);
+                        })),
+                )
+            })
     }
 
     // -- actions ----------------------------------------------------------
@@ -2521,6 +2646,15 @@ impl Viewer {
                     self.image_menu(cx).into_any_element(),
                     cx,
                 ))
+                .when(viewing, |d| {
+                    d.child(self.tab_with_menu(
+                        Dropdown::Overlay,
+                        "overlay",
+                        "Overlay",
+                        self.overlay_menu(cx).into_any_element(),
+                        cx,
+                    ))
+                })
             })
             .child(div().flex_1())
             .when(loaded, |d| d.child(self.angle_readout(cx)))
@@ -3251,6 +3385,38 @@ impl Viewer {
                     )
                     .child(run),
             )
+            // While the next entry is to be laid over this one, say so.
+            .when(self.overlay_next && !busy, |d| {
+                let onto = self.structure.as_ref().map(|s| s.id.to_uppercase()).unwrap_or_default();
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.))
+                        .text_size(px(10.5))
+                        .child(
+                            div()
+                                .text_color(theme::text())
+                                .child(format!("What opens next is laid over {onto}")),
+                        )
+                        .child(
+                            div()
+                                .id("overlay-cancel")
+                                .debug_selector(|| "overlay-cancel".into())
+                                .px(px(6.))
+                                .rounded(px(4.))
+                                .text_color(theme::muted())
+                                .cursor_pointer()
+                                .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
+                                .child("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.overlay_next = false;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             // What the field holds, and what else can be done with it; only
             // once there is something in it.
             .when_some(status, |d, status| {
@@ -3706,12 +3872,28 @@ impl Viewer {
                                 .text_color(theme::ink())
                                 .child(format!("{rmsd:.2} Å")),
                         )
+
                         .child(
                             div()
                                 .text_size(px(10.))
                                 .text_color(theme::muted())
                                 .child(format!("Cα RMSD · {matched} residues")),
                         ),
+                )
+                .child(
+                    div()
+                        .id("comparison-close")
+                        .debug_selector(|| "comparison-close".into())
+                        .px(px(5.))
+                        .rounded(px(4.))
+                        .text_size(px(12.))
+                        .text_color(theme::faint())
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
+                        .child("×")
+                        .tooltip(|_, cx| cx.new(|_| Tip("Show the first alone".into())).into())
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|this, _, _, cx| this.remove_overlay(cx))),
                 ),
         )
     }
@@ -5132,7 +5314,10 @@ impl Viewer {
         let (heading, lines) = s.describe(t.picked.atom, t.picked.residue);
         // Which of a superimposed pair, when both are drawn.
         let whose = (self.compare.is_some() && self.visible().len() > 1)
-            .then(|| if t.which == 0 { "Reference" } else { "Prediction" });
+            .then(|| {
+                let s = if t.which == 0 { self.structure.as_ref() } else { self.compare.as_ref() };
+                s.map(|s| s.id.to_uppercase()).unwrap_or_default()
+            });
         Some(
             div()
                 .flex()
@@ -6117,6 +6302,40 @@ mod ui_tests {
         assert_eq!(chains(&view, cx), 1);
         assert!(view.update(cx, |this, _| this.deposited.is_none()));
         assert_eq!(view.update(cx, |this, _| this.base.tris.len()) * 2, tris);
+    }
+
+    #[gpui::test]
+    fn another_structure_is_laid_over_the_one_shown(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        let haemoglobin = formats::load_bytes(SAMPLES[5].file, SAMPLES[5].bytes.to_vec()).unwrap();
+        view.update(cx, |this, cx| this.show(haemoglobin.clone(), cx));
+        cx.run_until_parked();
+
+        click(cx, "tab-overlay");
+        click(cx, "overlay-entry");
+        assert!(view.update(cx, |this, _| this.overlay_next));
+        assert!(cx.debug_bounds("overlay-cancel").is_some(), "nothing says the next is overlaid");
+
+        // What comes next, turned and moved, lands back on the first.
+        let mut moved = haemoglobin.clone();
+        moved.id = "moved".into();
+        for a in &mut moved.atoms {
+            let [x, y, z] = a.pos;
+            a.pos = [z + 30.0, y, -x];
+        }
+        view.update(cx, |this, cx| this.finish(Ok(moved), cx));
+        cx.run_until_parked();
+        let (fit, comparing, armed) = view.update(cx, |this, _| (this.fit, this.compare.is_some(), this.overlay_next));
+        let (rmsd, matched) = fit.expect("nothing was laid over");
+        assert!(comparing && !armed);
+        assert!(rmsd < 0.01, "{rmsd}");
+        assert!(matched > 500);
+        let p = view.update(cx, |this, _| (this.structure.as_ref().unwrap().atoms[10].pos, this.compare.as_ref().unwrap().atoms[10].pos));
+        assert!((0..3).all(|k| (p.0[k] - p.1[k]).abs() < 0.01));
+
+        click(cx, "comparison-close");
+        let (comparing, tint) = view.update(cx, |this, _| (this.compare.is_some(), this.structure.as_ref().unwrap().tint));
+        assert!(!comparing && tint.is_none());
     }
 
     #[gpui::test]
