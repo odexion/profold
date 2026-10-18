@@ -11,7 +11,7 @@ pub struct Sample {
     pub bytes: &'static [u8],
 }
 
-pub const SAMPLES: [Sample; 9] = [
+pub const SAMPLES: [Sample; 10] = [
     Sample {
         group: "Molecules",
         file: "caffeine.sdf",
@@ -53,6 +53,13 @@ pub const SAMPLES: [Sample; 9] = [
         name: "Haemoglobin",
         note: "four chains and their haems, PDB",
         bytes: include_bytes!("../samples/4hhb.pdb.gz"),
+    },
+    Sample {
+        group: "Proteins",
+        file: "9sv9.pdb.gz",
+        name: "SAM synthetase",
+        note: "a dimer holding the SAM it makes, PDB",
+        bytes: include_bytes!("../samples/9sv9.pdb.gz"),
     },
     Sample {
         group: "Crystals",

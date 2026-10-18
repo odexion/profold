@@ -41,7 +41,7 @@ The structures bundled in [`samples/`](samples/README.md):
 
 | File | Source | Terms |
 | --- | --- | --- |
-| `1crn.pdb.gz`, `1ubq.pdb.gz`, `1ema.pdb.gz`, `4hhb.pdb.gz` | [RCSB PDB](https://www.rcsb.org), wwPDB archive | [CC0 1.0](https://www.wwpdb.org/about/usage-policies): free to use, with citation of the entries' primary publications appreciated |
+| `1crn.pdb.gz`, `1ubq.pdb.gz`, `1ema.pdb.gz`, `4hhb.pdb.gz`, `9sv9.pdb.gz` | [RCSB PDB](https://www.rcsb.org), wwPDB archive | [CC0 1.0](https://www.wwpdb.org/about/usage-policies): free to use, with citation of the entries' primary publications appreciated |
 | `caffeine.sdf` | [PubChem](https://pubchem.ncbi.nlm.nih.gov/compound/2519) CID 2519 | NCBI/PubChem data, freely available |
 | `c60.xyz`, `rocksalt.cif`, `silicon.vasp`, `lj-melt.lammpstrj.gz` | Generated for profold | MIT, with the rest of the repository |
 
@@ -51,6 +51,7 @@ Structure references for the bundled PDB entries:
 - **1UBQ**: Vijay-Kumar, S., Bugg, C.E., Cook, W.J. (1987) *J. Mol. Biol.* 194, 531–544.
 - **1EMA**: Ormö, M. et al. (1996) *Science* 273, 1392–1395.
 - **4HHB**: Fermi, G., Perutz, M.F., Shaanan, B., Fourme, R. (1984) *J. Mol. Biol.* 175, 159–174.
+- **9SV9**: Gericke, L., Bolz, M., Kind, K., Nagel, A., Brenneisen, J., Pleiss, J., Blankenfeldt, W., Andexer, J. *Selectivity of Methionine Adenosyltransferases regarding Methionine Enantiomers*, to be published.
 
 ## Data fetched at run time
 
