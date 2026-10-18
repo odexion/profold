@@ -160,9 +160,6 @@ fn parse_mmcif(text: &str, id: String, source: Source) -> Result<Structure> {
             let get = |i: Option<usize>| i.and_then(|i| f.get(i).copied()).unwrap_or("");
 
             let res_name = f[i_comp];
-            if res_name == "HOH" || res_name == "DOD" {
-                continue;
-            }
             let alt = get(i_alt);
             if !(alt.is_empty() || alt == "." || alt == "?" || alt == "A") {
                 continue;

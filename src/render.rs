@@ -51,6 +51,9 @@ impl Look {
 #[derive(Clone, Default)]
 pub struct Appearance {
     looks: HashMap<Species, Look>,
+    /// Water and other solvent is hidden, as it is by default beside a
+    /// protein, where a crystal's waters would only be clutter.
+    pub hide_solvent: bool,
 }
 
 impl Appearance {
@@ -90,6 +93,18 @@ impl Appearance {
 
     /// One look per atom of `s`.
     fn resolve(&self, s: &Structure) -> Vec<Look> {
+        let mut looks = self.resolve_species(s);
+        if self.hide_solvent {
+            for (look, a) in looks.iter_mut().zip(&s.atoms) {
+                if is_solvent(&s.residues[a.residue as usize].name) {
+                    look.size = 0.0;
+                }
+            }
+        }
+        looks
+    }
+
+    fn resolve_species(&self, s: &Structure) -> Vec<Look> {
         if self.looks.is_empty() {
             return vec![Look::default(); s.atoms.len()];
         }
@@ -1288,13 +1303,11 @@ fn build_primitives(paint: &Paint, repr: Repr, quality: f32) -> Scene {
             }
             // Ligands, ions and nucleic acids have no alpha carbons to draw a
             // backbone through, and would vanish; they are drawn as atoms.
+            // So is water, when it is shown at all.
             let ligand: Vec<bool> = s
                 .atoms
                 .iter()
-                .map(|a| {
-                    let r = &s.residues[a.residue as usize];
-                    r.ca.is_none() && !is_solvent(&r.name)
-                })
+                .map(|a| s.residues[a.residue as usize].ca.is_none())
                 .collect();
             if ligand.iter().any(|l| *l) {
                 scene.merge(build_sticks(paint, &ligand, false));
@@ -1341,9 +1354,7 @@ fn build_surface(paint: &Paint, quality: f32) -> Scene {
         scene.tri_residue.push(s.atoms[atom].residue);
     }
     if polymer {
-        let ligand: Vec<bool> = (0..s.atoms.len())
-            .map(|i| !under_skin(s, polymer, i) && !is_solvent(&s.residues[s.atoms[i].residue as usize].name))
-            .collect();
+        let ligand: Vec<bool> = (0..s.atoms.len()).map(|i| !under_skin(s, polymer, i)).collect();
         if ligand.iter().any(|l| *l) {
             scene.merge(build_sticks(paint, &ligand, false));
         }
@@ -1521,9 +1532,9 @@ pub fn pick(
         let r = &s.residues[s.atoms[i].residue as usize];
         !paint.looks[i].hidden()
             && if backbone {
-                r.ca.is_none() && !is_solvent(&r.name)
+                r.ca.is_none()
             } else if surface {
-                !under_skin(s, polymer, i) && !is_solvent(&r.name)
+                !under_skin(s, polymer, i)
             } else {
                 true
             }
@@ -2337,6 +2348,28 @@ pub fn render(
     crate::gpu::get()
         .and_then(|gpu| gpu.render(scene, cam, width, height, page, style))
         .unwrap_or_else(|| render_cpu(scene, cam, width, height, page, style))
+}
+
+/// A frame on no page at all, as straight RGBA: drawn once on white and
+/// once on black, and the difference read as how much of the page shows
+/// through each pixel. That holds for everything laid over the page,
+/// edges, fog and glass alike, and needs nothing of either renderer.
+pub fn render_transparent(scene: &Scene, cam: &Camera, width: usize, height: usize, style: Style) -> Vec<u8> {
+    let white = render(scene, cam, width, height, [1.0; 3], style);
+    let black = render(scene, cam, width, height, [0.0; 3], style);
+    let mut out = vec![0u8; width * height * 4];
+    for ((o, w), b) in out.chunks_exact_mut(4).zip(white.bgra.chunks_exact(4)).zip(black.bgra.chunks_exact(4)) {
+        // BGRA in, RGBA out.
+        let (w, b) = ([w[2], w[1], w[0]].map(|v| v as f32 / 255.0), [b[2], b[1], b[0]].map(|v| v as f32 / 255.0));
+        let through = (0..3).map(|k| (w[k] - b[k]).clamp(0.0, 1.0)).sum::<f32>() / 3.0;
+        let alpha = 1.0 - through;
+        for k in 0..3 {
+            let c = if alpha > 1e-3 { (b[k] / alpha).clamp(0.0, 1.0) } else { 0.0 };
+            o[k] = (c * 255.0 + 0.5) as u8;
+        }
+        o[3] = (alpha * 255.0 + 0.5) as u8;
+    }
+    out
 }
 
 /// Whether frames are drawn on the graphics card.
@@ -3414,6 +3447,32 @@ mod tests {
             r.b = 100.0;
         }
         assert_eq!(flat.b_span(), None);
+    }
+
+    #[test]
+    fn a_transparent_frame_shows_the_page_only_round_the_molecule() {
+        let s = sample("caffeine.sdf");
+        let cam = Camera::frame(&s);
+        let sc = scene(&s, Repr::Spacefill, Coloring::Element, false);
+        let px = |rgba: &[u8], x: usize, y: usize| -> [u8; 4] { rgba[(y * 200 + x) * 4..][..4].try_into().unwrap() };
+        // Without fog, the molecule is solid and the page clear.
+        let rgba = render_transparent(&sc, &cam, 200, 200, Style::Illustrative);
+        assert_eq!(px(&rgba, 2, 2)[3], 0, "the corner is not clear");
+        assert!(px(&rgba, 100, 100)[3] > 250, "the middle is not solid");
+        // With it, the far side fades into what is behind; laid on the page
+        // it was drawn on, every pixel is as drawn there.
+        let page = [0.97, 0.96, 0.94];
+        let rgba = render_transparent(&sc, &cam, 200, 200, Style::Soft);
+        let drawn = render(&sc, &cam, 200, 200, page, Style::Soft);
+        for (x, y) in [(100, 100), (80, 120), (130, 90), (2, 2)] {
+            let m = px(&rgba, x, y);
+            let a = m[3] as f32 / 255.0;
+            let d = &drawn.bgra[(y * 200 + x) * 4..][..3];
+            for (k, want) in [d[2], d[1], d[0]].into_iter().enumerate() {
+                let over = m[k] as f32 * a + page[k] * 255.0 * (1.0 - a);
+                assert!((over - want as f32).abs() <= 3.0, "({x}, {y}) {over} for {want}");
+            }
+        }
     }
 
     #[test]

@@ -170,6 +170,15 @@ struct Site {
 /// ångström: a contact, or a water's width from one.
 const SITE_CUTOFF: f32 = 5.0;
 
+/// The camera turning by itself.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Turn {
+    /// Round and round about the screen's upright.
+    Spin,
+    /// Back and forth through a quarter turn, as on a turntable.
+    Rock,
+}
+
 /// Frames the camera takes to fly to something, at about sixty a second.
 const FLY_FRAMES: u32 = 20;
 
@@ -283,6 +292,11 @@ pub struct Viewer {
     /// Whether what is opened next is laid over the structure shown rather
     /// than taking its place.
     overlay_next: bool,
+    /// The camera turning by itself, until the view is touched.
+    turning: Option<Turn>,
+    turn_task: Option<Task<()>>,
+    /// Images are saved with nothing behind the molecule.
+    transparent: bool,
     /// The triangles and capsules of `base` each structure was built into,
     /// by `Target::which`, for painting one of its residues.
     parts: [(std::ops::Range<usize>, std::ops::Range<usize>); 2],
@@ -436,6 +450,9 @@ impl Viewer {
             deposited: None,
             assembly: None,
             overlay_next: false,
+            turning: None,
+            turn_task: None,
+            transparent: false,
             parts: [(0..0, 0..0), (0..0, 0..0)],
             open: None,
             export: None,
@@ -628,6 +645,9 @@ impl Viewer {
         }
         // A protein's crystal cell is bookkeeping; a simulation box is not.
         self.show_cell = !polymer;
+        // Nor are a crystal's waters, beside a protein; a simulation's
+        // solvent is half of what it shows.
+        self.appearance.hide_solvent = polymer;
         self.stop_playing();
         self.camera = Camera::frame(&structure);
         self.all_chains = false;
@@ -1869,6 +1889,7 @@ impl Viewer {
         let scene = self.scene.clone();
         let camera = self.camera;
         let style = self.style;
+        let transparent = self.transparent;
         let stem = self
             .structure
             .as_ref()
@@ -1887,14 +1908,19 @@ impl Viewer {
             let drawn = cx
                 .background_executor()
                 .spawn(async move {
-                    let frame =
-                        render::render(&scene, &camera, width, height, theme::view(), style);
-                    // The rasterizer hands back BGRA; PNG wants it the other
-                    // way round.
-                    let mut rgba = frame.bgra;
-                    for p in rgba.chunks_exact_mut(4) {
-                        p.swap(0, 2);
-                    }
+                    let rgba = if transparent {
+                        render::render_transparent(&scene, &camera, width, height, style)
+                    } else {
+                        let frame =
+                            render::render(&scene, &camera, width, height, theme::view(), style);
+                        // The rasterizer hands back BGRA; PNG wants it the
+                        // other way round.
+                        let mut rgba = frame.bgra;
+                        for p in rgba.chunks_exact_mut(4) {
+                            p.swap(0, 2);
+                        }
+                        rgba
+                    };
                     image::save_buffer(
                         &path,
                         &rgba,
@@ -2101,6 +2127,48 @@ impl Viewer {
 
     /// Let go of the view and it keeps turning, slowing to a stop. The throw
     /// is whatever the last step of the drag was.
+    /// Set the camera turning by itself, or with the same again stop it.
+    fn toggle_turn(&mut self, turn: Turn, cx: &mut Context<Self>) {
+        self.open = None;
+        if self.turning == Some(turn) {
+            self.halt();
+            cx.notify();
+            return;
+        }
+        self.halt();
+        self.turning = Some(turn);
+        let start = std::time::Instant::now();
+        self.turn_task = Some(cx.spawn(async move |this, cx| {
+            let mut last = 0.0f32;
+            loop {
+                cx.background_executor().timer(Duration::from_millis(16)).await;
+                let t = start.elapsed().as_secs_f32();
+                // Spinning: a turn every 14 seconds. Rocking: 40 degrees each
+                // way, there and back in six.
+                let step = match turn {
+                    Turn::Spin => (t - last) * std::f32::consts::TAU / 14.0,
+                    Turn::Rock => {
+                        let w = std::f32::consts::TAU / 6.0;
+                        0.7 * ((w * t).sin() - (w * last).sin())
+                    }
+                };
+                last = t;
+                let going = this.update(cx, |this, cx| {
+                    if this.turning != Some(turn) {
+                        return false;
+                    }
+                    this.camera.rotate(step, 0.0);
+                    cx.notify();
+                    true
+                });
+                if !matches!(going, Ok(true)) {
+                    return;
+                }
+            }
+        }));
+        cx.notify();
+    }
+
     fn coast(&mut self, velocity: [f32; 2], cx: &mut Context<Self>) {
         self.spin = Some(velocity);
         self.hover = None;
@@ -2128,6 +2196,8 @@ impl Viewer {
         self.spin = None;
         self.spin_task = None;
         self.fly_task = None;
+        self.turning = None;
+        self.turn_task = None;
         self.last_step = [0.0; 2];
     }
 
@@ -3274,6 +3344,16 @@ impl Viewer {
                     },
                 )),
             )
+            .child(
+                item("spin", "Spin".into(), self.turning == Some(Turn::Spin))
+                    .debug_selector(|| "spin".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_turn(Turn::Spin, cx))),
+            )
+            .child(
+                item("rock", "Rock".into(), self.turning == Some(Turn::Rock))
+                    .debug_selector(|| "rock".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_turn(Turn::Rock, cx))),
+            )
             .child(divide())
             .child(
                 item("recentre", "Centre".into(), false)
@@ -3289,6 +3369,12 @@ impl Viewer {
     /// Write the viewport out as a picture, at a multiple of its size.
     fn image_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (w, h) = self.cache.borrow().size;
+        let transparent = item("transparent", "Transparent background".into(), self.transparent)
+            .debug_selector(|| "transparent".into())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.transparent = !this.transparent;
+                cx.notify();
+            }));
         menu(200.)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.open = None;
@@ -3325,6 +3411,8 @@ impl Viewer {
                         this.save_image(scale, cx);
                     }))
             }))
+            .child(divide())
+            .child(transparent)
     }
 
     /// The logo and what the tab is for, at the head of the panel.
@@ -4643,6 +4731,71 @@ impl Viewer {
                     })
             }))
             .child(self.standard_colors_toggle(cx))
+            .children(self.visibility_toggles(structure, cx))
+    }
+
+    /// Water and hydrogens on or off at a click, where the structure has them.
+    fn visibility_toggles(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let water = structure.residues.iter().any(|r| crate::protein::is_solvent(&r.name));
+        let hydrogens = structure.atoms.iter().any(|a| a.element == crate::protein::Element::H);
+        if !water && !hydrogens {
+            return None;
+        }
+        let water_shown = !self.appearance.hide_solvent;
+        let h_shown = !self.appearance.get(&Species::Element(1)).hidden();
+        let toggle = |id: &'static str, label: &'static str, shown: bool| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .text_size(px(10.5))
+                .cursor_pointer()
+                .when(shown, |d| d.bg(theme::surface()).text_color(theme::ink()).shadow_sm())
+                .when(!shown, |d| d.text_color(theme::muted()).hover(|s| s.text_color(theme::ink())))
+                .child(div().size(px(6.)).rounded_full().when(shown, |d| d.bg(theme::ink())).when(!shown, |d| d.border_1().border_color(theme::faint())))
+                .child(label)
+        };
+        Some(
+            div()
+                .mt(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(div().text_size(px(11.)).text_color(theme::muted()).child("Show"))
+                .child(
+                    div()
+                        .flex()
+                        .p(px(2.))
+                        .gap(px(2.))
+                        .rounded(px(7.))
+                        .bg(theme::sunken())
+                        .when(water, |d| {
+                            d.child(toggle("show-water", "Water", water_shown).on_click(cx.listener(|this, _, _, cx| {
+                                this.appearance.hide_solvent = !this.appearance.hide_solvent;
+                                this.rebuild(cx);
+                            })))
+                        })
+                        .when(hydrogens, |d| {
+                            d.child(toggle("show-hydrogens", "Hydrogens", h_shown).on_click(cx.listener(|this, _, _, cx| {
+                                let h = Species::Element(1);
+                                let look = this.appearance.get(&h);
+                                let look = if look.hidden() {
+                                    Look { size: 1.0, alpha: 1.0, ..look }
+                                } else {
+                                    Look { size: 0.0, ..look }
+                                };
+                                this.appearance.set(h, look);
+                                this.rebuild(cx);
+                            })))
+                        }),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Whether elements wear the standard colours or the palette's. Only
@@ -5172,14 +5325,17 @@ impl Viewer {
         let (name, blurb) = headline(structure);
         // The numbering is worth showing only when the file does not start at
         // one, which is the sign of a fragment or a trimmed construct.
-        let residues = match (structure.residues.first(), structure.residues.last()) {
+        // Water is no residue of the protein's.
+        let own: Vec<&crate::protein::Residue> =
+            structure.residues.iter().filter(|r| !crate::protein::is_solvent(&r.name)).collect();
+        let residues = match (own.first(), own.last()) {
             (Some(a), Some(b)) if a.seq != 1 => format!(
                 "{} aa  ·  {}–{}",
-                thousands(structure.residues.len()),
+                thousands(own.len()),
                 a.seq,
                 b.seq
             ),
-            _ => format!("{} aa", thousands(structure.residues.len())),
+            _ => format!("{} aa", thousands(own.len())),
         };
         let chains = if structure.chains.len() <= 4 {
             let ids = structure
@@ -5920,6 +6076,11 @@ impl Viewer {
     /// Stop trajectory playback, as when the tab goes behind another: a
     /// hidden tab has no one to play to.
     pub fn pause(&mut self, cx: &mut Context<Self>) {
+        if self.turning.is_some() {
+            self.turning = None;
+            self.turn_task = None;
+            cx.notify();
+        }
         if self.playing {
             self.stop_playing();
             cx.notify();
@@ -6495,6 +6656,67 @@ mod ui_tests {
         // A session from a newer profold is refused, not misread.
         let newer = json.replacen("\"profold\": 1", "\"profold\": 99", 1);
         assert!(other.update(cx, |this, cx| this.open_session(&newer, cx)).is_err());
+    }
+
+    #[gpui::test]
+    fn water_is_kept_but_hidden_beside_a_protein(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(SAMPLES[5].file, SAMPLES[5].bytes.to_vec()).unwrap();
+            this.show(s, cx);
+        });
+        cx.run_until_parked();
+        let (waters, hidden) = view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            (s.residues.iter().filter(|r| r.name == "HOH").count(), this.appearance.hide_solvent)
+        });
+        assert!(waters > 100, "haemoglobin's waters were dropped");
+        assert!(hidden);
+        let spheres = |view: &Entity<Viewer>, cx: &mut VisualTestContext| view.update(cx, |this, _| this.base.spheres.len());
+        let without = spheres(&view, cx);
+        click(cx, "show-water");
+        assert!(view.update(cx, |this, _| !this.appearance.hide_solvent));
+        assert_eq!(spheres(&view, cx), without + waters, "each water is one oxygen drawn");
+        click(cx, "show-water");
+        assert_eq!(spheres(&view, cx), without);
+    }
+
+    #[gpui::test]
+    fn the_camera_spins_and_rocks_until_touched(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        let angle = |view: &Entity<Viewer>, cx: &mut VisualTestContext| view.update(cx, |this, _| this.camera.angles()[1]);
+        let start = angle(&view, cx);
+        click(cx, "tab-camera");
+        click(cx, "spin");
+        assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Spin));
+        cx.executor().advance_clock(Duration::from_millis(700));
+        cx.run_until_parked();
+        let turned = angle(&view, cx);
+        assert!((turned - start).abs() > 5.0, "{start} to {turned}");
+        // A press on the view stops it.
+        let middle = view.update(cx, |this, _| this.cache.borrow().bounds.center());
+        cx.simulate_mouse_down(middle, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(middle, MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.turning), None);
+        let still = angle(&view, cx);
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert_eq!(angle(&view, cx), still);
+
+        click(cx, "tab-camera");
+        click(cx, "rock");
+        cx.executor().advance_clock(Duration::from_millis(1500));
+        cx.run_until_parked();
+        assert_ne!(angle(&view, cx), still);
+        // The same again stops it.
+        click(cx, "tab-camera");
+        click(cx, "rock");
+        assert_eq!(view.update(cx, |this, _| this.turning), None);
+
+        click(cx, "tab-image");
+        click(cx, "transparent");
+        assert!(view.update(cx, |this, _| this.transparent));
     }
 
     #[gpui::test]

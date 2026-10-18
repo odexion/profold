@@ -603,7 +603,12 @@ impl Structure {
     /// atoms: most files carry no hydrogens, so adding up what is in the
     /// coordinates would come out roughly seven per cent light.
     pub fn mass_kda(&self) -> f32 {
-        let residues: f32 = self.residues.iter().map(|r| residue_mass(r.code)).sum();
+        let residues: f32 = self
+            .residues
+            .iter()
+            .filter(|r| !is_solvent(&r.name))
+            .map(|r| residue_mass(r.code))
+            .sum();
         // One water is released per peptide bond, so each chain keeps one.
         let water = 18.0153 * self.chains.len().max(1) as f32;
         (residues + water) / 1000.0

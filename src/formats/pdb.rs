@@ -11,12 +11,6 @@ use anyhow::{bail, Result};
 use super::{cell_from_parameters, guess_element};
 use crate::protein::{Builder, Element, Record, Snapshot, Source, Structure};
 
-/// Water is dropped from crystal structures, where it is clutter. A
-/// simulation's solvent is named differently and is kept.
-fn is_crystal_water(res_name: &str) -> bool {
-    res_name == "HOH" || res_name == "DOD"
-}
-
 pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
     let mut b = Builder::new("PDB");
     b.assemblies = crate::assembly::from_pdb(text);
@@ -70,10 +64,8 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
         }
         let col = |r: Range<usize>| line.get(r).unwrap_or("").trim();
 
+        // Crystal waters are kept, and hidden until asked for.
         let res_name = col(17..20);
-        if is_crystal_water(res_name) {
-            continue;
-        }
         // Keep only the first alternate location.
         let alt = line.as_bytes().get(16).copied().unwrap_or(b' ');
         if alt != b' ' && alt != b'A' {
