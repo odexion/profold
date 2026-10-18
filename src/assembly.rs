@@ -183,6 +183,8 @@ pub fn build(s: &Structure, a: &Assembly) -> Structure {
     out.frame = 0;
     out.cell = None;
     out.deviation.clear();
+    // Built, it is its own whole: nothing further to build from it.
+    out.assemblies.clear();
     let mut bonds_of: Vec<Vec<[u32; 2]>> = vec![Vec::new(); s.chains.len()];
     // Bonds are copied with their chain; those between chains are kept
     // only within one copy of a part.

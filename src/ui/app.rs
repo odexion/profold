@@ -25,6 +25,10 @@ use crate::fetch::{self, Input, Retrieval};
 use crate::formats;
 use crate::job::{self, Event, Outcome};
 use crate::contacts;
+use crate::formats::write;
+
+#[path = "session.rs"]
+mod session;
 use crate::measure::{self, Measurement};
 use crate::protein::{LigandPaint, Source, Structure};
 use crate::render::{
@@ -187,6 +191,7 @@ enum Dropdown {
     Camera,
     Image,
     Overlay,
+    Save,
 }
 
 pub struct Viewer {
@@ -1433,6 +1438,21 @@ impl Viewer {
         if self.busy.is_some() {
             return;
         }
+        if path.extension().is_some_and(|e| e == session::EXTENSION) {
+            let absolute = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            let opened = std::fs::read_to_string(&path)
+                .map_err(anyhow::Error::from)
+                .and_then(|text| self.open_session(&text, cx));
+            match opened {
+                Ok(()) => {
+                    self.origin = Some(absolute.to_string_lossy().into_owned());
+                    self.note(format!("Opened the session {}", path.display()));
+                }
+                Err(e) => self.error = Some(format!("{e:#}").into()),
+            }
+            cx.notify();
+            return;
+        }
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -1896,6 +1916,91 @@ impl Viewer {
                 cx.notify();
             });
         }));
+    }
+
+    /// Ask where to write a file, suggesting `name` on the desktop, and write
+    /// what `contents` makes there.
+    fn save_text(&mut self, name: String, contents: String, cx: &mut Context<Self>) {
+        self.open = None;
+        let directory = dirs::home_dir()
+            .map(|home| home.join("Desktop"))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let chosen = cx.prompt_for_new_path(&directory, Some(&name));
+        self.export = Some(cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
+            let written = std::fs::write(&path, contents).map(|()| path);
+            let _ = this.update(cx, |this, cx| {
+                match written {
+                    Ok(path) => {
+                        this.note(format!("Saved {}", path.display()));
+                        cx.reveal_path(&path);
+                    }
+                    Err(e) => this.error = Some(format!("{e}").into()),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// What can be saved: the structure as PDB or mmCIF, the picked
+    /// residue's chain, the binding site looked into, and the session.
+    fn save_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(s) = self.structure.clone() else {
+            return menu(240.);
+        };
+        let stem = s.id.to_lowercase();
+        let chain = self.selected.filter(|t| t.which == 0).map(|t| s.residues[s.atoms[t.picked.atom].residue as usize].chain as usize);
+        let site = self.site.clone();
+        let whole = |id: &'static str, label: &'static str, cif: bool| {
+            let (s, stem) = (s.clone(), stem.clone());
+            item(id, label.into(), false).debug_selector(move || id.into()).on_click(cx.listener(move |this, _, _, cx| {
+                let (text, ext) = if cif { (write::mmcif(&s, |_| true), "cif") } else { (write::pdb(&s, |_| true), "pdb") };
+                this.save_text(format!("{stem}.{ext}"), text, cx);
+            }))
+        };
+        menu(240.)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.open = None;
+                cx.notify();
+            }))
+            .child(whole("save-pdb", "Structure as PDB…", false))
+            .child(whole("save-cif", "Structure as mmCIF…", true))
+            .when_some(chain, |d, c| {
+                let s = s.clone();
+                let id = s.chains[c].id.clone();
+                let stem = format!("{stem}_{id}");
+                d.child(item("save-chain", format!("Chain {id} as PDB…"), false).debug_selector(|| "save-chain".into()).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        let text = write::pdb(&s, |i| s.residues[s.atoms[i].residue as usize].chain as usize == c);
+                        this.save_text(format!("{stem}.pdb"), text, cx);
+                    }),
+                ))
+            })
+            .when_some(site, |d, site| {
+                let s = s.clone();
+                let name = s.residues[site.ligand].name.to_lowercase();
+                let stem = format!("{stem}_{name}_site");
+                d.child(item("save-site", "Binding site as PDB…".into(), false).debug_selector(|| "save-site".into()).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        let text = write::pdb(&s, |i| {
+                            let r = s.atoms[i].residue as usize;
+                            r == site.ligand || site.residues.contains(&r)
+                        });
+                        this.save_text(format!("{stem}.pdb"), text, cx);
+                    }),
+                ))
+            })
+            .child(divide())
+            .child(item("save-session", "Session…".into(), false).debug_selector(|| "save-session".into()).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    if let Some(json) = this.session_json() {
+                        let stem = this.structure.as_ref().map(|s| s.id.to_lowercase()).unwrap_or_default();
+                        this.save_text(format!("{stem}.{}", session::EXTENSION), json, cx);
+                    }
+                },
+            )))
     }
 
     /// After a change of palette, say for a few seconds what kept its own
@@ -2648,6 +2753,13 @@ impl Viewer {
                 ))
                 .when(viewing, |d| {
                     d.child(self.tab_with_menu(
+                        Dropdown::Save,
+                        "save",
+                        "Save",
+                        self.save_menu(cx).into_any_element(),
+                        cx,
+                    ))
+                    .child(self.tab_with_menu(
                         Dropdown::Overlay,
                         "overlay",
                         "Overlay",
@@ -6336,6 +6448,53 @@ mod ui_tests {
         click(cx, "comparison-close");
         let (comparing, tint) = view.update(cx, |this, _| (this.compare.is_some(), this.structure.as_ref().unwrap().tint));
         assert!(!comparing && tint.is_none());
+    }
+
+    #[gpui::test]
+    fn a_session_opens_as_it_was_left(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(SAMPLES[5].file, SAMPLES[5].bytes.to_vec()).unwrap();
+            this.show(s, cx);
+            this.repr = Repr::BallAndStick;
+            this.coloring = Coloring::BFactor;
+            this.palette = Palette::Viridis;
+            this.camera.rotate(0.7, -0.3);
+            this.camera.zoom = 2.5;
+            Arc::make_mut(this.structure.as_mut().unwrap()).chains[1].color = Some([0.1, 0.2, 0.3]);
+            this.measurements.push(Measurement { kind: measure::Kind::Distance, which: 0, atoms: vec![10, 400] });
+            this.selected = Some(Target { which: 0, picked: Picked { atom: 55, residue: true, depth: 0.0 } });
+            this.rebuild(cx);
+            this.next_site("HEM", cx);
+        });
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        let json = view.update(cx, |this, _| this.session_json()).unwrap();
+        let before = view.update(cx, |this, _| {
+            (this.camera.orientation, this.camera.zoom, this.site.as_ref().map(|s| s.ligand), this.structure.as_ref().unwrap().atoms.len())
+        });
+
+        let (other, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        other.update(cx, |this, cx| this.open_session(&json, cx)).unwrap();
+        cx.run_until_parked();
+        other.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            assert_eq!(s.atoms.len(), before.3);
+            assert_eq!(s.source, Source::File);
+            assert_eq!(this.repr, Repr::BallAndStick);
+            assert_eq!(this.coloring, Coloring::BFactor);
+            assert_eq!(this.palette, Palette::Viridis);
+            assert_eq!(s.chains[1].color, Some([0.1, 0.2, 0.3]));
+            assert!((this.camera.zoom - before.1).abs() < 1e-5);
+            assert!((0..3).all(|i| (0..3).all(|j| (this.camera.orientation[i][j] - before.0[i][j]).abs() < 1e-5)));
+            assert_eq!(this.measurements.len(), 1);
+            assert_eq!(this.measurements[0].atoms, vec![10, 400]);
+            assert_eq!(this.selected.map(|t| t.picked.atom), Some(55));
+            assert_eq!(this.site.as_ref().map(|s| s.ligand), before.2);
+        });
+        // A session from a newer profold is refused, not misread.
+        let newer = json.replacen("\"profold\": 1", "\"profold\": 99", 1);
+        assert!(other.update(cx, |this, cx| this.open_session(&newer, cx)).is_err());
     }
 
     #[gpui::test]

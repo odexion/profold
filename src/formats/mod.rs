@@ -14,6 +14,7 @@ mod poscar;
 mod sdf;
 mod xsf;
 mod xyz;
+pub mod write;
 
 use std::io::Read;
 use std::path::Path;
