@@ -65,6 +65,8 @@ pub struct Cache {
     drawing: Option<Key>,
     /// The pixel size last painted, which is what an exported image matches.
     pub size: (usize, usize),
+    /// Where the viewport was last painted in the window.
+    pub bounds: gpui::Bounds<gpui::Pixels>,
     /// When each frame of the last second went up.
     shown: VecDeque<Instant>,
     /// Whether a repaint is due for when the frame rate falls idle.
@@ -146,6 +148,7 @@ pub fn viewport(
             let _timer = Phase::Paint.timer();
             let mut current = cache.borrow_mut();
             current.size = (width, height);
+            current.bounds = bounds;
             let k = key(&scene, &cam, width, height, style);
             let resized = current
                 .key

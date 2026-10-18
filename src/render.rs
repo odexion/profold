@@ -1115,34 +1115,31 @@ pub fn build_scene(
             scene.capsules.extend(cell_edges(c));
         }
     }
-    let tone: Option<fn([f32; 3]) -> [f32; 3]> = match style {
-        Style::Soft | Style::Studio => Some(rich),
-        Style::Illustrative => Some(vivid),
-        Style::Flat => Some(chalky),
+    settle(&mut scene, style);
+    scene
+}
+
+/// Settle a scene's colours for the style and the page: each style's tone,
+/// and lifted off a dark page.
+fn settle(scene: &mut Scene, style: Style) {
+    let tone: fn([f32; 3]) -> [f32; 3] = match style {
+        Style::Soft | Style::Studio => rich,
+        Style::Illustrative => vivid,
+        Style::Flat => chalky,
     };
-    if let Some(tone) = tone {
-        for c in scene
-            .spheres
-            .iter_mut()
-            .map(|p| &mut p.color)
-            .chain(scene.capsules.iter_mut().flat_map(|c| [&mut c.ca, &mut c.cb]))
-            .chain(scene.tris.iter_mut().map(|t| &mut t.c))
-        {
-            *c = tone(*c);
-        }
-    }
-    if crate::theme::dark() {
-        for c in scene
-            .spheres
-            .iter_mut()
-            .map(|p| &mut p.color)
-            .chain(scene.capsules.iter_mut().flat_map(|c| [&mut c.ca, &mut c.cb]))
-            .chain(scene.tris.iter_mut().map(|t| &mut t.c))
-        {
+    let dark = crate::theme::dark();
+    for c in scene
+        .spheres
+        .iter_mut()
+        .map(|p| &mut p.color)
+        .chain(scene.capsules.iter_mut().flat_map(|c| [&mut c.ca, &mut c.cb]))
+        .chain(scene.tris.iter_mut().map(|t| &mut t.c))
+    {
+        *c = tone(*c);
+        if dark {
             *c = lifted(*c);
         }
     }
-    scene
 }
 
 /// Raise the floor of a colour's lightness for a dark page, so the dark end
@@ -1281,6 +1278,209 @@ fn build_sticks(paint: &Paint, keep: &[bool], licorice: bool) -> Scene {
         capsules,
         ..Scene::default()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Picking
+// ---------------------------------------------------------------------------
+
+/// What is under a point of the viewport.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Picked {
+    /// The atom, or a residue's alpha carbon when `residue` is set.
+    pub atom: usize,
+    /// Whether a whole residue was hit, as in the backbone styles, where
+    /// the ribbon stands for the residue rather than any one atom.
+    pub residue: bool,
+    /// View-space depth of the surface hit; larger is nearer.
+    pub depth: f32,
+}
+
+/// Pointers this close to a thin rod or a small atom, in pixels, still
+/// count as on it.
+const PICK_SLACK: f32 = 3.0;
+
+/// Backbone styles are picked against a rod of this radius through the
+/// alpha carbons: wide enough to cover a ribbon seen flat.
+const BACKBONE_PICK_RADIUS: f32 = 1.3;
+
+/// The atom drawn nearest the viewer at pixel `(x, y)` of a `width` by
+/// `height` frame, as `render` would draw `s` in `repr` from `cam`. Worked
+/// out from the atoms rather than read back from the frame, so it costs
+/// nothing while nobody points at anything.
+#[allow(clippy::too_many_arguments)]
+pub fn pick(
+    s: &Structure,
+    repr: Repr,
+    appearance: &Appearance,
+    cam: &Camera,
+    width: usize,
+    height: usize,
+    x: f32,
+    y: f32,
+) -> Option<Picked> {
+    if s.atoms.is_empty() || width == 0 || height == 0 {
+        return None;
+    }
+    let m = cam.basis();
+    let scale = (width.min(height) as f32) / (2.2 * cam.radius) * cam.zoom;
+    let p = [
+        (x - (width as f32 * 0.5 + cam.pan[0])) / scale,
+        -(y - (height as f32 * 0.5 + cam.pan[1])) / scale,
+    ];
+    let slack = PICK_SLACK / scale;
+    let to_view = |q: [f32; 3]| {
+        let q = sub(q, cam.center);
+        [dot(m[0], q), dot(m[1], q), dot(m[2], q)]
+    };
+    let paint = Paint {
+        s,
+        elements: Vec::new(),
+        coloring: Coloring::Element,
+        palette: Palette::Spectrum,
+        polymer: s.has_polymer(),
+        looks: appearance.resolve(s),
+        own: s.atoms.len(),
+        images: Vec::new(),
+    };
+
+    let mut best: Option<Picked> = None;
+    let mut offer = |depth: Option<f32>, atom: usize, residue: bool| {
+        if let Some(depth) = depth {
+            if best.is_none_or(|b| depth > b.depth) {
+                best = Some(Picked { atom, residue, depth });
+            }
+        }
+    };
+    let ball = |c: [f32; 3], r: f32| sphere_depth(to_view(c), r.max(slack), p);
+    let rod = |a: [f32; 3], b: [f32; 3], r: f32| {
+        capsule_depth(to_view(a), to_view(b), r.max(slack), p)
+    };
+
+    // The atoms drawn as atoms, and how: as in `build_primitives`.
+    let backbone = matches!(repr, Repr::Tube | Repr::Cartoon);
+    let drawn = |i: usize| {
+        let r = &s.residues[s.atoms[i].residue as usize];
+        !paint.looks[i].hidden() && (!backbone || (r.ca.is_none() && !is_solvent(&r.name)))
+    };
+    match repr {
+        Repr::Spacefill => {
+            for i in (0..s.atoms.len()).filter(|&i| drawn(i)) {
+                offer(ball(s.atoms[i].pos, paint.radius(i)), i, false);
+            }
+        }
+        _ => {
+            let licorice = repr == Repr::Licorice;
+            let rod_r = if licorice { 0.22 } else { 0.14 };
+            for i in (0..s.atoms.len()).filter(|&i| drawn(i)) {
+                let r = paint.radius(i) * if licorice { 0.3 } else { 0.25 };
+                offer(ball(s.atoms[i].pos, r.max(rod_r)), i, false);
+            }
+            // Each half of a bond belongs to the atom at its end.
+            for &[a, b] in &s.bonds {
+                let (a, b) = (a as usize, b as usize);
+                if !drawn(a) || !drawn(b) {
+                    continue;
+                }
+                let (pa, pb) = (s.atoms[a].pos, s.atoms[b].pos);
+                let mid = mix(pa, pb, 0.5);
+                offer(rod(pa, mid, rod_r), a, false);
+                offer(rod(mid, pb, rod_r), b, false);
+            }
+        }
+    }
+    if backbone {
+        for chain in &s.chains {
+            for run in ca_runs(s, chain) {
+                let ca = |k: usize| s.residues[run[k]].ca.unwrap() as usize;
+                for k in 0..run.len() {
+                    let here = s.atoms[ca(k)].pos;
+                    offer(ball(here, BACKBONE_PICK_RADIUS), ca(k), true);
+                    if k + 1 < run.len() {
+                        let mid = mix(here, s.atoms[ca(k + 1)].pos, 0.5);
+                        offer(rod(here, mid, BACKBONE_PICK_RADIUS), ca(k), true);
+                        offer(rod(mid, s.atoms[ca(k + 1)].pos, BACKBONE_PICK_RADIUS), ca(k + 1), true);
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
+/// Depth of the near surface of a view-space sphere over point `p`.
+fn sphere_depth(c: [f32; 3], r: f32, p: [f32; 2]) -> Option<f32> {
+    sphere_hit(c, r, p[0], p[1]).map(|(z, _)| z)
+}
+
+/// Depth of the near surface of a view-space capsule over point `p`,
+/// taking the closest point of its axis as seen on the screen.
+fn capsule_depth(a: [f32; 3], b: [f32; 3], r: f32, p: [f32; 2]) -> Option<f32> {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    let t = if len2 > 1e-12 {
+        (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    sphere_depth(mix(a, b, t), r, p)
+}
+
+/// The colour a picked atom or residue glows with.
+const HIGHLIGHT: [f32; 3] = [1.0, 0.78, 0.18];
+
+/// What marks a picked atom: a glow around it, or, for a residue picked off
+/// the backbone, its own atoms drawn as sticks in their elements' colours,
+/// each in a glow, so its side chain shows through the ribbon.
+#[allow(clippy::too_many_arguments)]
+pub fn build_highlight(
+    s: &Structure,
+    picked: Picked,
+    repr: Repr,
+    style: Style,
+    palette: Palette,
+    standard_colors: bool,
+    appearance: &Appearance,
+) -> Scene {
+    let Some(atom) = s.atoms.get(picked.atom) else {
+        return Scene::default();
+    };
+    let paint = Paint {
+        s,
+        elements: element_colors(s, palette, standard_colors),
+        coloring: Coloring::Element,
+        palette,
+        polymer: s.has_polymer(),
+        looks: appearance.resolve(s),
+        own: s.atoms.len(),
+        images: Vec::new(),
+    };
+    let glow = |i: usize, r: f32, alpha: f32| Sphere {
+        c: s.atoms[i].pos,
+        r,
+        color: HIGHLIGHT,
+        alpha,
+    };
+    let mut scene = if picked.residue {
+        let keep: Vec<bool> = s.atoms.iter().map(|a| a.residue == atom.residue).collect();
+        let mut sticks = build_sticks(&paint, &keep, false);
+        let own: Vec<usize> = (0..s.atoms.len()).filter(|&i| keep[i]).collect();
+        sticks.spheres.extend(own.into_iter().map(|i| glow(i, 0.9, 0.4)));
+        sticks
+    } else {
+        let i = picked.atom;
+        let drawn = match repr {
+            Repr::Spacefill => paint.radius(i),
+            Repr::Licorice => (paint.radius(i) * 0.3).max(0.22),
+            _ => paint.radius(i) * 0.25,
+        };
+        Scene {
+            spheres: vec![glow(i, drawn + 0.7, 0.6)],
+            ..Scene::default()
+        }
+    };
+    settle(&mut scene, style);
+    scene
 }
 
 /// The edges of the simulation cell, as fine dark rods sized to the box.
@@ -2788,6 +2988,84 @@ mod tests {
                 assert_ne!(*c, rich(gold), "the paint spilt onto the protein");
             }
         }
+    }
+
+    /// Where an atom's centre lands in a `size` square frame, and its depth.
+    fn on_screen(cam: &Camera, size: usize, p: [f32; 3]) -> (f32, f32, f32) {
+        let m = cam.basis();
+        let q = sub(p, cam.center);
+        let v = [dot(m[0], q), dot(m[1], q), dot(m[2], q)];
+        let scale = size as f32 / (2.2 * cam.radius) * cam.zoom;
+        let half = size as f32 * 0.5;
+        (half + cam.pan[0] + v[0] * scale, half + cam.pan[1] - v[1] * scale, v[2])
+    }
+
+    #[test]
+    fn picking_finds_the_nearest_atom_under_the_pointer() {
+        let s = sample("1crn.pdb.gz");
+        let cam = Camera::frame(&s);
+        let look = Appearance::default();
+        // The atom nearest the viewer of all: nothing can be in front of it.
+        let front = (0..s.atoms.len())
+            .max_by(|&a, &b| on_screen(&cam, 400, s.atoms[a].pos).2.total_cmp(&on_screen(&cam, 400, s.atoms[b].pos).2))
+            .unwrap();
+        let (x, y, _) = on_screen(&cam, 400, s.atoms[front].pos);
+        let hit = pick(&s, Repr::Spacefill, &look, &cam, 400, 400, x, y).unwrap();
+        assert_eq!(hit.atom, front);
+        assert!(!hit.residue);
+        // Panned, the same atom is wherever it was panned to.
+        let mut moved = cam;
+        moved.pan = [37.0, -21.0];
+        let hit = pick(&s, Repr::Spacefill, &look, &moved, 400, 400, x + 37.0, y - 21.0).unwrap();
+        assert_eq!(hit.atom, front);
+        // A corner of the frame is empty.
+        assert_eq!(pick(&s, Repr::Spacefill, &look, &cam, 400, 400, 2.0, 2.0), None);
+    }
+
+    #[test]
+    fn a_ribbon_picks_its_residue() {
+        let s = sample("1crn.pdb.gz");
+        let cam = Camera::frame(&s);
+        let look = Appearance::default();
+        let r = &s.residues[20];
+        let ca = r.ca.unwrap() as usize;
+        let (x, y, _) = on_screen(&cam, 400, s.atoms[ca].pos);
+        let hit = pick(&s, Repr::Cartoon, &look, &cam, 400, 400, x, y).unwrap();
+        assert!(hit.residue);
+        // A residue in front may hide this one, but whatever is hit is an
+        // alpha carbon standing for its residue.
+        assert_eq!(s.residues[s.atoms[hit.atom].residue as usize].ca, Some(hit.atom as u32));
+        // Hidden atoms are not there to be picked.
+        let mut gone = Appearance::default();
+        for z in 0..=255u8 {
+            gone.set(Species::Element(z), Look { size: 0.0, ..Look::default() });
+        }
+        assert_eq!(pick(&s, Repr::Spacefill, &gone, &cam, 400, 400, x, y), None);
+    }
+
+    #[test]
+    fn a_picked_residue_shows_its_atoms() {
+        let s = sample("1crn.pdb.gz");
+        let ca = s.residues[20].ca.unwrap() as usize;
+        let picked = Picked { atom: ca, residue: true, depth: 0.0 };
+        let scene = build_highlight(
+            &s, picked, Repr::Cartoon, Style::Soft, Palette::Spectrum, false, &Appearance::default(),
+        );
+        let atoms = s.atoms.iter().filter(|a| a.residue == 20).count();
+        // Each atom as a ball and in a glow, with the bonds between them.
+        assert_eq!(scene.spheres.len(), atoms * 2);
+        assert!(!scene.capsules.is_empty());
+        let one = build_highlight(
+            &s,
+            Picked { residue: false, ..picked },
+            Repr::Spacefill,
+            Style::Soft,
+            Palette::Spectrum,
+            false,
+            &Appearance::default(),
+        );
+        assert_eq!(one.spheres.len(), 1);
+        assert!(one.spheres[0].alpha < 1.0);
     }
 
     #[test]

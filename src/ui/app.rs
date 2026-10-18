@@ -26,7 +26,8 @@ use crate::formats;
 use crate::job::{self, Event, Outcome};
 use crate::protein::{LigandPaint, Source, Structure};
 use crate::render::{
-    self, Appearance, Camera, Coloring, Look, Palette, PaletteGroup, Repr, Scene, Species, Style,
+    self, Appearance, Camera, Coloring, Look, Palette, PaletteGroup, Picked, Repr, Scene, Species,
+    Style,
 };
 use crate::samples::SAMPLES;
 use crate::search::{self, Hit, Kind};
@@ -139,6 +140,18 @@ const SWATCHES: [[f32; 3]; 15] = [
     [0.15, 0.15, 0.17],
 ];
 
+/// An atom or residue picked out in the viewport.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Target {
+    /// Which structure: 0 is the one loaded, 1 the prediction laid over it.
+    which: usize,
+    picked: Picked,
+}
+
+/// Pointers that move further than this between press and release, in
+/// pixels, were dragging the view rather than clicking on it.
+const CLICK_SLOP: f32 = 3.0;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Drag {
     Orbit,
@@ -211,6 +224,13 @@ pub struct Viewer {
     spin: Option<[f32; 2]>,
     spin_task: Option<Task<()>>,
     momentum: bool,
+    /// Where the left button went down on the viewport, while that may yet
+    /// turn out to be a click.
+    press: Option<Point<Pixels>>,
+    /// What the pointer is over, and where it is in the viewport.
+    hover: Option<(Target, Point<Pixels>)>,
+    /// What was clicked on, which glows until something else is.
+    selected: Option<Target>,
 
     open: Option<Dropdown>,
     export: Option<Task<()>>,
@@ -346,6 +366,9 @@ impl Viewer {
             spin: None,
             spin_task: None,
             momentum: settings.momentum,
+            press: None,
+            hover: None,
+            selected: None,
             open: None,
             export: None,
             prompt: None,
@@ -543,6 +566,8 @@ impl Viewer {
         self.structure = Some(Arc::new(structure));
         self.compare = None;
         self.fit = None;
+        self.selected = None;
+        self.hover = None;
         self.rebuild(cx);
     }
 
@@ -566,6 +591,8 @@ impl Viewer {
         self.stop_playing();
         self.show_reference = true;
         self.show_prediction = true;
+        self.selected = None;
+        self.hover = None;
         self.rebuild(cx);
     }
 
@@ -579,6 +606,60 @@ impl Viewer {
             out.extend(self.compare.iter());
         }
         out
+    }
+
+    /// Structure `which` of a `Target`, if it is drawn.
+    fn shown(&self, which: usize) -> Option<&Arc<Structure>> {
+        match which {
+            0 if self.show_reference || self.compare.is_none() => self.structure.as_ref(),
+            1 if self.show_prediction => self.compare.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The atom or residue drawn nearest the viewer under a point of the
+    /// window, worked out against the frame last painted.
+    fn pick_at(&self, pos: Point<Pixels>) -> Option<Target> {
+        let (bounds, (width, height)) = {
+            let cache = self.cache.borrow();
+            (cache.bounds, cache.size)
+        };
+        if !bounds.contains(&pos) || f32::from(bounds.size.width) <= 0.0 {
+            return None;
+        }
+        // The frame may be drawn at the display's scale; pick in its pixels.
+        let k = width as f32 / f32::from(bounds.size.width);
+        let x = f32::from(pos.x - bounds.origin.x) * k;
+        let y = f32::from(pos.y - bounds.origin.y) * k;
+        (0..2)
+            .filter_map(|which| {
+                let s = self.shown(which)?;
+                let picked = render::pick(s, self.repr, &self.appearance, &self.camera, width, height, x, y)?;
+                Some(Target { which, picked })
+            })
+            .max_by(|a, b| a.picked.depth.total_cmp(&b.picked.depth))
+    }
+
+    /// Point at something, or at nothing.
+    fn set_hover(&mut self, pos: Option<Point<Pixels>>, cx: &mut Context<Self>) {
+        let origin = self.cache.borrow().bounds.origin;
+        let hover = pos.and_then(|p| Some((self.pick_at(p)?, p - origin)));
+        if hover != self.hover {
+            self.hover = hover;
+            cx.notify();
+        }
+    }
+
+    /// Pick out an atom or residue, or with `None` let go of the one picked.
+    fn select(&mut self, target: Option<Target>, cx: &mut Context<Self>) {
+        // A second click on the same thing lets go of it.
+        let target = target.filter(|t| {
+            self.selected.is_none_or(|s| (s.which, s.picked.atom) != (t.which, t.picked.atom))
+        });
+        if target != self.selected {
+            self.selected = target;
+            self.rebuild(cx);
+        }
     }
 
     /// Draw again after the theme has changed: the scene's colours are
@@ -654,6 +735,19 @@ impl Viewer {
                 self.show_cell,
                 &self.appearance,
             ));
+        }
+        if let Some(t) = self.selected {
+            if let Some(s) = self.shown(t.which) {
+                scene.merge(render::build_highlight(
+                    s,
+                    t.picked,
+                    self.repr,
+                    self.style,
+                    self.palette,
+                    self.standard_colors,
+                    &self.appearance,
+                ));
+            }
         }
         self.scene = Arc::new(scene.stamp());
         self.persist();
@@ -1459,6 +1553,7 @@ impl Viewer {
     /// is whatever the last step of the drag was.
     fn coast(&mut self, velocity: [f32; 2], cx: &mut Context<Self>) {
         self.spin = Some(velocity);
+        self.hover = None;
         self.spin_task = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor()
                 .timer(Duration::from_millis(16))
@@ -1488,6 +1583,9 @@ impl Viewer {
     fn on_viewport_down(&mut self, e: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.halt();
         self.open = None;
+        self.hover = None;
+        self.press = (e.button == MouseButton::Left && !e.modifiers.shift && e.click_count < 2)
+            .then_some(e.position);
         if e.click_count >= 2 {
             let all: Vec<&Structure> = self.visible().into_iter().map(|s| s.as_ref()).collect();
             if !all.is_empty() {
@@ -1513,7 +1611,16 @@ impl Viewer {
             self.scrub_to(e.position.x, cx);
             return;
         }
-        let Some(drag) = self.drag else { return };
+        let Some(drag) = self.drag else {
+            self.set_hover(Some(e.position), cx);
+            return;
+        };
+        if let Some(p) = self.press {
+            let (dx, dy) = (f32::from(e.position.x - p.x), f32::from(e.position.y - p.y));
+            if dx * dx + dy * dy > CLICK_SLOP * CLICK_SLOP {
+                self.press = None;
+            }
+        }
         let dx = f32::from(e.position.x - self.last_mouse.x);
         let dy = f32::from(e.position.y - self.last_mouse.y);
         self.last_mouse = e.position;
@@ -1532,10 +1639,17 @@ impl Viewer {
         cx.notify();
     }
 
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_up(&mut self, e: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.scrubbing = false;
         self.sliding = None;
         let was = self.drag.take();
+        if let Some(p) = self.press.take() {
+            // A click, not a drag: the view has not moved, so nothing coasts.
+            self.last_step = [0.0; 2];
+            let target = self.pick_at(p);
+            self.select(target, cx);
+            self.set_hover(Some(e.position), cx);
+        }
         if was.is_some() {
             let throw = self.last_step;
             let thrown = throw[0].abs() + throw[1].abs() > 0.004;
@@ -1549,6 +1663,7 @@ impl Viewer {
 
     fn on_scroll(&mut self, e: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.halt();
+        self.hover = None;
         let dy = match e.delta {
             ScrollDelta::Pixels(p) => f32::from(p.y),
             ScrollDelta::Lines(p) => p.y * 18.0,
@@ -4327,6 +4442,9 @@ impl Viewer {
                 self.style,
             ))
             .children(self.comparison(cx))
+            .when(self.busy.is_none(), |d| {
+                d.children(self.selected_card()).children(self.hover_tip())
+            })
             .when(!has_structure && self.busy.is_none(), |d| {
                 d.child(
                     div()
@@ -4386,6 +4504,86 @@ impl Viewer {
 }
 
 impl Viewer {
+    /// What is said about an atom or residue: a heading over a few lines.
+    fn atom_card(&self, t: Target) -> Option<gpui::Div> {
+        let s = self.shown(t.which)?;
+        let (heading, lines) = s.describe(t.picked.atom, t.picked.residue);
+        // Which of a superimposed pair, when both are drawn.
+        let whose = (self.compare.is_some() && self.visible().len() > 1)
+            .then(|| if t.which == 0 { "Reference" } else { "Prediction" });
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .px(px(8.))
+                .py(px(5.))
+                .rounded(px(6.))
+                .bg(theme::ink())
+                .text_color(theme::on_ink())
+                .whitespace_nowrap()
+                .children(whose.map(|w| div().text_size(px(9.5)).opacity(0.7).child(w)))
+                .child(div().text_size(px(11.)).font_weight(gpui::FontWeight::SEMIBOLD).child(heading))
+                .children(lines.into_iter().map(|l| {
+                    div()
+                        .font_family(theme::MONO)
+                        .text_size(px(10.))
+                        .opacity(0.8)
+                        .child(l)
+                })),
+        )
+    }
+
+    /// The card beside the pointer, naming what it is over.
+    fn hover_tip(&self) -> Option<gpui::AnyElement> {
+        let (t, at) = self.hover?;
+        // Nothing to add over the thing already named in the corner.
+        if self.selected.is_some_and(|s| (s.which, s.picked.atom) == (t.which, t.picked.atom)) {
+            return None;
+        }
+        let size = self.cache.borrow().bounds.size;
+        let card = self.atom_card(t)?;
+        // Kept on the near side of the pointer to the middle, so it does not
+        // run off the edge.
+        let right = f32::from(at.x) > f32::from(size.width) * 0.6;
+        let below = f32::from(at.y) < f32::from(size.height) * 0.7;
+        let mut tip = div().absolute();
+        tip = if right {
+            tip.right(size.width - at.x + px(14.))
+        } else {
+            tip.left(at.x + px(14.))
+        };
+        tip = if below {
+            tip.top(at.y + px(14.))
+        } else {
+            tip.bottom(size.height - at.y + px(14.))
+        };
+        Some(tip.child(card).into_any_element())
+    }
+
+    /// What was clicked on, named in the corner until it is let go of.
+    fn selected_card(&self) -> Option<gpui::AnyElement> {
+        let card = self.atom_card(self.selected?)?;
+        Some(
+            div()
+                .absolute()
+                .top(px(56.))
+                .right(px(20.))
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap(px(3.))
+                .child(card)
+                .child(
+                    div()
+                        .text_size(px(9.5))
+                        .text_color(theme::faint())
+                        .child("click it again to let go"),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// What an empty viewport says.
     fn empty_message(&self) -> [&'static str; 3] {
         match self.mode {
@@ -4652,6 +4850,62 @@ mod ui_tests {
 
     fn colors(view: &Entity<Viewer>, cx: &mut VisualTestContext) -> Vec<[f32; 3]> {
         view.update(cx, |this, _| this.scene.spheres.iter().map(|s| s.color).collect())
+    }
+
+    /// Where in the window the atom nearest the viewer is drawn.
+    fn front_atom(view: &Entity<Viewer>, cx: &mut VisualTestContext) -> Point<Pixels> {
+        view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            let cam = this.camera;
+            let m = cam.basis();
+            let cache = this.cache.borrow();
+            let (w, h) = cache.size;
+            let k = w as f32 / f32::from(cache.bounds.size.width);
+            let view = |p: [f32; 3]| {
+                let q = [p[0] - cam.center[0], p[1] - cam.center[1], p[2] - cam.center[2]];
+                let d = |r: [f32; 3]| r[0] * q[0] + r[1] * q[1] + r[2] * q[2];
+                [d(m[0]), d(m[1]), d(m[2])]
+            };
+            let v = s.atoms.iter().map(|a| view(a.pos)).max_by(|a, b| a[2].total_cmp(&b[2])).unwrap();
+            let scale = w.min(h) as f32 / (2.2 * cam.radius) * cam.zoom;
+            let x = w as f32 * 0.5 + cam.pan[0] + v[0] * scale;
+            let y = h as f32 * 0.5 + cam.pan[1] - v[1] * scale;
+            cache.bounds.origin + gpui::point(px(x / k), px(y / k))
+        })
+    }
+
+    #[gpui::test]
+    fn pointing_at_an_atom_names_it_and_clicking_picks_it(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        let at = front_atom(&view, cx);
+        cx.simulate_mouse_move(at, None, Modifiers::none());
+        cx.run_until_parked();
+        let hover = view.update(cx, |this, _| this.hover.map(|(t, _)| t));
+        let hover = hover.expect("nothing under the pointer");
+        assert_eq!(hover.which, 0);
+
+        let glows = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.scene.spheres.iter().filter(|s| s.alpha < 1.0).count())
+        };
+        assert_eq!(glows(&view, cx), 0);
+        cx.simulate_click(at, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.selected), Some(hover));
+        assert_eq!(glows(&view, cx), 1, "the picked atom does not glow");
+
+        // A drag turns the view and picks nothing.
+        cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(at + gpui::point(px(40.), px(0.)), MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_up(at + gpui::point(px(40.), px(0.)), MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.selected), Some(hover));
+
+        // Clicking empty space lets go.
+        let corner = view.update(cx, |this, _| this.cache.borrow().bounds.origin) + gpui::point(px(3.), px(120.));
+        cx.simulate_click(corner, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.selected), None);
+        assert_eq!(glows(&view, cx), 0);
     }
 
     #[gpui::test]

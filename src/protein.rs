@@ -20,6 +20,31 @@ pub struct Atom {
     pub residue: u32,
     /// Index into `Structure::kinds`: the atom type in a simulation file.
     pub kind: u16,
+    /// The atom's name in the file, such as `CA` or `OG1`, padded with
+    /// zeros. Four bytes, as a PDB file allows; longer names are cut short.
+    pub name: [u8; 4],
+}
+
+impl Atom {
+    pub fn name(&self) -> &str {
+        let n = self.name.iter().position(|&b| b == 0).unwrap_or(4);
+        std::str::from_utf8(&self.name[..n]).unwrap_or("")
+    }
+}
+
+/// An atom name packed for `Atom::name`, cut at a character boundary.
+pub fn atom_name(name: &str) -> [u8; 4] {
+    let mut out = [0; 4];
+    let mut n = 0;
+    for c in name.trim().chars() {
+        let len = c.len_utf8();
+        if n + len > 4 {
+            break;
+        }
+        c.encode_utf8(&mut out[n..n + len]);
+        n += len;
+    }
+    out
 }
 
 /// A periodic simulation cell: a corner and the three edge vectors.
@@ -292,6 +317,75 @@ impl Structure {
 
     pub fn has_polymer(&self) -> bool {
         self.residues.iter().filter(|r| r.ca.is_some()).take(3).count() >= 3
+    }
+
+    /// What to say about an atom pointed at: a heading, and the lines under
+    /// it. With `residue`, the residue it belongs to is what was pointed at,
+    /// as on a ribbon, and its atom is not named.
+    pub fn describe(&self, atom: usize, residue: bool) -> (String, Vec<String>) {
+        let Some(a) = self.atoms.get(atom) else {
+            return (String::new(), Vec::new());
+        };
+        let r = &self.residues[a.residue as usize];
+        let chain = self.chains.get(r.chain as usize).map(|c| c.id.trim()).unwrap_or("");
+        // A residue is worth naming in a polymer, or beside one; a lone
+        // molecule's one residue, or a simulation's, is not.
+        let named = !r.outside_polymer() || self.has_polymer();
+        let symbol = a.element.is_known().then(|| a.element.symbol());
+        let heading = if named {
+            let mut h = format!("{} {}", r.name, r.seq);
+            if !chain.is_empty() {
+                h.push_str(&format!(" · chain {chain}"));
+            }
+            h
+        } else {
+            let label = match (a.name(), symbol) {
+                ("", Some(e)) => e.to_string(),
+                ("", None) => "Atom".to_string(),
+                (n, _) => n.to_string(),
+            };
+            format!("{label} {}", atom + 1)
+        };
+
+        let mut lines = Vec::new();
+        if residue {
+            lines.push(
+                match r.ss {
+                    Ss::Helix => "helix",
+                    Ss::Sheet => "strand",
+                    Ss::Coil => "coil",
+                }
+                .to_string(),
+            );
+        } else {
+            let mut what = Vec::new();
+            if named && !a.name().is_empty() {
+                what.push(a.name().to_string());
+            }
+            match symbol {
+                Some(e) if what.first().is_none_or(|n| n != e) => what.push(e.to_string()),
+                Some(_) => {}
+                None => {
+                    if let Some(kind) = self.kinds.get(a.kind as usize) {
+                        what.push(format!("type {kind}"));
+                    }
+                }
+            }
+            if !what.is_empty() {
+                lines.push(what.join(" · "));
+            }
+        }
+        let b = if residue { r.b } else { a.b };
+        if self.has_confidence {
+            lines.push(format!("pLDDT {b:.1}"));
+        } else if b != 0.0 && matches!(self.format, Some("PDB" | "mmCIF")) {
+            lines.push(format!("B-factor {b:.1}"));
+        }
+        if !residue {
+            let [x, y, z] = a.pos;
+            lines.push(format!("{x:.2}, {y:.2}, {z:.2} Å"));
+        }
+        (heading, lines)
     }
 
     /// The kinds of ligand and ion beside a polymer, by residue name, with
@@ -648,6 +742,7 @@ impl Builder {
             b: r.b,
             residue,
             kind: r.kind,
+            name: atom_name(r.name),
         });
     }
 

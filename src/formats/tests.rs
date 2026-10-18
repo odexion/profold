@@ -337,3 +337,39 @@ fn gzip() {
     let text = decode(enc.finish().unwrap()).unwrap();
     assert_eq!(text, WATER_XYZ);
 }
+
+const SER: &str = "\
+ATOM      1  N   SER A  42      11.104   6.134  -6.504  1.00 12.50           N
+ATOM      2  CA  SER A  42      11.639   6.071  -5.147  1.00 13.25           C
+ATOM      3  C   SER A  42       9.766   6.134  -4.244  1.00 14.00           C
+ATOM      4  O   SER A  42       9.426   7.215  -3.746  1.00 15.75           O
+ATOM      5  OG  SER A  42      12.866   5.322  -5.039  1.00 18.50           O
+";
+
+#[test]
+fn atoms_keep_their_names_and_say_what_they_are() {
+    let s = read(SER, Format::Pdb);
+    assert_eq!(s.atoms[1].name(), "CA");
+    assert_eq!(s.atoms[4].name(), "OG");
+    let (heading, lines) = s.describe(4, false);
+    assert_eq!(heading, "SER 42 · chain A");
+    assert_eq!(lines, ["OG · O", "B-factor 18.5", "12.87, 5.32, -5.04 Å"]);
+    // A residue picked off the ribbon is not one atom.
+    let (_, lines) = s.describe(1, true);
+    assert_eq!(lines[0], "coil");
+    assert!(!lines.iter().any(|l| l.contains('Å')));
+}
+
+#[test]
+fn a_lone_molecule_names_its_atoms_by_number() {
+    let s = read(WATER_XYZ, Format::Xyz);
+    let (heading, lines) = s.describe(0, false);
+    assert!(heading.ends_with(" 1"), "{heading}");
+    assert!(lines.iter().any(|l| l.contains('O')), "{lines:?}");
+}
+
+#[test]
+fn long_names_are_cut_at_four_bytes() {
+    assert_eq!(&crate::protein::atom_name("HD21X"), b"HD21");
+    assert_eq!(&crate::protein::atom_name(" C1'"), b"C1'\0");
+}

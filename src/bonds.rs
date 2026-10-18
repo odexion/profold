@@ -136,6 +136,7 @@ mod tests {
             b: 0.0,
             residue: 0,
             kind: 0,
+            name: [0; 4],
         }
     }
 
