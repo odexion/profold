@@ -193,6 +193,71 @@ const LAYER_COLORS: [Option<[f32; 3]>; 6] = [
     Some([0.93, 0.93, 0.93]),
 ];
 
+/// What the plots work out once per structure and frame.
+#[derive(Default)]
+struct PlotCache {
+    /// The structure and frame it is for, by address and number.
+    key: Option<(usize, usize)>,
+    torsions: Arc<Vec<Option<(f32, f32)>>>,
+    pae: Option<Arc<gpui::RenderImage>>,
+}
+
+/// The side of each plot, in pixels.
+const PLOT: f32 = 236.0;
+
+/// A small picture from colours row by row, as GPUI takes them.
+fn picture(width: usize, height: usize, rgb: impl Fn(usize, usize) -> [f32; 3]) -> Arc<gpui::RenderImage> {
+    let mut bgra = vec![0u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let c = rgb(x, y);
+            let o = (y * width + x) * 4;
+            bgra[o] = (c[2].clamp(0.0, 1.0) * 255.0) as u8;
+            bgra[o + 1] = (c[1].clamp(0.0, 1.0) * 255.0) as u8;
+            bgra[o + 2] = (c[0].clamp(0.0, 1.0) * 255.0) as u8;
+            bgra[o + 3] = 255;
+        }
+    }
+    let buffer = image::RgbaImage::from_raw(width as u32, height as u32, bgra).expect("sized to fit");
+    Arc::new(gpui::RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]))
+}
+
+/// Where protein backbones are found on the Ramachandran plot: the right-
+/// and left-handed helices and the strands, as soft regions to read the
+/// dots against.
+fn ramachandran_ground() -> Arc<gpui::RenderImage> {
+    // One for each page, light and dark, made when first wanted.
+    static GROUND: [std::sync::OnceLock<Arc<gpui::RenderImage>>; 2] = [const { std::sync::OnceLock::new() }; 2];
+    let dark = theme::dark();
+    GROUND[dark as usize].get_or_init(|| ground(dark)).clone()
+}
+
+fn ground(dark: bool) -> Arc<gpui::RenderImage> {
+    // Centres and spreads in degrees, as (phi, psi, sigma phi, sigma psi, weight).
+    const REGIONS: [(f32, f32, f32, f32, f32); 5] = [
+        (-63.0, -43.0, 22.0, 18.0, 1.0),
+        (-120.0, 130.0, 35.0, 30.0, 0.9),
+        (-75.0, 145.0, 15.0, 20.0, 0.7),
+        (60.0, 45.0, 14.0, 16.0, 0.45),
+        (-90.0, 0.0, 25.0, 25.0, 0.35),
+    ];
+    let page = theme::view();
+    let tint = if dark { [0.32, 0.36, 0.44] } else { [0.78, 0.84, 0.92] };
+    let n = 120;
+    picture(n, n, |x, y| {
+        let phi = -180.0 + (x as f32 + 0.5) / n as f32 * 360.0;
+        let psi = 180.0 - (y as f32 + 0.5) / n as f32 * 360.0;
+        let wrap = |d: f32| (d + 180.0).rem_euclid(360.0) - 180.0;
+        let density: f32 = REGIONS
+            .iter()
+            .map(|&(p, q, sp, sq, w)| w * (-0.5 * ((wrap(phi - p) / sp).powi(2) + (wrap(psi - q) / sq).powi(2))).exp())
+            .sum();
+        // Two bands: favoured, and allowed.
+        let k = if density > 0.5 { 1.0 } else if density > 0.08 { 0.45 } else { 0.0 };
+        [0, 1, 2].map(|i| page[i] + (tint[i] - page[i]) * k)
+    })
+}
+
 /// The camera turning by itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Turn {
@@ -327,6 +392,13 @@ pub struct Viewer {
     /// Where a selection is typed, and what was wrong with the last one.
     select_input: Entity<TextInput>,
     select_error: Option<SharedString>,
+    /// The plots: where each was last laid out, what the pointer is over in
+    /// it, and what is worked out once per structure.
+    rama_bounds: Rc<Shared<Bounds<Pixels>>>,
+    rama_hover: Option<usize>,
+    pae_bounds: Rc<Shared<Bounds<Pixels>>>,
+    pae_hover: Option<(usize, usize)>,
+    plot_cache: RefCell<PlotCache>,
     /// The triangles and capsules of `base` each structure was built into,
     /// by `Target::which`, for painting one of its residues.
     parts: [(std::ops::Range<usize>, std::ops::Range<usize>); 2],
@@ -506,6 +578,11 @@ impl Viewer {
             layers: Vec::new(),
             select_input,
             select_error: None,
+            rama_bounds: Rc::new(Shared::new(Bounds::default())),
+            rama_hover: None,
+            pae_bounds: Rc::new(Shared::new(Bounds::default())),
+            pae_hover: None,
+            plot_cache: RefCell::new(PlotCache::default()),
             parts: [(0..0, 0..0), (0..0, 0..0)],
             open: None,
             export: None,
@@ -4473,6 +4550,200 @@ impl Viewer {
         )
     }
 
+    /// Bring the plots' worked-out parts up to the structure shown.
+    fn plots_for(&self, structure: &Structure) -> (Arc<Vec<Option<(f32, f32)>>>, Option<Arc<gpui::RenderImage>>) {
+        let key = (structure as *const Structure as usize, structure.frame);
+        let mut cache = self.plot_cache.borrow_mut();
+        if cache.key != Some(key) {
+            cache.key = Some(key);
+            cache.torsions = Arc::new(structure.torsions());
+            cache.pae = structure.pae.as_ref().map(|pae| {
+                // AlphaFold DB's colours: dark green where the error is
+                // small, through to white at the top of the scale.
+                let n = pae.n.clamp(1, 600);
+                let step = pae.n as f32 / n as f32;
+                let low = [0.05, 0.30, 0.15];
+                picture(n, n, |x, y| {
+                    let v = pae.at(((y as f32 * step) as usize).min(pae.n - 1), ((x as f32 * step) as usize).min(pae.n - 1));
+                    let t = (v / pae.max).clamp(0.0, 1.0);
+                    [0, 1, 2].map(|i| low[i] + (1.0 - low[i]) * t)
+                })
+            });
+        }
+        (cache.torsions.clone(), cache.pae.clone())
+    }
+
+    /// φ against ψ, a dot per residue in its secondary structure's colour.
+    /// A dot pointed at glows its residue; clicked, it picks it out; what is
+    /// picked is ringed.
+    fn ramachandran(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !structure.residues.iter().any(|r| r.ca.is_some()) {
+            return None;
+        }
+        let (torsions, _) = self.plots_for(structure);
+        if torsions.iter().all(Option::is_none) {
+            return None;
+        }
+        let selected = self.selected_residue();
+        let pointed = self.rama_hover.or(self.seq_hover).or(self.hovered_residue());
+        let dots: Vec<(usize, f32, f32, [f32; 3])> = torsions
+            .iter()
+            .enumerate()
+            .filter_map(|(r, t)| {
+                let (phi, psi) = (*t)?;
+                let res = &structure.residues[r];
+                let color = if res.name == "GLY" { [0.55, 0.56, 0.58] } else { render::SS_COLORS.iter().find(|c| c.0 == res.ss).map_or([0.6; 3], |c| c.2) };
+                Some((r, (phi + 180.0) / 360.0, (180.0 - psi) / 360.0, color))
+            })
+            .collect();
+        let store = self.rama_bounds.clone();
+        let ground = ramachandran_ground();
+        let caption = pointed.and_then(|r| {
+            let (phi, psi) = torsions.get(r).copied().flatten()?;
+            let res = &structure.residues[r];
+            Some(format!("{} {} · φ {phi:.0}° ψ {psi:.0}°", res.name, res.seq))
+        });
+        let ink = theme::ink();
+        let plot = div()
+            .id("ramachandran")
+            .debug_selector(|| "ramachandran".into())
+            .relative()
+            .w(px(PLOT))
+            .h(px(PLOT))
+            .rounded(px(4.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(theme::border())
+            .child(gpui::img(gpui::ImageSource::Render(ground)).absolute().inset_0().size_full())
+            .child({
+                let dots = dots.clone();
+                canvas(
+                    move |bounds, _, _| store.set(bounds),
+                    move |bounds, _, window, _| {
+                        let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                        // The axes through zero.
+                        let line = gpui::Hsla { a: 0.25, ..ink };
+                        window.paint_quad(gpui::fill(Bounds::new(bounds.origin + gpui::point(px(w * 0.5), px(0.)), gpui::size(px(1.), px(h))), line));
+                        window.paint_quad(gpui::fill(Bounds::new(bounds.origin + gpui::point(px(0.), px(h * 0.5)), gpui::size(px(w), px(1.))), line));
+                        for &(r, x, y, c) in &dots {
+                            let big = Some(r) == selected || Some(r) == pointed;
+                            let d = if big { 7.0 } else { 4.0 };
+                            let at = bounds.origin + gpui::point(px(x * w - d * 0.5), px(y * h - d * 0.5));
+                            let mut q = gpui::fill(Bounds::new(at, gpui::size(px(d), px(d))), swatch(c)).corner_radii(px(d * 0.5));
+                            if big {
+                                q = q.border_widths(px(1.5)).border_color(ink);
+                            }
+                            window.paint_quad(q);
+                        }
+                    },
+                )
+                .absolute()
+                .inset_0()
+                .size_full()
+            })
+            .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
+                let b = this.rama_bounds.get();
+                let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+                let (x, y) = (f32::from(e.position.x - b.origin.x), f32::from(e.position.y - b.origin.y));
+                let near = dots
+                    .iter()
+                    .map(|&(r, dx, dy, _)| (r, (dx * w - x).powi(2) + (dy * h - y).powi(2)))
+                    .filter(|(_, d)| *d < 36.0)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(r, _)| r);
+                if near != this.rama_hover {
+                    this.rama_hover = near;
+                    this.set_seq_hover(near, cx);
+                    cx.notify();
+                }
+            }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered && this.rama_hover.take().is_some() {
+                    this.set_seq_hover(None, cx);
+                    cx.notify();
+                }
+            }))
+            .on_click(cx.listener(|this, _, _, cx| {
+                let Some(r) = this.rama_hover else { return };
+                let Some(s) = this.structure.as_ref() else { return };
+                let target = residue_pick(s, r).map(|picked| Target { which: 0, picked });
+                this.select(target, cx);
+            }));
+        Some(
+            div()
+                .pt(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(div().flex().justify_between().child(key("ramachandran")).child(
+                    div().text_size(px(9.5)).text_color(theme::faint()).child(caption.unwrap_or_else(|| "φ across, ψ up".into())),
+                ))
+                .child(plot)
+                .into_any_element(),
+        )
+    }
+
+    /// A predicted model's expected error between each pair of residues, as
+    /// AlphaFold DB draws it; pointed at, it names the pair.
+    fn pae_plot(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let pae = structure.pae.clone()?;
+        let (_, image) = self.plots_for(structure);
+        let image = image?;
+        let store = self.pae_bounds.clone();
+        let polymer: Vec<usize> = (0..structure.residues.len()).filter(|&r| !structure.residues[r].outside_polymer()).collect();
+        let caption = self.pae_hover.and_then(|(i, j)| {
+            let (a, b) = (&structure.residues[*polymer.get(i)?], &structure.residues[*polymer.get(j)?]);
+            Some(format!("{}{} on {}{} · {:.1} Å", b.name, b.seq, a.name, a.seq, pae.at(i, j)))
+        });
+        let n = pae.n;
+        Some(
+            div()
+                .pt(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(div().flex().justify_between().child(key("predicted aligned error")).child(
+                    div().text_size(px(9.5)).text_color(theme::faint()).child(caption.unwrap_or_else(|| format!("0 – {:.0} Å", pae.max))),
+                ))
+                .child(
+                    div()
+                        .id("pae")
+                        .debug_selector(|| "pae".into())
+                        .relative()
+                        .w(px(PLOT))
+                        .h(px(PLOT))
+                        .rounded(px(4.))
+                        .overflow_hidden()
+                        .child(gpui::img(gpui::ImageSource::Render(image)).absolute().inset_0().size_full())
+                        .child(canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {}).absolute().inset_0().size_full())
+                        .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
+                            let b = this.pae_bounds.get();
+                            let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+                            if w <= 0.0 || h <= 0.0 {
+                                return;
+                            }
+                            let x = (f32::from(e.position.x - b.origin.x) / w * n as f32) as usize;
+                            let y = (f32::from(e.position.y - b.origin.y) / h * n as f32) as usize;
+                            let at = Some((y.min(n - 1), x.min(n - 1)));
+                            if at != this.pae_hover {
+                                this.pae_hover = at;
+                                // The residue the error is of glows.
+                                let r = at.and_then(|(_, j)| this.structure.as_ref().and_then(|s| (0..s.residues.len()).filter(|&r| !s.residues[r].outside_polymer()).nth(j)));
+                                this.set_seq_hover(r, cx);
+                                cx.notify();
+                            }
+                        }))
+                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                            if !*hovered && this.pae_hover.take().is_some() {
+                                this.set_seq_hover(None, cx);
+                                cx.notify();
+                            }
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The selections: a field to type one in, and a row for each made, with
     /// how many atoms it takes, how it is drawn, its colour, and a ×.
     fn layer_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5941,6 +6212,8 @@ impl Viewer {
                     ),
             )
             .child(self.sequence_view(structure, cx))
+            .children(self.ramachandran(structure, cx))
+            .children(self.pae_plot(structure, cx))
             .when(structure.frame_count() > 1, |d| {
                 d.child(
                     div()
@@ -7299,6 +7572,50 @@ mod ui_tests {
         other.update(cx, |this, cx| this.open_session(&json, cx)).unwrap();
         let kept = other.update(cx, |this, _| this.layers.iter().map(|l| (l.selection.text().to_string(), l.atoms.iter().filter(|a| **a).count())).collect::<Vec<_>>());
         assert_eq!(kept, vec![("byres (resn HIS and within 3 of elem Fe)".to_string(), 40)]);
+    }
+
+    #[gpui::test]
+    fn the_plots_point_at_residues(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let mut s = formats::load_bytes(SAMPLES[2].file, SAMPLES[2].bytes.to_vec()).unwrap();
+            // A made-up error, small along the diagonal.
+            let n = s.residues.iter().filter(|r| !r.outside_polymer()).count();
+            let values = (0..n * n).map(|k| ((k / n) as f32 - (k % n) as f32).abs()).collect();
+            s.pae = Some(Arc::new(crate::protein::Pae { n, values, max: 30.0 }));
+            this.show(s, cx);
+        });
+        // Tall enough for both plots to be in view in the panel.
+        cx.simulate_resize(gpui::size(px(1400.), px(2600.)));
+        cx.run_until_parked();
+        let plot = cx.debug_bounds("ramachandran").expect("no Ramachandran plot");
+        // A dot to point at: residue 10's, where the plot puts it.
+        let (r, phi, psi) = view.update(cx, |this, _| {
+            let t = this.structure.as_ref().unwrap().torsions();
+            let r = (5..40).find(|&r| t[r].is_some()).unwrap();
+            (r, t[r].unwrap().0, t[r].unwrap().1)
+        });
+        let at = plot.origin
+            + gpui::point(
+                plot.size.width * ((phi + 180.0) / 360.0),
+                plot.size.height * ((180.0 - psi) / 360.0),
+            );
+        cx.simulate_mouse_move(at, None, Modifiers::none());
+        cx.run_until_parked();
+        let pointed = view.update(cx, |this, _| this.rama_hover);
+        assert!(pointed.is_some(), "no dot under the pointer");
+        assert_eq!(view.update(cx, |this, _| this.seq_hover), pointed);
+        cx.simulate_click(at, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.selected_residue()), pointed);
+        let _ = r;
+
+        let pae = cx.debug_bounds("pae").expect("no PAE plot");
+        let quarter = pae.origin + gpui::point(pae.size.width * 0.25, pae.size.height * 0.75);
+        cx.simulate_mouse_move(quarter, None, Modifiers::none());
+        cx.run_until_parked();
+        let (i, j) = view.update(cx, |this, _| this.pae_hover).expect("nothing pointed at in the PAE");
+        assert!(i > j, "rows run down, columns across: {i} {j}");
     }
 
     #[gpui::test]

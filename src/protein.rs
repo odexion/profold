@@ -269,6 +269,9 @@ pub struct Structure {
     /// The biological assemblies the file describes, which may be bigger
     /// than what it deposits.
     pub assemblies: Vec<crate::assembly::Assembly>,
+    /// A predicted model's expected error between each pair of residues,
+    /// where the database that made it says.
+    pub pae: Option<Arc<Pae>>,
     /// The span of B-factors colouring runs over, worked out when first asked.
     b_span: std::sync::OnceLock<Option<(f32, f32)>>,
     /// Each residue's place among the polymer's, for the rainbow.
@@ -296,6 +299,7 @@ impl Structure {
             format: None,
             unknown_radius: Element::UNKNOWN.vdw(),
             assemblies: Vec::new(),
+            pae: None,
             b_span: std::sync::OnceLock::new(),
             rank: std::sync::OnceLock::new(),
         }
@@ -483,6 +487,31 @@ impl Structure {
         let n = side.len() as f32;
         let sum = side.iter().fold([0.0; 3], |s, p| [s[0] + p[0], s[1] + p[1], s[2] + p[2]]);
         Some([sum[0] / n, sum[1] / n, sum[2] / n])
+    }
+
+    /// Each residue's backbone torsions, φ and ψ in degrees, where it has
+    /// the backbone and the neighbours, joined to it, to have them.
+    pub fn torsions(&self) -> Vec<Option<(f32, f32)>> {
+        let mut out = vec![None; self.residues.len()];
+        let pos = |i: Option<u32>| i.map(|i| self.atoms[i as usize].pos);
+        let joined = |c: Option<u32>, n: Option<u32>| match (pos(c), pos(n)) {
+            (Some(a), Some(b)) => (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2) < 2.0 * 2.0,
+            _ => false,
+        };
+        for chain in &self.chains {
+            for w in chain.residues.windows(3) {
+                let (p, r, n) = (&self.residues[w[0] as usize], &self.residues[w[1] as usize], &self.residues[w[2] as usize]);
+                if r.ca.is_none() || !joined(p.c, r.n) || !joined(r.c, n.n) {
+                    continue;
+                }
+                let (Some(c0), Some(n1), Some(ca), Some(c1), Some(n2)) = (pos(p.c), pos(r.n), pos(r.ca), pos(r.c), pos(n.n)) else {
+                    continue;
+                };
+                let k = crate::measure::Kind::Dihedral;
+                out[w[1] as usize] = Some((k.value(&[c0, n1, ca, c1]), k.value(&[n1, ca, c1, n2])));
+            }
+        }
+        out
     }
 
     /// A short name for an atom, as a measurement lists it: `SER42 OG`
@@ -987,6 +1016,44 @@ impl Builder {
             crate::dssp::assign(&mut structure);
         }
         structure
+    }
+}
+
+/// Predicted aligned error: how far off, in ångström, residue `j` is
+/// expected to be when the prediction is laid over the truth on residue `i`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pae {
+    pub n: usize,
+    /// Row by row, `n` by `n`.
+    pub values: Vec<f32>,
+    /// The most the scale goes to.
+    pub max: f32,
+}
+
+impl Pae {
+    pub fn at(&self, i: usize, j: usize) -> f32 {
+        self.values[i * self.n + j]
+    }
+
+    /// AlphaFold DB's file: a list holding one object with the matrix as
+    /// `predicted_aligned_error` and its ceiling.
+    pub fn from_json(text: &str) -> anyhow::Result<Pae> {
+        let v: serde_json::Value = serde_json::from_str(text)?;
+        let v = if v.is_array() { &v[0] } else { &v };
+        let rows = v["predicted_aligned_error"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("no predicted aligned error in it"))?;
+        let n = rows.len();
+        let mut values = Vec::with_capacity(n * n);
+        for row in rows {
+            let row = row.as_array().filter(|r| r.len() == n).ok_or_else(|| anyhow::anyhow!("the matrix is not square"))?;
+            values.extend(row.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32));
+        }
+        let max = v["max_predicted_aligned_error"]
+            .as_f64()
+            .map(|m| m as f32)
+            .unwrap_or_else(|| values.iter().cloned().fold(0.0, f32::max));
+        Ok(Pae { n, values, max: max.max(1.0) })
     }
 }
 

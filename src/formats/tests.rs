@@ -411,3 +411,27 @@ fn a_free_nucleotide_stays_a_ligand() {
     let s = read(&one, Format::Pdb);
     assert!(s.residues[0].nucleic.is_none());
 }
+
+#[test]
+fn a_helix_sits_where_helices_do_on_the_ramachandran_plot() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/1crn.pdb.gz");
+    let s = load_bytes("1crn.pdb.gz", std::fs::read(path).unwrap()).unwrap();
+    let t = s.torsions();
+    // The ends have no neighbour to measure across.
+    assert!(t[0].is_none() && t[45].is_none());
+    let helix: Vec<(f32, f32)> = (0..s.residues.len()).filter(|&r| s.residues[r].ss == crate::protein::Ss::Helix).filter_map(|r| t[r]).collect();
+    assert!(helix.len() > 10);
+    let (phi, psi) = helix.iter().fold((0.0, 0.0), |(a, b), (p, q)| (a + p, b + q));
+    let (phi, psi) = (phi / helix.len() as f32, psi / helix.len() as f32);
+    assert!((-80.0..-45.0).contains(&phi) && (-60.0..-25.0).contains(&psi), "{phi} {psi}");
+}
+
+#[test]
+fn predicted_aligned_error_is_read_as_alphafold_writes_it() {
+    let text = r#"[{"predicted_aligned_error":[[0,1,4],[1,0,2.5],[5,3,0]],"max_predicted_aligned_error":31.75}]"#;
+    let pae = crate::protein::Pae::from_json(text).unwrap();
+    assert_eq!((pae.n, pae.max), (3, 31.75));
+    assert_eq!(pae.at(1, 2), 2.5);
+    assert_eq!(pae.at(2, 0), 5.0);
+    assert!(crate::protein::Pae::from_json(r#"[{"predicted_aligned_error":[[0,1],[1]]}]"#).is_err());
+}

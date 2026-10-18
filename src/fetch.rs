@@ -7,6 +7,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::formats::{self, parse_any};
@@ -298,6 +299,20 @@ pub fn fetch_alphafold(acc: &str, tx: &Sender<Event>) -> Result<Structure> {
     let mut s = parse_any(&text, acc.to_string(), Source::AlphaFold)?;
     if let Some(desc) = entry.get("uniprotDescription").and_then(|v| v.as_str()) {
         s.title = desc.to_string();
+    }
+    // The model's expected errors, which a plot shows; the model is worth
+    // having without them.
+    if let Some(url) = entry.get("paeDocUrl").and_then(|v| v.as_str()) {
+        let _ = tx.send(Event::Stage("Fetching the predicted aligned error".into()));
+        match get(url, Some(tx)).map_err(anyhow::Error::from).and_then(|t| crate::protein::Pae::from_json(&t)) {
+            Ok(pae) if pae.n == s.residues.iter().filter(|r| !r.outside_polymer()).count() => s.pae = Some(Arc::new(pae)),
+            Ok(_) => {
+                let _ = tx.send(Event::Log("The predicted aligned error does not match the model; left out.".into()));
+            }
+            Err(e) => {
+                let _ = tx.send(Event::Log(format!("No predicted aligned error ({e:#}).")));
+            }
+        }
     }
     Ok(s)
 }
