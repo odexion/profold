@@ -211,6 +211,11 @@ pub enum Coloring {
     BFactor,
     /// Helix, strand and coil, each its own colour.
     Structure,
+    /// Each residue by how much it shuns water, on Kyte and Doolittle's scale.
+    Hydrophobic,
+    /// Acidic residues red and basic blue; over a surface, the electrostatic
+    /// potential there.
+    Charge,
     Element,
     /// One colour per structure, when two are superimposed.
     Pair,
@@ -219,12 +224,14 @@ pub enum Coloring {
 }
 
 impl Coloring {
-    pub const ALL: [Coloring; 6] = [
+    pub const ALL: [Coloring; 8] = [
         Coloring::Chain,
         Coloring::Rainbow,
         Coloring::Confidence,
         Coloring::BFactor,
         Coloring::Structure,
+        Coloring::Hydrophobic,
+        Coloring::Charge,
         Coloring::Element,
     ];
     /// The options that mean something while two structures are overlaid.
@@ -241,6 +248,8 @@ impl Coloring {
             Coloring::Confidence => "pLDDT",
             Coloring::BFactor => "B-factor",
             Coloring::Structure => "Secondary",
+            Coloring::Hydrophobic => "Hydrophobic",
+            Coloring::Charge => "Charge",
             Coloring::Element => "Element",
             Coloring::Pair => "Pair",
             Coloring::Deviation => "Deviation",
@@ -1103,9 +1112,122 @@ fn residue_color(
             None => s.chain_color(r.chain as usize, palette),
         },
         Coloring::Structure => ss_color(r.ss),
+        Coloring::Hydrophobic => match kyte_doolittle(r.code) {
+            Some(h) => diverging(h / 4.5, HYDROPHILIC, HYDROPHOBIC),
+            None => NEUTRAL,
+        },
+        Coloring::Charge => match r.name.as_str() {
+            "ASP" | "GLU" => NEGATIVE,
+            "LYS" | "ARG" => POSITIVE,
+            _ => NEUTRAL,
+        },
         Coloring::Element => [0.42, 0.44, 0.47],
     }
 }
+
+/// The ends of the hydrophobicity and charge scales, and their middle:
+/// fixed, as a reader knows them by sight, rather than the palette's.
+pub const HYDROPHILIC: [f32; 3] = [0.25, 0.53, 0.80];
+pub const HYDROPHOBIC: [f32; 3] = [0.88, 0.50, 0.16];
+pub const NEGATIVE: [f32; 3] = [0.86, 0.22, 0.22];
+pub const POSITIVE: [f32; 3] = [0.22, 0.40, 0.88];
+pub const NEUTRAL: [f32; 3] = [0.94, 0.93, 0.91];
+
+/// From `low` at -1 through white at 0 to `high` at 1.
+pub fn diverging(t: f32, low: [f32; 3], high: [f32; 3]) -> [f32; 3] {
+    let t = t.clamp(-1.0, 1.0);
+    match t {
+        -1.0 => low,
+        1.0 => high,
+        t if t < 0.0 => mix(NEUTRAL, low, -t),
+        t => mix(NEUTRAL, high, t),
+    }
+}
+
+/// Kyte and Doolittle's hydropathy, from -4.5 (arginine) to 4.5 (isoleucine).
+pub fn kyte_doolittle(code: char) -> Option<f32> {
+    Some(match code {
+        'I' => 4.5,
+        'V' => 4.2,
+        'L' => 3.8,
+        'F' => 2.8,
+        'C' => 2.5,
+        'M' => 1.9,
+        'A' => 1.8,
+        'G' => -0.4,
+        'T' => -0.7,
+        'S' => -0.8,
+        'W' => -0.9,
+        'Y' => -1.3,
+        'P' => -1.6,
+        'H' => -3.2,
+        'E' | 'Q' | 'D' | 'N' => -3.5,
+        'K' => -3.9,
+        'R' => -4.5,
+        _ => return None,
+    })
+}
+
+/// The charge an atom carries at neutral pH: the charged groups of Asp,
+/// Glu, Lys and Arg spread over their atoms, the chain's C terminus, a
+/// nucleic acid's phosphates, and metal ions.
+fn charge_of(s: &Structure, i: usize) -> f32 {
+    let a = &s.atoms[i];
+    let r = &s.residues[a.residue as usize];
+    match (r.name.as_str(), a.name()) {
+        ("ASP", "OD1" | "OD2") | ("GLU", "OE1" | "OE2") => -0.5,
+        ("LYS", "NZ") => 1.0,
+        ("ARG", "NH1" | "NH2" | "NE") => 1.0 / 3.0,
+        (_, "OXT") => -1.0,
+        // A strand's phosphates, one charge each.
+        (_, "OP1" | "OP2" | "O1P" | "O2P") if r.nucleic.is_some() => -0.5,
+        _ if r.outside_polymer() && matches!(a.element.0, 12 | 20 | 25 | 26 | 27 | 28 | 29 | 30) => 2.0,
+        _ if r.outside_polymer() && matches!(a.element.0, 3 | 11 | 19) => 1.0,
+        _ => 0.0,
+    }
+}
+
+/// How far the potential reaches, in ångström: the Debye length of
+/// physiological salt, about 8 Å, and twice that as the cut-off.
+const DEBYE: f32 = 8.0;
+
+/// The electrostatic potential at each point, from the charges of `s`, as
+/// Coulomb's law screened by salt and damped by a dielectric rising with
+/// distance: the usual quick picture, not a Poisson-Boltzmann solution.
+fn potentials(s: &Structure, points: &[[f32; 3]]) -> Vec<f32> {
+    use rayon::prelude::*;
+    let charges: Vec<(usize, f32)> = (0..s.atoms.len()).map(|i| (i, charge_of(s, i))).filter(|(_, q)| *q != 0.0).collect();
+    let cell = 2.0 * DEBYE;
+    let key = |p: [f32; 3]| [0, 1, 2].map(|k| (p[k] / cell).floor() as i32);
+    let mut grid: HashMap<[i32; 3], Vec<(usize, f32)>> = HashMap::new();
+    for &(i, q) in &charges {
+        grid.entry(key(s.atoms[i].pos)).or_default().push((i, q));
+    }
+    points
+        .par_iter()
+        .map(|&p| {
+            let c = key(p);
+            let mut phi = 0.0;
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        for &(i, q) in grid.get(&[c[0] + dx, c[1] + dy, c[2] + dz]).into_iter().flatten() {
+                            let d = sub(p, s.atoms[i].pos);
+                            let r = dot(d, d).sqrt().max(1.0);
+                            if r < cell {
+                                phi += q * (-r / DEBYE).exp() / (r * r);
+                            }
+                        }
+                    }
+                }
+            }
+            phi
+        })
+        .collect()
+}
+
+/// The potential at which the surface is fully red or blue.
+const PHI_FULL: f32 = 0.06;
 
 /// The colours of helix, strand and coil: kept apart from the palette, as
 /// pLDDT's bands are, so they read the same whatever it is.
@@ -1406,9 +1528,26 @@ fn build_surface(paint: &Paint, quality: f32) -> Scene {
         tri_residue: Vec::with_capacity(facets.len()),
         ..Scene::default()
     };
-    for f in facets {
+    // In charge, the skin shows the potential over it, a little out from
+    // each triangle, where a probe of solvent would feel it.
+    let phi = (paint.coloring == Coloring::Charge).then(|| {
+        let at: Vec<[f32; 3]> = facets
+            .iter()
+            .map(|f| {
+                let m = [0, 1, 2].map(|k| (f.p[0][k] + f.p[1][k] + f.p[2][k]) / 3.0);
+                let n = unit([0, 1, 2].map(|k| f.n[0][k] + f.n[1][k] + f.n[2][k]));
+                [m[0] + n[0] * 1.4, m[1] + n[1] * 1.4, m[2] + n[2] * 1.4]
+            })
+            .collect();
+        potentials(s, &at)
+    });
+    for (k, f) in facets.into_iter().enumerate() {
         let atom = skin[f.atom as usize];
-        scene.tris.push(Tri { p: f.p, n: f.n, c: paint.atom(atom) });
+        let c = match &phi {
+            Some(phi) => diverging(phi[k] / PHI_FULL, NEGATIVE, POSITIVE),
+            None => paint.atom(atom),
+        };
+        scene.tris.push(Tri { p: f.p, n: f.n, c });
         scene.tri_residue.push(s.atoms[atom].residue);
     }
     if polymer {
@@ -3798,6 +3937,31 @@ mod tests {
         let p = Palette::Viridis;
         assert_eq!(residue_color(&s, polymer[0], Coloring::Rainbow, p), p.ramp(0.0));
         assert_eq!(residue_color(&s, *polymer.last().unwrap(), Coloring::Rainbow, p), p.ramp(1.0));
+    }
+
+    #[test]
+    fn hydrophobic_and_charged_residues_and_the_potential_over_a_skin() {
+        let s = sample("1crn.pdb.gz");
+        let find = |name: &str| (0..s.residues.len()).find(|&r| s.residues[r].name == name).unwrap();
+        let p = Palette::Spectrum;
+        assert_eq!(residue_color(&s, find("ILE"), Coloring::Hydrophobic, p), HYDROPHOBIC);
+        assert_eq!(residue_color(&s, find("ARG"), Coloring::Hydrophobic, p), HYDROPHILIC);
+        assert_eq!(residue_color(&s, find("ARG"), Coloring::Charge, p), POSITIVE);
+        assert_eq!(residue_color(&s, find("GLU"), Coloring::Charge, p), NEGATIVE);
+        assert_eq!(residue_color(&s, find("THR"), Coloring::Charge, p), NEUTRAL);
+
+        // Just off an arginine's guanidinium it is positive, off a
+        // glutamate's carboxylate negative.
+        let atom = |r: usize, name: &str| s.atoms[s.residue_atoms(r).into_iter().find(|&i| s.atoms[i].name() == name).unwrap()].pos;
+        let off = |p: [f32; 3]| [p[0] + 1.5, p[1], p[2]];
+        let phi = potentials(&s, &[off(atom(find("ARG"), "NH1")), off(atom(find("GLU"), "OE1"))]);
+        assert!(phi[0] > 0.0 && phi[1] < 0.0, "{phi:?}");
+
+        // Over the skin the colours run both ways.
+        let sc = scene(&s, Repr::Surface, Coloring::Charge, false);
+        let red = sc.tris.iter().filter(|t| t.c[0] > t.c[2] + 0.1).count();
+        let blue = sc.tris.iter().filter(|t| t.c[2] > t.c[0] + 0.1).count();
+        assert!(red > 100 && blue > 100, "{red} red, {blue} blue");
     }
 
     #[test]

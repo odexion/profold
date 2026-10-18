@@ -4651,6 +4651,37 @@ impl Viewer {
                 .gap(px(14.))
                 .children(render::SS_COLORS.iter().map(|(_, name, c)| row(*c, name.to_string())))
                 .into_any_element(),
+            Coloring::Hydrophobic | Coloring::Charge => {
+                let hydro = self.coloring == Coloring::Hydrophobic;
+                let (low, high) = if hydro { (render::HYDROPHILIC, render::HYDROPHOBIC) } else { (render::NEGATIVE, render::POSITIVE) };
+                let ends = if hydro {
+                    ("water-loving", "oily")
+                } else if self.repr == Repr::Surface {
+                    ("− potential", "+")
+                } else {
+                    ("acidic", "basic")
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(10.))
+                    .text_color(theme::muted())
+                    .child(ends.0)
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(8.))
+                            .flex()
+                            .rounded(px(4.))
+                            .overflow_hidden()
+                            .children((0..24).map(move |i| {
+                                div().flex_1().h_full().bg(swatch(render::diverging(i as f32 / 11.5 - 1.0, low, high)))
+                            })),
+                    )
+                    .child(ends.1)
+                    .into_any_element()
+            }
             Coloring::Confidence if structure.has_confidence => div()
                 .flex()
                 .flex_wrap()
@@ -4673,6 +4704,9 @@ impl Viewer {
                 .child(key(match self.coloring {
                     Coloring::BFactor => "b-factor",
                     Coloring::Structure => "secondary structure",
+                    Coloring::Hydrophobic => "hydrophobicity",
+                    Coloring::Charge if self.repr == Repr::Surface => "electrostatic potential",
+                    Coloring::Charge => "charge",
                     _ => "pLDDT",
                 }))
                 .child(body)
