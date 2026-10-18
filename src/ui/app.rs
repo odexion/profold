@@ -205,6 +205,23 @@ struct PlotCache {
 /// The side of each plot, in pixels.
 const PLOT: f32 = 236.0;
 
+/// Frames as an endlessly looping GIF, each shown for its milliseconds.
+fn encode_gif(frames: Vec<(render::Frame, u32)>, out: impl std::io::Write) -> anyhow::Result<()> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    let mut encoder = GifEncoder::new_with_speed(out, 10);
+    encoder.set_repeat(Repeat::Infinite)?;
+    encoder.encode_frames(frames.into_iter().map(|(frame, delay)| {
+        // The renderer hands back BGRA.
+        let mut rgba = frame.bgra;
+        for p in rgba.chunks_exact_mut(4) {
+            p.swap(0, 2);
+        }
+        let buffer = image::RgbaImage::from_raw(frame.width as u32, frame.height as u32, rgba).expect("sized to fit");
+        image::Frame::from_parts(buffer, 0, 0, image::Delay::from_numer_denom_ms(delay, 1))
+    }))?;
+    Ok(())
+}
+
 /// A small picture from colours row by row, as GPUI takes them.
 fn picture(width: usize, height: usize, rgb: impl Fn(usize, usize) -> [f32; 3]) -> Arc<gpui::RenderImage> {
     let mut bgra = vec![0u8; width * height * 4];
@@ -2241,6 +2258,70 @@ impl Viewer {
             )))
     }
 
+    /// Save an animation as a GIF: one turn of the molecule, or with
+    /// `trajectory` its frames played through. Drawn and encoded off the
+    /// main thread, no more than 720 pixels across.
+    pub fn save_gif(&mut self, trajectory: bool, cx: &mut Context<Self>) {
+        self.open = None;
+        let (w, h) = self.cache.borrow().size;
+        let Some(structure) = self.structure.clone() else { return };
+        if w == 0 || h == 0 {
+            return;
+        }
+        let k = (720.0 / w.max(h) as f32).min(1.0);
+        let (width, height) = (((w as f32 * k) as usize).max(2), ((h as f32 * k) as usize).max(2));
+        let (camera, style, repr, coloring, palette, standard, cell) =
+            (self.camera, self.style, self.repr, self.coloring, self.palette, self.standard_colors, self.show_cell);
+        let appearance = self.appearance.clone();
+        let scene = self.scene.clone();
+        let page = theme::view();
+        let suggested = format!("{}{}.gif", structure.id.to_lowercase(), if trajectory { "-trajectory" } else { "-turn" });
+        let directory = dirs::home_dir().map(|home| home.join("Desktop")).unwrap_or_else(|| PathBuf::from("."));
+        let chosen = cx.prompt_for_new_path(&directory, Some(&suggested));
+        self.export = Some(cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = chosen.await else { return };
+            let _ = this.update(cx, |this, cx| {
+                this.note("Drawing the animation".to_string());
+                cx.notify();
+            });
+            let made = cx
+                .background_executor()
+                .spawn(async move {
+                    let to_frame = |frame: render::Frame, delay: u32| (frame, delay);
+                    let mut frames = Vec::new();
+                    if trajectory {
+                        let count = structure.frame_count();
+                        let step = count.div_ceil(200).max(1);
+                        let mut s = Structure::clone(&structure);
+                        for i in (0..count).step_by(step) {
+                            s.set_frame(i);
+                            let sc = render::build_scene(&s, repr, coloring, 1.0, style, palette, standard, cell, &appearance).stamp();
+                            frames.push(to_frame(render::render(&sc, &camera, width, height, page, style), 60));
+                        }
+                    } else {
+                        let mut cam = camera;
+                        for _ in 0..72 {
+                            frames.push(to_frame(render::render(&scene, &cam, width, height, page, style), 40));
+                            cam.rotate(std::f32::consts::TAU / 72.0, 0.0);
+                        }
+                    }
+                    encode_gif(frames, std::fs::File::create(&path)?)?;
+                    anyhow::Ok(path)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match made {
+                    Ok(path) => {
+                        this.note(format!("Saved {}", path.display()));
+                        cx.reveal_path(&path);
+                    }
+                    Err(e) => this.error = Some(format!("{e:#}").into()),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
     /// After a change of palette, say for a few seconds what kept its own
     /// colour through it, so the colours that did not move are no surprise.
     fn say_kept(&mut self, cx: &mut Context<Self>) {
@@ -3783,6 +3864,14 @@ impl Viewer {
     /// Write the viewport out as a picture, at a multiple of its size.
     fn image_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (w, h) = self.cache.borrow().size;
+        let gif_turn = item("gif-turn", "Save GIF · one turn".into(), false)
+            .debug_selector(|| "gif-turn".into())
+            .on_click(cx.listener(|this, _, _, cx| this.save_gif(false, cx)));
+        let gif_traj = (self.frame_count() > 1).then(|| {
+            item("gif-trajectory", "Save GIF · the trajectory".into(), false)
+                .debug_selector(|| "gif-trajectory".into())
+                .on_click(cx.listener(|this, _, _, cx| this.save_gif(true, cx)))
+        });
         let transparent = item("transparent", "Transparent background".into(), self.transparent)
             .debug_selector(|| "transparent".into())
             .on_click(cx.listener(|this, _, _, cx| {
@@ -3827,6 +3916,9 @@ impl Viewer {
             }))
             .child(divide())
             .child(transparent)
+            .child(divide())
+            .child(gif_turn)
+            .when_some(gif_traj, |d, g| d.child(g))
     }
 
     /// The logo and what the tab is for, at the head of the panel.
@@ -7666,6 +7758,27 @@ mod ui_tests {
         let other = Structure::beads("other.xtc", 10, vec![crate::protein::Snapshot { pos: vec![[0.0; 3]; 10], cell: None }]);
         view.update(cx, |this, cx| this.finish(Ok(other), cx));
         assert_eq!(view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms.len()), 10);
+    }
+
+    #[test]
+    fn a_turn_is_written_as_a_looping_gif() {
+        use image::AnimationDecoder;
+        let s = formats::load_bytes(SAMPLES[0].file, SAMPLES[0].bytes.to_vec()).unwrap();
+        let scene = render::build_scene(&s, Repr::BallAndStick, Coloring::Element, 1.0, Style::Soft, Palette::Spectrum, true, false, &Appearance::default());
+        let mut cam = Camera::frame(&s);
+        let frames: Vec<(render::Frame, u32)> = (0..6)
+            .map(|_| {
+                let f = render::render_cpu(&scene, &cam, 120, 90, [1.0; 3], Style::Soft);
+                cam.rotate(1.0, 0.0);
+                (f, 40)
+            })
+            .collect();
+        let mut bytes = Vec::new();
+        encode_gif(frames, &mut bytes).unwrap();
+        let decoded = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).unwrap().into_frames().collect_frames().unwrap();
+        assert_eq!(decoded.len(), 6);
+        assert_eq!(decoded[0].buffer().dimensions(), (120, 90));
+        assert_ne!(decoded[0].buffer().as_raw(), decoded[3].buffer().as_raw(), "every frame the same");
     }
 
     #[gpui::test]
