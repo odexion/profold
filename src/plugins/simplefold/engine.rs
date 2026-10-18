@@ -258,7 +258,7 @@ impl Engine {
             &[("UV_TORCH_BACKEND", "auto")]
         };
 
-        stage(tx, "Installing simplefold (this downloads a lot; be patient)…");
+        stage(tx, "Installing simplefold (large download; this may take several minutes)…");
         run(
             &uv,
             &[
@@ -449,7 +449,7 @@ impl Engine {
         }
         if !source.contains(ORIGINAL) {
             let _ = tx.send(Event::Log(
-                "SimpleFold loads ESM differently than expected; leaving its code alone.".into(),
+                "SimpleFold loads ESM differently than expected; the memory patch was not applied.".into(),
             ));
             return;
         }
@@ -459,11 +459,11 @@ impl Engine {
         match std::fs::write(&path, eased) {
             Ok(()) => {
                 let _ = tx.send(Event::Log(
-                    "Eased SimpleFold's model loading to one tensor at a time.".into(),
+                    "Patched SimpleFold to load model weights one tensor at a time.".into(),
                 ));
             }
             Err(e) => {
-                let _ = tx.send(Event::Log(format!("Could not ease the model loading: {e}")));
+                let _ = tx.send(Event::Log(format!("Could not apply the model-loading patch: {e}")));
             }
         }
     }

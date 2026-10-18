@@ -90,7 +90,7 @@ fn remote_size(url: &str) -> Result<u64> {
         .header("user-agent", "profold/0.1")
         .call()
         .with_context(|| format!("asking {url} for its size"))?;
-    header_u64(&resp, "content-length").ok_or_else(|| anyhow!("{url} did not say its size"))
+    header_u64(&resp, "content-length").ok_or_else(|| anyhow!("{url} did not report a file size"))
 }
 
 fn header_u64<B>(resp: &ureq::http::Response<B>, name: &str) -> Option<u64> {

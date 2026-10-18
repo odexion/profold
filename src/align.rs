@@ -167,7 +167,7 @@ pub fn superpose(reference: &mut Structure, mobile: &mut Structure) -> Result<Ov
         .map(|(i, j)| (ra[i], rb[j]))
         .collect();
     if pairs.len() < 3 {
-        bail!("their sequences have too little in common to lay one over the other");
+        bail!("sequence identity is too low for superposition");
     }
     let identical = pairs.iter().filter(|(a, b)| reference.residues[*a].code == mobile.residues[*b].code).count();
     let ca = |s: &Structure, r: usize| s.atoms[s.residues[r].ca.unwrap() as usize].pos.map(f64::from);

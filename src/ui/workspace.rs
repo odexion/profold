@@ -690,9 +690,9 @@ impl Workspace {
             Status::UpToDate => (Some("You have the latest version.".to_string()), theme::muted()),
             Status::Available { version, .. } => (
                 Some(if update::TARGET.is_none() {
-                    format!("{version} is out. This build is from source, so it is not replaced.")
+                    format!("{version} is available. This build is from source, so it is not replaced.")
                 } else {
-                    format!("{version} is out, but this copy cannot be replaced; use the installer.")
+                    format!("{version} is available, but this copy cannot be replaced; use the installer.")
                 }),
                 theme::ink(),
             ),
@@ -705,7 +705,7 @@ impl Workspace {
             ),
             Status::Installing { version } => (Some(format!("Installing {version}…")), theme::muted()),
             Status::Ready { version } => (
-                Some(format!("{version} is installed and starts next time.")),
+                Some(format!("{version} is installed and takes effect on next launch.")),
                 theme::ink(),
             ),
             Status::Failed(e) => (Some(format!("Could not update: {e}")), theme::danger()),

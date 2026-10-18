@@ -110,7 +110,7 @@ pub fn get() -> Option<&'static Gpu> {
         match pollster::block_on(Gpu::new()) {
             Ok(gpu) => Some(gpu),
             Err(e) => {
-                eprintln!("profold: drawing on the CPU ({e})");
+                eprintln!("profold: using software rendering ({e})");
                 None
             }
         }

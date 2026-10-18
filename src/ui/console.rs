@@ -16,24 +16,24 @@ use crate::select::Selection;
 /// What `help` lists: each command and what it takes.
 pub const HELP: &[(&str, &str)] = &[
     ("open <id, name or path>", "open a structure, as the search field does"),
-    ("overlay <id or path>", "lay another structure over this one"),
-    ("show cartoon|tube|sticks|licorice|spheres|surface", "draw it so"),
-    ("color chain|rainbow|plddt|bfactor|secondary|hydrophobic|charge|element", "colour it so"),
-    ("palette <name>", "Spectrum, Viridis, Magma and the rest"),
-    ("style illustrative|flat|soft|studio", "the look of the drawing"),
-    ("sticks|spheres|hide <selection>", "draw a selection its own way"),
-    ("clear", "take every selection away"),
+    ("overlay <id or path>", "superimpose another structure onto this one"),
+    ("show cartoon|tube|sticks|licorice|spheres|surface", "set the representation"),
+    ("color chain|rainbow|plddt|bfactor|secondary|hydrophobic|charge|element", "set the colouring scheme"),
+    ("palette <name>", "set the colour palette (Spectrum, Viridis, Magma, …)"),
+    ("style illustrative|flat|soft|studio", "set the rendering style"),
+    ("sticks|spheres|hide <selection>", "apply a representation to a selection"),
+    ("clear", "clear all selections"),
     ("distance|angle|dihedral <sel>, <sel>, …", "measure between the first atom of each"),
-    ("focus <selection>", "fly to it"),
-    ("site <ligand>", "look into a ligand's binding site"),
+    ("focus <selection>", "centre the view on a selection"),
+    ("site <ligand>", "show a ligand's binding site"),
     ("assembly <n>|deposited", "show an assembly, or what was deposited"),
     ("turn x|y <degrees>, zoom <factor>, reset", "move the camera"),
-    ("spin, rock, stop", "turn by itself, or stop"),
-    ("perspective on|off, slab on|off", "the lens and the slab"),
-    ("water on|off, hydrogens on|off", "show them or not"),
+    ("spin, rock, stop", "toggle auto-rotation"),
+    ("perspective on|off, slab on|off", "projection mode and clipping slab"),
+    ("water on|off, hydrogens on|off", "toggle display"),
     ("frame <n>, play", "step a trajectory"),
-    ("save <file.png|.pdb|.cif|.profold>", "write it out, no questions asked"),
-    ("run <script>", "the commands in a file, one a line"),
+    ("save <file.png|.pdb|.cif|.profold>", "save to file without prompting"),
+    ("run <script>", "run commands from a script file, one per line"),
     ("undo, redo, help", ""),
 ];
 
@@ -57,7 +57,7 @@ impl Viewer {
         let verb = verb.to_ascii_lowercase();
         let need = |what: &str| -> Result<()> {
             if rest.is_empty() {
-                bail!("{verb} wants {what}");
+                bail!("{verb} requires {what}");
             }
             Ok(())
         };
@@ -67,7 +67,7 @@ impl Viewer {
         Ok(match verb.as_str() {
             "help" | "?" => HELP.iter().map(|(c, _)| *c).collect::<Vec<_>>().join(" · "),
             "open" | "load" | "fetch" => {
-                need("something to open")?;
+                need("a structure to open")?;
                 let path = PathBuf::from(rest);
                 if path.is_file() {
                     self.open_path(path, cx);
@@ -77,7 +77,7 @@ impl Viewer {
                 format!("opening {rest}")
             }
             "overlay" => {
-                need("something to lay over")?;
+                need("a structure to superimpose")?;
                 shown()?;
                 self.overlay_next = true;
                 let path = PathBuf::from(rest);
@@ -96,7 +96,7 @@ impl Viewer {
                     "licorice" => Repr::Licorice,
                     "spheres" | "spacefill" | "cpk" => Repr::Spacefill,
                     "surface" => Repr::Surface,
-                    other => bail!("\"{other}\" is not a way to draw it"),
+                    other => bail!("\"{other}\" is not a known representation"),
                 };
                 let s = shown()?;
                 if repr.needs_polymer() && !s.has_polymer() {
@@ -172,13 +172,13 @@ impl Viewer {
                 let s = shown()?;
                 let parts: Vec<&str> = rest.split([',', ';']).map(str::trim).filter(|p| !p.is_empty()).collect();
                 if parts.len() != kind.atoms() {
-                    bail!("{verb} wants {} selections, a comma between each", kind.atoms());
+                    bail!("{verb} requires {} comma-separated selections", kind.atoms());
                 }
                 let atoms: Vec<usize> = parts
                     .iter()
                     .map(|p| {
                         let mask = Selection::parse(p)?.atoms(&s);
-                        mask.iter().position(|a| *a).ok_or_else(|| anyhow!("\"{p}\" takes no atom"))
+                        mask.iter().position(|a| *a).ok_or_else(|| anyhow!("\"{p}\" matches no atoms"))
                     })
                     .collect::<Result<_>>()?;
                 let m = Measurement { kind, which: 0, atoms };
@@ -193,7 +193,7 @@ impl Viewer {
                 let mask = Selection::parse(rest)?.atoms(&s);
                 let points: Vec<[f32; 3]> = (0..s.atoms.len()).filter(|&i| mask[i]).map(|i| s.atoms[i].pos).collect();
                 if points.is_empty() {
-                    bail!("\"{rest}\" takes no atom");
+                    bail!("\"{rest}\" matches no atoms");
                 }
                 let (centre, reach) = spread(points.iter().copied());
                 self.fly_to(centre, reach * 2.0 + 8.0, None, cx);
@@ -211,7 +211,7 @@ impl Viewer {
             "assembly" => {
                 let k = match rest {
                     "" | "deposited" | "none" | "0" => None,
-                    n => Some(n.parse::<usize>().context("assembly wants a number")?.checked_sub(1).ok_or_else(|| anyhow!("assemblies count from 1"))?),
+                    n => Some(n.parse::<usize>().context("assembly requires a number")?.checked_sub(1).ok_or_else(|| anyhow!("assemblies count from 1"))?),
                 };
                 let base = self.deposited.clone().or_else(|| self.structure.clone()).ok_or_else(|| anyhow!("nothing is open"))?;
                 if let Some(k) = k {
@@ -228,7 +228,7 @@ impl Viewer {
             "turn" | "rotate" => {
                 let mut it = rest.split_whitespace();
                 let (axis, deg) = (it.next().unwrap_or(""), it.next().and_then(|d| d.parse::<f32>().ok()));
-                let Some(deg) = deg else { bail!("turn wants an axis and degrees, as in \"turn y 90\"") };
+                let Some(deg) = deg else { bail!("turn requires an axis and an angle in degrees, as in \"turn y 90\"") };
                 let r = deg.to_radians();
                 match axis {
                     "y" => self.camera.rotate(r, 0.0),
@@ -239,7 +239,7 @@ impl Viewer {
                 format!("turned {deg}° about {axis}")
             }
             "zoom" => {
-                let f: f32 = rest.parse().context("zoom wants a factor")?;
+                let f: f32 = rest.parse().context("zoom requires a factor")?;
                 self.camera.zoom = (self.camera.zoom * f).clamp(0.12, 24.0);
                 cx.notify();
                 format!("zoom {:.2}×", self.camera.zoom)
@@ -287,7 +287,7 @@ impl Viewer {
                 format!("hydrogens {}", if on { "shown" } else { "hidden" })
             }
             "frame" => {
-                let n: usize = rest.parse().context("frame wants a number")?;
+                let n: usize = rest.parse().context("frame requires a number")?;
                 let count = self.frame_count();
                 if n == 0 || n > count {
                     bail!("there are {count} frames");
@@ -347,12 +347,12 @@ impl Viewer {
             "pick" => {
                 let s = shown()?;
                 let mask = Selection::parse(rest)?.atoms(&s);
-                let atom = mask.iter().position(|a| *a).ok_or_else(|| anyhow!("\"{rest}\" takes no atom"))?;
+                let atom = mask.iter().position(|a| *a).ok_or_else(|| anyhow!("\"{rest}\" matches no atoms"))?;
                 let target = residue_pick(&s, s.atoms[atom].residue as usize).map(|picked| Target { which: 0, picked });
                 self.select(target, cx);
                 "picked".into()
             }
-            other => bail!("\"{other}\" is not a command; help lists them"),
+            other => bail!("\"{other}\" is not a known command; type help for a list"),
         })
     }
 

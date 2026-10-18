@@ -69,7 +69,7 @@ struct Reader<'a> {
 
 impl Reader<'_> {
     fn take(&mut self, n: usize) -> Result<&[u8]> {
-        let s = self.b.get(self.at..self.at + n).ok_or_else(|| anyhow!("the BinaryCIF file is cut short"))?;
+        let s = self.b.get(self.at..self.at + n).ok_or_else(|| anyhow!("the BinaryCIF file is truncated"))?;
         self.at += n;
         Ok(s)
     }
@@ -169,7 +169,7 @@ impl Column {
         match self {
             Column::Ints(v) => Ok(v),
             Column::Floats(v) => Ok(v.into_iter().map(|x| x as i64).collect()),
-            Column::Strings(_) => bail!("text where numbers were wanted"),
+            Column::Strings(_) => bail!("expected numeric data, found text"),
         }
     }
 
@@ -209,16 +209,16 @@ fn decode(data: &Value) -> Result<Column> {
             }
             "FixedPoint" => {
                 let factor = e.get("factor").and_then(Value::float).unwrap_or(1.0);
-                Column::Floats(current.take().ok_or_else(|| anyhow!("FixedPoint of nothing"))?.ints()?.into_iter().map(|v| v as f64 / factor).collect())
+                Column::Floats(current.take().ok_or_else(|| anyhow!("FixedPoint encoding has no input data"))?.ints()?.into_iter().map(|v| v as f64 / factor).collect())
             }
             "IntervalQuantization" => {
                 let (min, max) = (e.get("min").and_then(Value::float).unwrap_or(0.0), e.get("max").and_then(Value::float).unwrap_or(1.0));
                 let steps = e.get("numSteps").and_then(Value::int).unwrap_or(2).max(2) as f64;
                 let delta = (max - min) / (steps - 1.0);
-                Column::Floats(current.take().ok_or_else(|| anyhow!("IntervalQuantization of nothing"))?.ints()?.into_iter().map(|v| min + delta * v as f64).collect())
+                Column::Floats(current.take().ok_or_else(|| anyhow!("IntervalQuantization encoding has no input data"))?.ints()?.into_iter().map(|v| min + delta * v as f64).collect())
             }
             "RunLength" => {
-                let pairs = current.take().ok_or_else(|| anyhow!("RunLength of nothing"))?.ints()?;
+                let pairs = current.take().ok_or_else(|| anyhow!("RunLength encoding has no input data"))?.ints()?;
                 let mut out = Vec::new();
                 for p in pairs.chunks_exact(2) {
                     out.extend(std::iter::repeat_n(p[0], p[1].max(0) as usize));
@@ -227,7 +227,7 @@ fn decode(data: &Value) -> Result<Column> {
             }
             "Delta" => {
                 let mut v = e.get("origin").and_then(Value::int).unwrap_or(0);
-                let deltas = current.take().ok_or_else(|| anyhow!("Delta of nothing"))?.ints()?;
+                let deltas = current.take().ok_or_else(|| anyhow!("Delta encoding has no input data"))?.ints()?;
                 Column::Ints(
                     deltas
                         .into_iter()
@@ -239,7 +239,7 @@ fn decode(data: &Value) -> Result<Column> {
                 )
             }
             "IntegerPacking" => {
-                let packed = current.take().ok_or_else(|| anyhow!("IntegerPacking of nothing"))?.ints()?;
+                let packed = current.take().ok_or_else(|| anyhow!("IntegerPacking encoding has no input data"))?.ints()?;
                 let unsigned = matches!(e.get("isUnsigned"), Some(Value::Bool(true)));
                 let (upper, lower) = match (e.get("byteCount").and_then(Value::int).unwrap_or(1), unsigned) {
                     (1, true) => (0xff, i64::MIN),
@@ -255,7 +255,7 @@ fn decode(data: &Value) -> Result<Column> {
                     while t == upper || t == lower {
                         value += t;
                         j += 1;
-                        t = *packed.get(j).ok_or_else(|| anyhow!("IntegerPacking runs off the end"))?;
+                        t = *packed.get(j).ok_or_else(|| anyhow!("IntegerPacking exceeds the data length"))?;
                     }
                     out.push(value + t);
                     j += 1;

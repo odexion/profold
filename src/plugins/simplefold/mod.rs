@@ -60,7 +60,7 @@ impl SimpleFold {
     fn preamble(&self) -> Vec<String> {
         let mut notes = Vec::new();
         if !self.engine.is_installed() {
-            notes.push("First run: installing SimpleFold. This takes a while.".into());
+            notes.push("First run: installing SimpleFold. This may take several minutes.".into());
         }
         if self.plddt && !self.engine.has_plddt_weights() {
             notes.push("pLDDT scoring needs SimpleFold's 1.6B checkpoint (~6.5 GB), once.".into());

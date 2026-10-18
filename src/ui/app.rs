@@ -1524,7 +1524,7 @@ impl Viewer {
                 };
                 let n = frames.len();
                 if let Some(moved) = self.structure.as_ref().and_then(|shown| shown.with_frames(frames)) {
-                    self.note(format!("{} frames from {} laid over {}", thousands(n), s.id, moved.id));
+                    self.note(format!("{} frames from {} superimposed onto {}", thousands(n), s.id, moved.id));
                     self.stop_playing();
                     self.structure = Some(Arc::new(moved));
                     self.rebuild(cx);
@@ -1748,7 +1748,7 @@ impl Viewer {
             Input::Empty => return,
             _ => {
                 self.error = Some(
-                    "Folding takes a protein sequence, or a PDB ID or UniProt accession to fold the chains of."
+                    "Folding takes a protein sequence, or a PDB ID or UniProt accession whose chains will be predicted."
                         .into(),
                 );
                 cx.notify();
@@ -2718,7 +2718,7 @@ impl Viewer {
         // Near at the top.
         let at = |z: f32| ((r - z) / (2.0 * r)).clamp(0.0, 1.0) * H;
         let (top, bottom) = (at(near), at(far));
-        let hint = format!("{}-scroll moves it · {} thickens", theme::keys("⌥"), theme::keys("⌥⇧"));
+        let hint = format!("{}-scroll: slab depth · {}: slab thickness", theme::keys("⌥"), theme::keys("⌥⇧"));
         Some(
             div()
                 .absolute()
@@ -2767,7 +2767,7 @@ impl Viewer {
                     ("⌘W", "Close the tab"),
                     ("⌘1 – ⌘9", "Go to a tab"),
                     ("⌃Tab", "Next tab"),
-                    ("⇧⌘S", "Save a picture"),
+                    ("⇧⌘S", "Export an image"),
                 ],
             ),
             (
@@ -2776,10 +2776,10 @@ impl Viewer {
                     ("⌥⌘1 – ⌥⌘6", "Cartoon … Surface"),
                     ("⌃⌘1 – ⌃⌘4", "Illustrative … Studio"),
                     ("⌘0", "Reset the view"),
-                    ("⇧⌘D", "Light or dark"),
+                    ("⇧⌘D", "Toggle light or dark theme"),
                     ("⌘K", "The console"),
                     ("⌘Z  ⇧⌘Z", "Undo, redo"),
-                    ("⌘/", "These shortcuts"),
+                    ("⌘/", "Show keyboard shortcuts"),
                 ],
             ),
             (
@@ -2788,10 +2788,10 @@ impl Viewer {
                     ("Drag", "Turn"),
                     ("⇧ Drag", "Move"),
                     ("Scroll", "Zoom"),
-                    ("Double-click", "Frame it all"),
+                    ("Double-click", "Fit the structure to the view"),
                     ("Click", "Pick an atom or residue"),
                     ("⌥ Scroll", "Move the slab"),
-                    ("⌥⇧ Scroll", "Thicken the slab"),
+                    ("⌥⇧ Scroll", "Increase slab thickness"),
                 ],
             ),
             (
@@ -4099,7 +4099,7 @@ impl Viewer {
             .cursor_pointer()
             .hover(|s| s.text_color(theme::ink()).bg(theme::sunken()))
             .child("↺")
-            .tooltip(|_, cx| cx.new(|_| Tip("Back to the palette's colour".into())).into())
+            .tooltip(|_, cx| cx.new(|_| Tip("Reset to the palette colour".into())).into())
             .on_click(cx.listener(move |this, _, _, cx| this.paint(target.clone(), None, cx)));
         div()
             .absolute()
@@ -4174,7 +4174,7 @@ impl Viewer {
             }))
             .when(!self.views.is_empty(), |d| {
                 d.child(
-                    item("clear-views", "Forget the viewpoints".into(), false)
+                    item("clear-views", "Clear saved views".into(), false)
                         .debug_selector(|| "clear-views".into())
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.views.clear();
@@ -4437,7 +4437,7 @@ impl Viewer {
                         .child(
                             div()
                                 .text_color(theme::text())
-                                .child(format!("What opens next is laid over {onto}")),
+                                .child(format!("The next structure opened is superimposed onto {onto}")),
                         )
                         .child(
                             div()
@@ -4930,7 +4930,7 @@ impl Viewer {
                         .cursor_pointer()
                         .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
                         .child("×")
-                        .tooltip(|_, cx| cx.new(|_| Tip("Show the first alone".into())).into())
+                        .tooltip(|_, cx| cx.new(|_| Tip("Show the reference only".into())).into())
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(|this, _, _, cx| this.remove_overlay(cx))),
                 ),
@@ -5236,7 +5236,7 @@ impl Viewer {
                                 .cursor_pointer()
                                 .hover(|d| d.bg(theme::sunken()))
                                 .child(div().size(px(8.)).rounded_full().when_some(color, |d, c| d.bg(swatch(c))).when(color.is_none(), |d| d.border_1().border_color(theme::faint())))
-                                .tooltip(|_, cx| cx.new(|_| Tip("Its elements' colours, or one of its own".into())).into())
+                                .tooltip(|_, cx| cx.new(|_| Tip("Element colours or a uniform colour".into())).into())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if let Some(l) = this.layers.get_mut(i) {
                                         let at = LAYER_COLORS.iter().position(|c| *c == l.color).unwrap_or(0);
@@ -5371,7 +5371,7 @@ impl Viewer {
                 let hydro = self.coloring == Coloring::Hydrophobic;
                 let (low, high) = if hydro { (render::HYDROPHILIC, render::HYDROPHOBIC) } else { (render::NEGATIVE, render::POSITIVE) };
                 let ends = if hydro {
-                    ("water-loving", "oily")
+                    ("hydrophilic", "hydrophobic")
                 } else if self.repr == Repr::Surface {
                     ("− potential", "+")
                 } else {
@@ -6143,7 +6143,7 @@ impl Viewer {
                     .gap(px(5.))
                     .child(
                         swatch_button(0, default, chosen.is_none(), None, target.clone())
-                            .tooltip(|_, cx| cx.new(|_| Tip("Its own colour".into())).into()),
+                            .tooltip(|_, cx| cx.new(|_| Tip("Custom colour".into())).into()),
                     )
                     .children(SWATCHES.iter().enumerate().map(|(k, c)| {
                         swatch_button(k + 1, *c, chosen == Some(*c), Some(*c), target.clone())
@@ -7119,7 +7119,7 @@ impl Viewer {
         let need = kind.atoms();
         let hint = match self.pending.len() {
             0 => format!("Click {need} atoms"),
-            n => format!("{n} of {need} picked · click empty space to start over"),
+            n => format!("{n} of {need} picked · click empty space to reset"),
         };
         let kinds = div().flex().gap(px(2.)).children(measure::Kind::ALL.iter().map(|&k| {
             pill_keyed(("measure-kind", k as usize), k.label(), k == kind)
@@ -7254,7 +7254,7 @@ impl Viewer {
                                 .pr(px(4.))
                                 .text_size(px(9.5))
                                 .text_color(theme::faint())
-                                .child("click it again to let go"),
+                                .child("click again to deselect"),
                         )
                         .child(
                             action("focus-selected", "Focus")

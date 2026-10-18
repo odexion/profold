@@ -214,7 +214,7 @@ pub fn load_bytes(name: &str, bytes: Vec<u8>) -> Result<Structure> {
     let text = decode(bytes)?;
     let format = Format::from_name(name)
         .or_else(|| Format::sniff(&text))
-        .ok_or_else(|| anyhow!("{name} is not a format profold knows ({SUPPORTED})"))?;
+        .ok_or_else(|| anyhow!("{name} is not a supported format ({SUPPORTED})"))?;
     let stem = name.strip_suffix(".gz").unwrap_or(name);
     let id = stem
         .rsplit_once('.')

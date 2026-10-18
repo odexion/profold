@@ -141,7 +141,7 @@ impl Parser<'_> {
     }
 
     fn unary(&mut self) -> Result<Expr> {
-        let Some(w) = self.word() else { bail!("the selection ends too soon") };
+        let Some(w) = self.word() else { bail!("incomplete selection expression") };
         match w.as_str() {
             "not" | "!" => {
                 self.next();
@@ -155,7 +155,7 @@ impl Parser<'_> {
                 self.next();
                 let d: f32 = match self.next().map(str::parse::<f32>) {
                     Some(Ok(d)) if d >= 0.0 => d,
-                    _ => bail!("within wants a distance in ångström, as in \"within 5 of ligand\""),
+                    _ => bail!("within requires a distance in Å, as in \"within 5 of ligand\""),
                 };
                 if self.word().as_deref() == Some("of") {
                     self.next();
@@ -166,7 +166,7 @@ impl Parser<'_> {
                 self.next();
                 let e = self.or()?;
                 if self.next() != Some(")") {
-                    bail!("a ( is never closed");
+                    bail!("unmatched parenthesis");
                 }
                 Ok(e)
             }
@@ -180,7 +180,7 @@ impl Parser<'_> {
         let mut list = |what: &str| -> Result<Vec<String>> {
             match self.next() {
                 Some(v) if v != "(" && v != ")" => Ok(v.split(['+', ',']).filter(|x| !x.is_empty()).map(str::to_string).collect()),
-                _ => bail!("{what} wants a value after it"),
+                _ => bail!("{what} expects a value"),
             }
         };
         Ok(match w.as_str() {
@@ -201,8 +201,8 @@ impl Parser<'_> {
             "helix" | "helices" => Expr::Ss(Ss::Helix),
             "strand" | "sheet" | "strands" => Expr::Ss(Ss::Sheet),
             "coil" | "loop" | "loops" => Expr::Ss(Ss::Coil),
-            "" => bail!("the selection ends too soon"),
-            other => bail!("\"{other}\" is not a selection word"),
+            "" => bail!("incomplete selection expression"),
+            other => bail!("\"{other}\" is not a known selection keyword"),
         })
     }
 }

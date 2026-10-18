@@ -307,7 +307,7 @@ pub fn fetch_alphafold(acc: &str, tx: &Sender<Event>) -> Result<Structure> {
         match get(url, Some(tx)).map_err(anyhow::Error::from).and_then(|t| crate::protein::Pae::from_json(&t)) {
             Ok(pae) if pae.n == s.residues.iter().filter(|r| !r.outside_polymer()).count() => s.pae = Some(Arc::new(pae)),
             Ok(_) => {
-                let _ = tx.send(Event::Log("The predicted aligned error does not match the model; left out.".into()));
+                let _ = tx.send(Event::Log("The predicted aligned error does not match the model and was omitted.".into()));
             }
             Err(e) => {
                 let _ = tx.send(Event::Log(format!("No predicted aligned error ({e:#}).")));

@@ -30,7 +30,7 @@ pub fn dcd(bytes: &[u8]) -> Result<(usize, Vec<Snapshot>)> {
         at += len + 8;
         Some(body)
     };
-    let head = record().context("the DCD header is cut short")?;
+    let head = record().context("the DCD header is truncated")?;
     if &head[..4] != b"CORD" {
         bail!("not a DCD file of coordinates");
     }
@@ -40,7 +40,7 @@ pub fn dcd(bytes: &[u8]) -> Result<(usize, Vec<Snapshot>)> {
     let has_cell = charmm && control[10] != 0;
     let four_d = charmm && control[11] != 0;
     if fixed > 0 {
-        bail!("DCD files with fixed atoms are not read");
+        bail!("DCD files with fixed atoms are not supported");
     }
     record().context("the DCD title is missing")?;
     let natoms = int(record().context("the DCD atom count is missing")?.get(..4).context("no atom count")?) as usize;
@@ -138,7 +138,7 @@ struct Xdr<'a> {
 
 impl Xdr<'_> {
     fn word(&mut self) -> Result<[u8; 4]> {
-        let w = self.bytes.get(self.at..self.at + 4).context("the XTC file is cut short")?;
+        let w = self.bytes.get(self.at..self.at + 4).context("the XTC file is truncated")?;
         self.at += 4;
         Ok(w.try_into().unwrap())
     }
@@ -152,7 +152,7 @@ impl Xdr<'_> {
     }
 
     fn opaque(&mut self, n: usize) -> Result<&[u8]> {
-        let b = self.bytes.get(self.at..self.at + n).context("the XTC file is cut short")?;
+        let b = self.bytes.get(self.at..self.at + n).context("the XTC file is truncated")?;
         self.at += n.div_ceil(4) * 4;
         Ok(b)
     }
