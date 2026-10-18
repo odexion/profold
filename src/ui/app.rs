@@ -25,6 +25,7 @@ use crate::fetch::{self, Input, Retrieval};
 use crate::formats;
 use crate::job::{self, Event, Outcome};
 use crate::contacts;
+use crate::select::Selection;
 use crate::formats::write;
 
 #[path = "session.rs"]
@@ -170,6 +171,28 @@ struct Site {
 /// ångström: a contact, or a water's width from one.
 const SITE_CUTOFF: f32 = 5.0;
 
+/// A selection, drawn its own way over the rest.
+#[derive(Clone)]
+struct Layer {
+    selection: Selection,
+    /// Its atoms in the structure shown, found anew whenever that changes.
+    atoms: Arc<Vec<bool>>,
+    style: render::LayerStyle,
+    /// One colour for all of it, or its elements' own.
+    color: Option<[f32; 3]>,
+}
+
+/// The colours a layer steps through as its dot is clicked: its elements'
+/// own first.
+const LAYER_COLORS: [Option<[f32; 3]>; 6] = [
+    None,
+    Some([0.98, 0.78, 0.20]),
+    Some([0.30, 0.70, 0.90]),
+    Some([0.90, 0.40, 0.65]),
+    Some([0.55, 0.78, 0.25]),
+    Some([0.93, 0.93, 0.93]),
+];
+
 /// The camera turning by itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Turn {
@@ -299,6 +322,11 @@ pub struct Viewer {
     transparent: bool,
     /// The keyboard shortcuts, laid over the viewport.
     shortcuts: bool,
+    /// Selections drawn their own way, in the order made.
+    layers: Vec<Layer>,
+    /// Where a selection is typed, and what was wrong with the last one.
+    select_input: Entity<TextInput>,
+    select_error: Option<SharedString>,
     /// The triangles and capsules of `base` each structure was built into,
     /// by `Target::which`, for painting one of its residues.
     parts: [(std::ops::Range<usize>, std::ops::Range<usize>); 2],
@@ -366,6 +394,23 @@ impl Viewer {
             }
             InputEvent::Up => this.step_highlight(-1, cx),
             InputEvent::Down => this.step_highlight(1, cx),
+        })
+        .detach();
+
+        let select_input = cx.new(|cx| TextInput::new("e.g. resn HIS and within 5 of ligand", cx));
+        cx.subscribe_in(&select_input, window, |this, input, event, _window, cx| match event {
+            InputEvent::Submit => {
+                let text = input.read(cx).text().to_string();
+                if this.add_layer(&text, cx) {
+                    input.update(cx, |i, cx| i.set_text("", cx));
+                }
+            }
+            InputEvent::Changed => {
+                if this.select_error.take().is_some() {
+                    cx.notify();
+                }
+            }
+            InputEvent::Cancel | InputEvent::Up | InputEvent::Down => {}
         })
         .detach();
 
@@ -458,6 +503,9 @@ impl Viewer {
             turn_task: None,
             transparent: false,
             shortcuts: false,
+            layers: Vec::new(),
+            select_input,
+            select_error: None,
             parts: [(0..0, 0..0), (0..0, 0..0)],
             open: None,
             export: None,
@@ -661,6 +709,7 @@ impl Viewer {
         self.fit = None;
         self.deposited = None;
         self.assembly = None;
+        self.layers.clear();
         self.selected = None;
         self.seq_hover = None;
         self.hover = None;
@@ -847,10 +896,15 @@ impl Viewer {
             801..=2200 => 0.6,
             _ => 0.3,
         };
+        self.refresh_layers();
         let mut scene = Scene::default();
         let mut parts = [(0..0, 0..0), (0..0, 0..0)];
+        // What the layers hide is the loaded structure's alone.
+        let mut plain = self.appearance.clone();
+        plain.hidden = None;
         for (which, s) in (0..2).filter_map(|w| Some((w, self.shown(w)?))) {
             let start = (scene.tris.len(), scene.capsules.len());
+            let appearance = if which == 0 { &self.appearance } else { &plain };
             scene.merge(render::build_scene(
                 s,
                 self.repr,
@@ -860,14 +914,69 @@ impl Viewer {
                 self.palette,
                 self.standard_colors,
                 self.show_cell,
-                &self.appearance,
+                appearance,
             ));
+            if which == 0 {
+                for layer in &self.layers {
+                    scene.merge(render::build_layer(
+                        s,
+                        &layer.atoms,
+                        layer.style,
+                        layer.color,
+                        self.style,
+                        self.palette,
+                        self.standard_colors,
+                        &self.appearance,
+                    ));
+                }
+            }
             parts[which] = (start.0..scene.tris.len(), start.1..scene.capsules.len());
         }
         self.parts = parts;
         self.base = Arc::new(scene);
         self.compose(cx);
         self.persist();
+    }
+
+    /// Find each layer's atoms in the structure shown, which a frame, an
+    /// assembly or a new structure changes, and hide what is to be hidden.
+    fn refresh_layers(&mut self) {
+        let Some(s) = self.structure.clone() else {
+            self.appearance.hidden = None;
+            return;
+        };
+        let mut hidden = vec![false; s.atoms.len()];
+        for layer in &mut self.layers {
+            let atoms = layer.selection.atoms(&s);
+            if layer.style == render::LayerStyle::Hidden {
+                for (h, a) in hidden.iter_mut().zip(&atoms) {
+                    *h |= *a;
+                }
+            }
+            layer.atoms = Arc::new(atoms);
+        }
+        self.appearance.hidden = hidden.iter().any(|h| *h).then(|| Arc::new(hidden));
+    }
+
+    /// Add a selection, typed, as sticks over what is drawn. Says what was
+    /// wrong with it if it could not be read, and whether it was added.
+    fn add_layer(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
+        if text.trim().is_empty() || self.structure.is_none() {
+            return false;
+        }
+        match Selection::parse(text) {
+            Ok(selection) => {
+                self.select_error = None;
+                self.layers.push(Layer { selection, atoms: Arc::new(Vec::new()), style: render::LayerStyle::Sticks, color: None });
+                self.rebuild(cx);
+                true
+            }
+            Err(e) => {
+                self.select_error = Some(format!("{e}").into());
+                cx.notify();
+                false
+            }
+        }
     }
 
     /// Lay what glows over the scene: the atom or residue picked, and the
@@ -4364,6 +4473,141 @@ impl Viewer {
         )
     }
 
+    /// The selections: a field to type one in, and a row for each made, with
+    /// how many atoms it takes, how it is drawn, its colour, and a ×.
+    fn layer_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows = self.layers.iter().enumerate().map(|(i, layer)| {
+            let n = layer.atoms.iter().filter(|a| **a).count();
+            let style_pill = |k: render::LayerStyle| {
+                let chosen = layer.style == k;
+                div()
+                    .id(("layer-style", i * 3 + k as usize))
+                    .debug_selector(move || format!("layer-{i}-{}", k.label()))
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded(px(5.))
+                    .text_size(px(10.))
+                    .when(chosen, |d| d.bg(theme::surface()).text_color(theme::ink()).shadow_sm())
+                    .when(!chosen, |d| d.text_color(theme::muted()).cursor_pointer().hover(|s| s.text_color(theme::ink())))
+                    .child(k.label())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(l) = this.layers.get_mut(i) {
+                            l.style = k;
+                            this.rebuild(cx);
+                        }
+                    }))
+            };
+            let color = layer.color;
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .id(("layer-color", i))
+                                .debug_selector(move || format!("layer-{i}-color"))
+                                .flex_none()
+                                .size(px(13.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_full()
+                                .cursor_pointer()
+                                .hover(|d| d.bg(theme::sunken()))
+                                .child(div().size(px(8.)).rounded_full().when_some(color, |d, c| d.bg(swatch(c))).when(color.is_none(), |d| d.border_1().border_color(theme::faint())))
+                                .tooltip(|_, cx| cx.new(|_| Tip("Its elements' colours, or one of its own".into())).into())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Some(l) = this.layers.get_mut(i) {
+                                        let at = LAYER_COLORS.iter().position(|c| *c == l.color).unwrap_or(0);
+                                        l.color = LAYER_COLORS[(at + 1) % LAYER_COLORS.len()];
+                                        this.rebuild(cx);
+                                    }
+                                })),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .font_family(theme::MONO)
+                                .text_size(px(10.5))
+                                .text_color(theme::text())
+                                .child(clip(layer.selection.text(), 30)),
+                        )
+                        .child(div().font_family(theme::MONO).text_size(px(10.)).text_color(theme::faint()).child(thousands(n)))
+                        .child(
+                            div()
+                                .id(("layer-remove", i))
+                                .debug_selector(move || format!("layer-{i}-remove"))
+                                .px(px(4.))
+                                .rounded(px(3.))
+                                .text_size(px(11.))
+                                .text_color(theme::faint())
+                                .cursor_pointer()
+                                .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
+                                .child("×")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if i < this.layers.len() {
+                                        this.layers.remove(i);
+                                        this.rebuild(cx);
+                                    }
+                                })),
+                        ),
+                )
+                .child(
+                    div()
+                        .pl(px(21.))
+                        .flex()
+                        .child(
+                            div()
+                                .flex()
+                                .p(px(2.))
+                                .gap(px(2.))
+                                .rounded(px(7.))
+                                .bg(theme::sunken())
+                                .children(render::LayerStyle::ALL.map(style_pill)),
+                        ),
+                )
+        });
+        div()
+            .pt(px(14.))
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(key("selections"))
+            .child(
+                div()
+                    .id("select-field")
+                    .debug_selector(|| "select-field".into())
+                    // Anywhere in the box puts the cursor in it.
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| window.focus(&this.select_input.read(cx).focus_handle(cx))),
+                    )
+                    .cursor(gpui::CursorStyle::IBeam)
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(6.))
+                    .bg(theme::sunken())
+                    .border_1()
+                    .border_color(theme::border())
+                    .font_family(theme::MONO)
+                    .text_size(px(11.))
+                    .text_color(theme::text())
+                    .child(self.select_input.clone()),
+            )
+            .when_some(self.select_error.clone(), |d, e| {
+                d.child(div().text_size(px(10.)).text_color(theme::muted()).child(e))
+            })
+            .children(rows)
+    }
+
     /// What the colours mean, for the colourings whose colours are not the
     /// chains': a ramp with its ends for B-factors, a swatch each for
     /// helix, strand and coil, and pLDDT's bands.
@@ -5603,6 +5847,7 @@ impl Viewer {
             .child(self.legend(structure, cx))
             .children(self.colour_key(structure))
             .child(self.ligand_list(structure, cx))
+            .child(self.layer_list(cx))
             .child(self.species_table(structure, cx))
             .child(
                 div()
@@ -6974,6 +7219,52 @@ mod ui_tests {
         cx.run_until_parked();
         click(cx, "shortcuts");
         assert!(view.update(cx, |this, _| !this.shortcuts));
+    }
+
+    #[gpui::test]
+    fn a_selection_is_drawn_its_own_way(cx: &mut TestAppContext) {
+        cx.update(crate::ui::input::bind_keys);
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(SAMPLES[5].file, SAMPLES[5].bytes.to_vec()).unwrap();
+            this.show(s, cx);
+        });
+        cx.run_until_parked();
+        let (tris, capsules) = view.update(cx, |this, _| (this.base.tris.len(), this.base.capsules.len()));
+
+        // A bad one says what is wrong, and adds nothing.
+        assert!(!view.update(cx, |this, cx| this.add_layer("resn HIS and", cx)));
+        assert!(view.update(cx, |this, _| this.select_error.is_some() && this.layers.is_empty()));
+
+        // Typed into its field: the histidines by the irons, as sticks.
+        let field = cx.debug_bounds("select-field").expect("no selection field");
+        cx.simulate_click(field.center(), Modifiers::none());
+        cx.simulate_input("byres (resn HIS and within 3 of elem Fe)");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        let (n, more) = view.update(cx, |this, _| {
+            (this.layers.first().map(|l| l.atoms.iter().filter(|a| **a).count()), this.base.capsules.len() > capsules)
+        });
+        assert_eq!(n, Some(40), "four histidines of ten atoms");
+        assert!(more, "the sticks are not drawn");
+        assert!(view.update(cx, |this, cx| this.select_input.read(cx).text().is_empty()));
+
+        // Hidden, chain A's ribbon goes.
+        assert!(view.update(cx, |this, cx| this.add_layer("chain A", cx)));
+        click(cx, "layer-1-Hide");
+        let (hidden, now) = view.update(cx, |this, _| (this.appearance.hidden.is_some(), this.base.tris.len()));
+        assert!(hidden && now < tris * 4 / 5, "{now} of {tris}");
+        click(cx, "layer-1-color");
+        assert_eq!(view.update(cx, |this, _| this.layers[1].color), LAYER_COLORS[1]);
+        click(cx, "layer-1-remove");
+        assert!(view.update(cx, |this, _| this.appearance.hidden.is_none() && this.base.tris.len() == tris));
+
+        // And it is kept in a session.
+        let json = view.update(cx, |this, _| this.session_json()).unwrap();
+        let (other, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        other.update(cx, |this, cx| this.open_session(&json, cx)).unwrap();
+        let kept = other.update(cx, |this, _| this.layers.iter().map(|l| (l.selection.text().to_string(), l.atoms.iter().filter(|a| **a).count())).collect::<Vec<_>>());
+        assert_eq!(kept, vec![("byres (resn HIS and within 3 of elem Fe)".to_string(), 40)]);
     }
 
     #[gpui::test]

@@ -54,6 +54,8 @@ pub struct Appearance {
     /// Water and other solvent is hidden, as it is by default beside a
     /// protein, where a crystal's waters would only be clutter.
     pub hide_solvent: bool,
+    /// Atoms hidden from every style, the backbone's included, by index.
+    pub hidden: Option<std::sync::Arc<Vec<bool>>>,
 }
 
 impl Appearance {
@@ -94,6 +96,13 @@ impl Appearance {
     /// One look per atom of `s`.
     fn resolve(&self, s: &Structure) -> Vec<Look> {
         let mut looks = self.resolve_species(s);
+        if let Some(mask) = self.mask(s) {
+            for (look, &h) in looks.iter_mut().zip(mask) {
+                if h {
+                    look.size = 0.0;
+                }
+            }
+        }
         if self.hide_solvent {
             for (look, a) in looks.iter_mut().zip(&s.atoms) {
                 if is_solvent(&s.residues[a.residue as usize].name) {
@@ -102,6 +111,11 @@ impl Appearance {
             }
         }
         looks
+    }
+
+    /// The hidden atoms, when they are this structure's.
+    fn mask(&self, s: &Structure) -> Option<&[bool]> {
+        self.hidden.as_deref().map(Vec::as_slice).filter(|m| m.len() == s.atoms.len())
     }
 
     fn resolve_species(&self, s: &Structure) -> Vec<Look> {
@@ -1161,6 +1175,8 @@ struct Paint<'a> {
     /// copies of a crystal, each repeating the atom `images` names.
     own: usize,
     images: Vec<u32>,
+    /// Atoms hidden from every style, the backbone's included.
+    hidden: Option<&'a [bool]>,
 }
 
 impl Paint<'_> {
@@ -1265,6 +1281,7 @@ pub fn build_scene(
         looks: appearance.resolve(s),
         own,
         images,
+        hidden: appearance.mask(s),
     };
     let mut scene = build_primitives(&paint, repr, quality);
     if cell {
@@ -1331,9 +1348,9 @@ fn build_primitives(paint: &Paint, repr: Repr, quality: f32) -> Scene {
         Repr::Tube | Repr::Cartoon => {
             let mut scene = Scene::default();
             if repr == Repr::Tube {
-                (scene.capsules, scene.capsule_residue) = build_tube(s, coloring, quality, palette);
+                (scene.capsules, scene.capsule_residue) = build_tube(s, coloring, quality, palette, paint.hidden);
             } else {
-                (scene.tris, scene.tri_residue) = build_cartoon(s, coloring, quality, palette);
+                (scene.tris, scene.tri_residue) = build_cartoon(s, coloring, quality, palette, paint.hidden);
             }
             // Ligands, ions and nucleic acids have no alpha carbons to draw a
             // backbone through, and would vanish; they are drawn as atoms.
@@ -1543,6 +1560,7 @@ pub fn pick(
         looks: appearance.resolve(s),
         own: s.atoms.len(),
         images: Vec::new(),
+        hidden: appearance.mask(s),
     };
 
     let mut best: Option<Picked> = None;
@@ -1615,7 +1633,7 @@ pub fn pick(
     }
     if backbone {
         for chain in &s.chains {
-            for run in ca_runs(s, chain) {
+            for run in ca_runs(s, chain, appearance.mask(s)) {
                 let ca = |k: usize| s.residues[run[k]].ca.unwrap() as usize;
                 for k in 0..run.len() {
                     let here = s.atoms[ca(k)].pos;
@@ -1686,6 +1704,7 @@ pub fn build_highlight(
         looks: appearance.resolve(s),
         own: s.atoms.len(),
         images: Vec::new(),
+        hidden: appearance.mask(s),
     };
     // The radius an atom is drawn at in this style.
     let drawn = |i: usize| match repr {
@@ -1761,8 +1780,79 @@ pub fn build_site(
         looks: appearance.resolve(s),
         own: s.atoms.len(),
         images: Vec::new(),
+        hidden: appearance.mask(s),
     };
     let mut scene = build_sticks(&paint, &keep, false);
+    settle(&mut scene, style);
+    scene
+}
+
+/// How a selection's atoms are drawn, over whatever the structure is drawn as.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LayerStyle {
+    Sticks,
+    Spheres,
+    /// Taken out of every style.
+    Hidden,
+}
+
+impl LayerStyle {
+    pub const ALL: [LayerStyle; 3] = [LayerStyle::Sticks, LayerStyle::Spheres, LayerStyle::Hidden];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            LayerStyle::Sticks => "Sticks",
+            LayerStyle::Spheres => "Spheres",
+            LayerStyle::Hidden => "Hide",
+        }
+    }
+}
+
+/// A selection's atoms drawn as sticks or spheres, in their elements'
+/// colours or in `color` throughout.
+#[allow(clippy::too_many_arguments)]
+pub fn build_layer(
+    s: &Structure,
+    atoms: &[bool],
+    layer: LayerStyle,
+    color: Option<[f32; 3]>,
+    style: Style,
+    palette: Palette,
+    standard_colors: bool,
+    appearance: &Appearance,
+) -> Scene {
+    if atoms.len() != s.atoms.len() || layer == LayerStyle::Hidden {
+        return Scene::default();
+    }
+    let paint = Paint {
+        s,
+        elements: element_colors(s, palette, standard_colors),
+        coloring: Coloring::Element,
+        palette,
+        polymer: s.has_polymer(),
+        looks: appearance.resolve(s),
+        own: s.atoms.len(),
+        images: Vec::new(),
+        hidden: appearance.mask(s),
+    };
+    let mut scene = match layer {
+        LayerStyle::Sticks => build_sticks(&paint, atoms, true),
+        _ => Scene {
+            spheres: (0..s.atoms.len())
+                .filter(|&i| atoms[i] && !paint.looks[i].hidden())
+                .map(|i| Sphere { c: s.atoms[i].pos, r: paint.radius(i), color: paint.atom(i), alpha: paint.alpha(i) })
+                .collect(),
+            ..Scene::default()
+        },
+    };
+    if let Some(c) = color {
+        for p in &mut scene.spheres {
+            p.color = c;
+        }
+        for k in &mut scene.capsules {
+            (k.ca, k.cb) = (c, c);
+        }
+    }
     settle(&mut scene, style);
     scene
 }
@@ -1893,7 +1983,7 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 }
 
 /// Alpha-carbon runs for one chain, split wherever the trace jumps.
-fn ca_runs(s: &Structure, chain: &crate::protein::Chain) -> Vec<Vec<usize>> {
+fn ca_runs(s: &Structure, chain: &crate::protein::Chain, hidden: Option<&[bool]>) -> Vec<Vec<usize>> {
     let mut runs: Vec<Vec<usize>> = Vec::new();
     let mut run: Vec<usize> = Vec::new();
     let cut = |run: &mut Vec<usize>, runs: &mut Vec<Vec<usize>>| {
@@ -1905,7 +1995,8 @@ fn ca_runs(s: &Structure, chain: &crate::protein::Chain) -> Vec<Vec<usize>> {
     };
     for &ri in &chain.residues {
         let ri = ri as usize;
-        let Some(ca) = s.residues[ri].ca else {
+        // A residue hidden breaks the trace there, as a gap would.
+        let Some(ca) = s.residues[ri].ca.filter(|&ca| !hidden.is_some_and(|h| h[ca as usize])) else {
             cut(&mut run, &mut runs);
             continue;
         };
@@ -1930,12 +2021,13 @@ fn build_tube(
     coloring: Coloring,
     quality: f32,
     palette: Palette,
+    hidden: Option<&[bool]>,
 ) -> (Vec<Capsule>, Vec<u32>) {
     let mut out = Vec::new();
     let mut owners = Vec::new();
 
     for chain in &s.chains {
-        let runs = ca_runs(s, chain);
+        let runs = ca_runs(s, chain, hidden);
         for run in runs {
             let run: Vec<(usize, [f32; 3])> = run
                 .iter()
@@ -2031,13 +2123,14 @@ fn build_cartoon(
     coloring: Coloring,
     quality: f32,
     palette: Palette,
+    hidden: Option<&[bool]>,
 ) -> (Vec<Tri>, Vec<u32>) {
     let mut tris = Vec::new();
     let mut owners = Vec::new();
     let steps = (8.0 * quality).round().max(2.0) as usize;
 
     for chain in &s.chains {
-        for run in ca_runs(s, chain) {
+        for run in ca_runs(s, chain, hidden) {
             if run.len() < 3 {
                 continue;
             }
@@ -3578,6 +3671,27 @@ mod tests {
         let cut = Camera { slab: Some([v[2] - 2.0, v[2] - 6.0]), ..cam };
         let hit = pick(&s, Repr::Spacefill, &Appearance::default(), &cut, 400, 400, 200.0 + v[0] * scale, 200.0 - v[1] * scale);
         assert_ne!(hit.map(|h| h.atom), Some(front));
+    }
+
+    #[test]
+    fn a_layer_draws_its_atoms_and_hiding_takes_them_from_the_cartoon() {
+        let s = sample("1crn.pdb.gz");
+        let mask: Vec<bool> = s.atoms.iter().map(|a| a.residue < 5).collect();
+        let n = mask.iter().filter(|x| **x).count();
+        let look = Appearance::default();
+        let spheres = build_layer(&s, &mask, LayerStyle::Spheres, None, Style::Soft, Palette::Spectrum, false, &look);
+        assert_eq!(spheres.spheres.len(), n);
+        let sticks = build_layer(&s, &mask, LayerStyle::Sticks, Some([1.0, 0.0, 0.0]), Style::Soft, Palette::Spectrum, false, &look);
+        assert!(!sticks.capsules.is_empty());
+        assert!(sticks.capsules.iter().all(|c| c.ca == sticks.capsules[0].ca), "not all in the one colour");
+        // Hidden, those residues leave the ribbon.
+        let whole = scene(&s, Repr::Cartoon, Coloring::Chain, false);
+        let hidden = Appearance { hidden: Some(std::sync::Arc::new(mask.clone())), ..Appearance::default() };
+        let cut = build_scene(&s, Repr::Cartoon, Coloring::Chain, 1.0, Style::Soft, Palette::Spectrum, false, false, &hidden);
+        assert!(cut.tris.len() < whole.tris.len());
+        assert!(cut.tri_residue.iter().all(|&r| r >= 5));
+        let atoms = build_scene(&s, Repr::Spacefill, Coloring::Chain, 1.0, Style::Soft, Palette::Spectrum, false, false, &hidden);
+        assert_eq!(atoms.spheres.len(), s.atoms.len() - n);
     }
 
     #[test]

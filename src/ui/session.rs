@@ -16,7 +16,7 @@ use super::{Target, Viewer};
 use crate::formats::{self, write, Format};
 use crate::measure::{self, Measurement};
 use crate::protein::{LigandPaint, Source, Structure};
-use crate::render::{Camera, Coloring, Palette, Picked, Repr, Style};
+use crate::render::{Camera, Coloring, LayerStyle, Palette, Picked, Repr, Style};
 
 /// The extension a session goes by.
 pub const EXTENSION: &str = "profold";
@@ -96,6 +96,11 @@ impl Viewer {
             "measurements": measurements,
             "selected": selected,
             "site": self.site.as_ref().map(|site| site.ligand),
+            "layers": self.layers.iter().map(|l| json!({
+                "select": l.selection.text(),
+                "style": l.style.label(),
+                "color": l.color,
+            })).collect::<Vec<_>>(),
         });
         serde_json::to_string_pretty(&value).ok()
     }
@@ -179,6 +184,13 @@ impl Viewer {
             which: 0,
             picked: Picked { atom, residue: v["selected"]["residue"].as_bool().unwrap_or(false), depth: 0.0 },
         });
+        for l in v["layers"].as_array().into_iter().flatten() {
+            let Some(selection) = l["select"].as_str().and_then(|t| crate::select::Selection::parse(t).ok()) else {
+                continue;
+            };
+            let style = LayerStyle::ALL.into_iter().find(|k| Some(k.label()) == l["style"].as_str()).unwrap_or(LayerStyle::Sticks);
+            self.layers.push(super::Layer { selection, atoms: Default::default(), style, color: read_rgb(&l["color"]) });
+        }
         self.rebuild(cx);
         if let Some(ligand) = v["site"].as_u64().map(|r| r as usize) {
             let camera = self.camera;

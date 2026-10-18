@@ -20,6 +20,7 @@ mod protein;
 mod render;
 mod samples;
 mod search;
+mod select;
 mod settings;
 mod surface;
 mod theme;
