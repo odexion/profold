@@ -25,8 +25,8 @@ W = 1.45 if SMALL else 1.1        # ribbon width, in radii
 EDGE = 9.0 if SMALL else 5.0      # edge line, in pixels
 BOX = 660.0 if SMALL else 620.0
 PHASE = 0.7                       # where the helix starts, in half turns
-EXIT_ANGLE = 30.0                 # the strand, in degrees above the page's horizontal
-EXIT_LEN = 2.0                    # and its length, in radii
+EXIT_ANGLE = 5.0                  # the strand, in degrees above the page's horizontal
+EXIT_LEN = 1.2                    # and its length, in radii
 HANDLE = 0.8                      # how gently it bends out of the helix
 
 def ramp(t):
@@ -77,7 +77,7 @@ for i in range(1, 71):
     u = i/70
     C.append(tuple((1-u)**3*P0[k] + 3*(1-u)**2*u*P1[k] + 3*(1-u)*u*u*P2[k] + u**3*P3[k] for k in range(3)))
     across.append(None)
-SL = 0.5
+SL = 0.0
 for i in range(1, 51 if SL else 1):
     C.append(add(P3, mul(tS, SL*i/50))); across.append(None)
 last = across[NH]
@@ -90,7 +90,7 @@ for k in range(NH+1, len(C)):
     across[k] = unit(sub(b, mul(t, dot(b, t))))
 body = len(C)
 # the arrowhead: the same point twice, narrow then wide, makes its shoulders
-AL, NA = 1.0, 30
+AL, NA = 0.8, 30
 tE = unit(sub(C[-1], C[-2])); E = C[-1]
 wd = [W]*body
 C.append(E); across.append(across[-1]); wd.append(1.6*W)
