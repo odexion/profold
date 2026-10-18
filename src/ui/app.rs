@@ -204,8 +204,8 @@ struct PlotCache {
     pae: Option<Arc<gpui::RenderImage>>,
 }
 
-/// The side of each plot, in pixels.
-const PLOT: f32 = 236.0;
+/// The side of each plot, in pixels: the panel's width inside its margins.
+const PLOT: f32 = PANEL_WIDTH - 40.0;
 
 /// Frames as an endlessly looping GIF, each shown for its milliseconds.
 fn encode_gif(frames: Vec<(render::Frame, u32)>, out: impl std::io::Write) -> anyhow::Result<()> {
@@ -453,6 +453,9 @@ pub struct Viewer {
     rama_hover: Option<usize>,
     pae_bounds: Rc<Shared<Bounds<Pixels>>>,
     pae_hover: Option<(usize, usize)>,
+    /// Whether each plot is open under its row; both start closed.
+    rama_open: bool,
+    pae_open: bool,
     plot_cache: RefCell<PlotCache>,
     /// The triangles and capsules of `base` each structure was built into,
     /// by `Target::which`, for painting one of its residues.
@@ -679,6 +682,8 @@ impl Viewer {
             rama_hover: None,
             pae_bounds: Rc::new(Shared::new(Bounds::default())),
             pae_hover: None,
+            rama_open: false,
+            pae_open: false,
             plot_cache: RefCell::new(PlotCache::default()),
             parts: [(0..0, 0..0), (0..0, 0..0)],
             open: None,
@@ -5029,6 +5034,9 @@ impl Viewer {
         if torsions.iter().all(Option::is_none) {
             return None;
         }
+        if !self.rama_open {
+            return Some(self.plot_row("ramachandran", false, None, cx).into_any_element());
+        }
         let selected = self.selected_residue();
         let pointed = self.rama_hover.or(self.seq_hover).or(self.hovered_residue());
         let dots: Vec<(usize, f32, f32, [f32; 3])> = torsions
@@ -5116,14 +5124,10 @@ impl Viewer {
             }));
         Some(
             div()
-                .pt(px(16.))
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .child(div().flex().justify_between().child(key("ramachandran")).child(
-                    div().text_size(px(9.5)).text_color(theme::faint()).child(caption.unwrap_or_else(|| "φ across, ψ up".into())),
-                ))
-                .child(plot)
+                .child(self.plot_row("ramachandran", true, Some(caption.unwrap_or_else(|| "φ across, ψ up".into())), cx))
+                .child(div().pt(px(10.)).child(plot))
                 .into_any_element(),
         )
     }
@@ -5134,6 +5138,9 @@ impl Viewer {
         let pae = structure.pae.clone()?;
         let (_, image) = self.plots_for(structure);
         let image = image?;
+        if !self.pae_open {
+            return Some(self.plot_row("predicted aligned error", false, None, cx).into_any_element());
+        }
         let store = self.pae_bounds.clone();
         let polymer: Vec<usize> = (0..structure.residues.len()).filter(|&r| !structure.residues[r].outside_polymer()).collect();
         let caption = self.pae_hover.and_then(|(i, j)| {
@@ -5143,14 +5150,13 @@ impl Viewer {
         let n = pae.n;
         Some(
             div()
-                .pt(px(16.))
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .child(div().flex().justify_between().child(key("predicted aligned error")).child(
-                    div().text_size(px(9.5)).text_color(theme::faint()).child(caption.unwrap_or_else(|| format!("0 – {:.0} Å", pae.max))),
-                ))
+                .child(self.plot_row("predicted aligned error", true, Some(caption.unwrap_or_else(|| format!("0 – {:.0} Å", pae.max))), cx))
                 .child(
+                    div()
+                        .pt(px(10.))
+                        .child(
                     div()
                         .id("pae")
                         .debug_selector(|| "pae".into())
@@ -5184,9 +5190,56 @@ impl Viewer {
                                 cx.notify();
                             }
                         })),
+                        ),
                 )
                 .into_any_element(),
         )
+    }
+
+    /// A plot's row in the facts table: its name, what the pointer is over
+    /// while it is open, and a button that opens or closes it.
+    fn plot_row(&self, label: &'static str, open: bool, caption: Option<String>, cx: &mut Context<Self>) -> impl IntoElement {
+        let rama = label == "ramachandran";
+        let id = if rama { "open-ramachandran" } else { "open-pae" };
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(10.))
+            .py(px(8.))
+            .border_b_1()
+            .border_color(theme::border())
+            .child(key(label))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .children(caption.map(|c| div().text_size(px(9.5)).text_color(theme::faint()).child(c)))
+                    .child(
+                        div()
+                            .id(id)
+                            .debug_selector(move || id.into())
+                            .px(px(7.))
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .text_size(px(10.))
+                            .cursor_pointer()
+                            .text_color(theme::muted())
+                            .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
+                            .child(if open { "Hide" } else { "Show" })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if rama {
+                                    this.rama_open = !this.rama_open;
+                                    this.rama_hover = None;
+                                } else {
+                                    this.pae_open = !this.pae_open;
+                                    this.pae_hover = None;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
     }
 
     /// The selections: a field to type one in, and a row for each made, with
@@ -6657,8 +6710,15 @@ impl Viewer {
                     ),
             )
             .child(self.sequence_view(structure, cx))
-            .children(self.ramachandran(structure, cx))
-            .children(self.pae_plot(structure, cx))
+            // The plots, each closed under a row of its own like the facts.
+            .child(
+                div()
+                    .pt(px(8.))
+                    .flex()
+                    .flex_col()
+                    .children(self.ramachandran(structure, cx))
+                    .children(self.pae_plot(structure, cx)),
+            )
             .when(structure.frame_count() > 1, |d| {
                 d.child(
                     div()
@@ -8176,6 +8236,13 @@ mod ui_tests {
         // Tall enough for both plots to be in view in the panel.
         cx.simulate_resize(gpui::size(px(1400.), px(2600.)));
         cx.run_until_parked();
+        // Both start closed, under rows of their own.
+        assert!(cx.debug_bounds("ramachandran").is_none() && cx.debug_bounds("pae").is_none());
+        for row in ["open-ramachandran", "open-pae"] {
+            let at = cx.debug_bounds(row).expect("no row to open a plot by").center();
+            cx.simulate_click(at, Modifiers::none());
+            cx.run_until_parked();
+        }
         let plot = cx.debug_bounds("ramachandran").expect("no Ramachandran plot");
         // A dot to point at: residue 10's, where the plot puts it.
         let (r, phi, psi) = view.update(cx, |this, _| {
