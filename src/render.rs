@@ -815,6 +815,27 @@ impl Camera {
         orthonormal(mul(r, self.orientation))
     }
 
+    /// The turn from this view to `target`'s: its axis in view space and
+    /// its angle, such that `turned` by them gives `target`.
+    pub fn turn_to(&self, target: [[f32; 3]; 3]) -> ([f32; 3], f32) {
+        // R = target · orientationᵀ, as a rotation of view space.
+        let o = self.orientation;
+        let r: [[f32; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| target[i][k] * o[j][k]).sum()));
+        let cos = ((r[0][0] + r[1][1] + r[2][2] - 1.0) * 0.5).clamp(-1.0, 1.0);
+        let angle = cos.acos();
+        if angle < 1e-5 {
+            return ([0.0, 0.0, 1.0], 0.0);
+        }
+        let axis = [r[2][1] - r[1][2], r[0][2] - r[2][0], r[1][0] - r[0][1]];
+        if dot(axis, axis) > 1e-8 {
+            return (unit(axis), angle);
+        }
+        // Half a turn: the axis is the column of R + I that is not nothing.
+        let k = (0..3).max_by(|&a, &b| r[a][a].total_cmp(&r[b][b])).unwrap();
+        let col = [r[0][k] + if k == 0 { 1.0 } else { 0.0 }, r[1][k] + if k == 1 { 1.0 } else { 0.0 }, r[2][k] + if k == 2 { 1.0 } else { 0.0 }];
+        (unit(col), angle)
+    }
+
     /// The turn that brings world direction `d` round to point at the
     /// viewer: its axis in view space, and its angle.
     pub fn turn_to_face(&self, d: [f32; 3]) -> ([f32; 3], f32) {
@@ -3962,6 +3983,25 @@ mod tests {
         let red = sc.tris.iter().filter(|t| t.c[0] > t.c[2] + 0.1).count();
         let blue = sc.tris.iter().filter(|t| t.c[2] > t.c[0] + 0.1).count();
         assert!(red > 100 && blue > 100, "{red} red, {blue} blue");
+    }
+
+    #[test]
+    fn a_turn_between_two_views_lands_on_the_second() {
+        let mut a = Camera { orientation: Camera::home(), zoom: 1.0, pan: [0.0; 2], center: [0.0; 3], radius: 10.0, perspective: false, slab: None };
+        let mut b = a;
+        b.rotate(1.2, -0.7);
+        for (from, to) in [(a, b), (b, a)] {
+            let (axis, angle) = from.turn_to(to.orientation);
+            let m = from.turned(axis, angle);
+            assert!((0..3).all(|i| (0..3).all(|j| (m[i][j] - to.orientation[i][j]).abs() < 1e-4)));
+        }
+        // Half a turn has no axis to read off the skew part; it still lands.
+        a.orientation = Camera::home();
+        let mut half = a;
+        half.rotate(std::f32::consts::PI, 0.0);
+        let (axis, angle) = a.turn_to(half.orientation);
+        let m = a.turned(axis, angle);
+        assert!((0..3).all(|i| (0..3).all(|j| (m[i][j] - half.orientation[i][j]).abs() < 1e-3)), "{m:?}");
     }
 
     #[test]

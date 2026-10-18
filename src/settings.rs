@@ -42,6 +42,41 @@ fn path() -> Option<PathBuf> {
     file("settings.json")
 }
 
+/// How many files and entries are remembered as recent.
+const RECENT: usize = 10;
+
+/// What was opened lately, most recent first: paths, identifiers, samples,
+/// as `Viewer::reopen` takes them. Kept apart from the settings, in
+/// `~/.profold/recent.json`, and in memory where there is no file to keep.
+fn recents() -> &'static std::sync::Mutex<Vec<String>> {
+    static LIST: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| {
+        let list = file("recent.json")
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok())
+            .unwrap_or_default();
+        std::sync::Mutex::new(list)
+    })
+}
+
+pub fn recent() -> Vec<String> {
+    recents().lock().map(|l| l.clone()).unwrap_or_default()
+}
+
+/// Put something opened at the head of the recent list.
+pub fn remember(origin: &str) {
+    let Ok(mut list) = recents().lock() else { return };
+    list.retain(|o| o != origin);
+    list.insert(0, origin.to_string());
+    list.truncate(RECENT);
+    if let Some(p) = file("recent.json") {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, serde_json::to_string_pretty(&*list).unwrap_or_default());
+    }
+}
+
 /// A file of profold's own under `~/.profold`.
 pub fn file(name: &str) -> Option<PathBuf> {
     // Tests run the real app, and must not read or overwrite the real file.

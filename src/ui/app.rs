@@ -431,6 +431,8 @@ pub struct Viewer {
     /// Where a selection is typed, and what was wrong with the last one.
     select_input: Entity<TextInput>,
     select_error: Option<SharedString>,
+    /// Viewpoints saved to come back to, in the order saved.
+    views: Vec<Camera>,
     /// What can be undone, the present last, and what was undone, to redo.
     history: Vec<ShownAs>,
     undone: Vec<ShownAs>,
@@ -621,6 +623,7 @@ impl Viewer {
             layers: Vec::new(),
             select_input,
             select_error: None,
+            views: Vec::new(),
             history: Vec::new(),
             undone: Vec::new(),
             last_change: std::time::Instant::now(),
@@ -835,6 +838,7 @@ impl Viewer {
         self.layers.clear();
         self.history.clear();
         self.undone.clear();
+        self.views.clear();
         self.selected = None;
         self.seq_hover = None;
         self.hover = None;
@@ -1264,6 +1268,33 @@ impl Viewer {
         }));
     }
 
+    /// Fly back to a viewpoint saved: its angle, centre, zoom and offset.
+    fn fly_to_view(&mut self, view: Camera, cx: &mut Context<Self>) {
+        self.halt();
+        let start = self.camera;
+        let (axis, angle) = start.turn_to(view.orientation);
+        self.camera.perspective = view.perspective;
+        self.camera.slab = view.slab;
+        self.fly_task = Some(cx.spawn(async move |this, cx| {
+            for k in 1..=FLY_FRAMES {
+                cx.background_executor().timer(Duration::from_millis(16)).await;
+                let t = k as f32 / FLY_FRAMES as f32;
+                let e = t * t * (3.0 - 2.0 * t);
+                let going = this.update(cx, |this, cx| {
+                    let c = &mut this.camera;
+                    c.orientation = if k == FLY_FRAMES { view.orientation } else { start.turned(axis, angle * e) };
+                    c.center = [0, 1, 2].map(|i| start.center[i] + (view.center[i] - start.center[i]) * e);
+                    c.zoom = start.zoom * (view.zoom / start.zoom).powf(e);
+                    c.pan = [0, 1].map(|i| start.pan[i] + (view.pan[i] - start.pan[i]) * e);
+                    cx.notify();
+                });
+                if going.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+
     /// Fly to what is picked: an atom up close, a residue whole.
     fn focus_selected(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.selected else { return };
@@ -1458,6 +1489,9 @@ impl Viewer {
             }
             Ok(s) => {
                 self.origin = self.opening.take();
+                if let Some(o) = &self.origin {
+                    crate::settings::remember(o);
+                }
                 let frames = s.frame_count();
                 self.note(format!(
                     "{} · {} atoms{}",
@@ -1809,6 +1843,7 @@ impl Viewer {
             match opened {
                 Ok(()) => {
                     self.origin = Some(absolute.to_string_lossy().into_owned());
+                    crate::settings::remember(&absolute.to_string_lossy());
                     self.note(format!("Opened the session {}", path.display()));
                 }
                 Err(e) => self.error = Some(format!("{e:#}").into()),
@@ -3511,11 +3546,44 @@ impl Viewer {
 
     /// The structures built into the app, to open at any time.
     fn samples_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // What was opened lately, by the name it would be known by.
+        let recent: Vec<(String, String)> = crate::settings::recent()
+            .into_iter()
+            .take(6)
+            .map(|o| {
+                let name = match o.strip_prefix("sample:") {
+                    Some(file) => SAMPLES.iter().find(|s| s.file == file).map_or(file.to_string(), |s| s.name.to_string()),
+                    None => std::path::Path::new(&o).file_name().map_or(o.clone(), |n| n.to_string_lossy().into_owned()),
+                };
+                (o, name)
+            })
+            .collect();
         menu(260.)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.open = None;
                 cx.notify();
             }))
+            .when(!recent.is_empty(), |d| {
+                d.child(div().px(px(8.)).pt(px(3.)).pb(px(2.)).child(label("RECENT")))
+                    .children(recent.into_iter().enumerate().map(|(i, (origin, name))| {
+                        div()
+                            .id(("recent", i))
+                            .debug_selector(move || format!("recent-{i}"))
+                            .px(px(8.))
+                            .py(px(4.))
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme::sunken()))
+                            .text_size(px(11.5))
+                            .text_color(theme::text())
+                            .child(clip(&name, 34))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open = None;
+                                this.reopen(&origin, cx);
+                            }))
+                    }))
+                    .child(divide())
+            })
             .children(crate::samples::grouped().into_iter().enumerate().flat_map(
                 |(n, (group, samples))| {
                     let heading = div()
@@ -3963,6 +4031,34 @@ impl Viewer {
                     .debug_selector(|| "slab".into())
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_slab(cx))),
             )
+            .child(divide())
+            .child(
+                item("save-view", "Save this viewpoint".into(), false)
+                    .debug_selector(|| "save-view".into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.views.push(this.camera);
+                        this.note(format!("Saved as view {}", this.views.len()));
+                        cx.notify();
+                    })),
+            )
+            .children(self.views.iter().enumerate().map(|(i, &view)| {
+                item(("view", i), format!("View {}", i + 1), false)
+                    .debug_selector(move || format!("view-{i}"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open = None;
+                        this.fly_to_view(view, cx);
+                    }))
+            }))
+            .when(!self.views.is_empty(), |d| {
+                d.child(
+                    item("clear-views", "Forget the viewpoints".into(), false)
+                        .debug_selector(|| "clear-views".into())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.views.clear();
+                            cx.notify();
+                        })),
+                )
+            })
             .child(divide())
             .child(
                 item("recentre", "Centre".into(), false)
@@ -7944,6 +8040,41 @@ mod ui_tests {
         }
         view.update(cx, |this, cx| this.undo(false, cx));
         assert_eq!(view.update(cx, |this, _| this.appearance.get(&Species::Element(6)).size), 1.0);
+    }
+
+    #[gpui::test]
+    fn a_viewpoint_saved_is_flown_back_to_and_recent_files_are_listed(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        view.update(cx, |this, cx| {
+            this.camera.rotate(0.8, 0.3);
+            this.camera.zoom = 2.0;
+            cx.notify();
+        });
+        click(cx, "tab-camera");
+        click(cx, "save-view");
+        let saved = view.update(cx, |this, _| this.camera);
+        view.update(cx, |this, cx| {
+            this.camera.rotate(-1.5, 0.9);
+            this.camera.zoom = 0.7;
+            cx.notify();
+        });
+        click(cx, "tab-camera");
+        click(cx, "view-0");
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        let now = view.update(cx, |this, _| this.camera);
+        assert!((now.zoom - saved.zoom).abs() < 1e-4);
+        assert!((0..3).all(|i| (0..3).all(|j| (now.orientation[i][j] - saved.orientation[i][j]).abs() < 1e-4)));
+
+        // What was opened is offered again.
+        view.update(cx, |this, cx| {
+            this.opening = Some("sample:1ubq.pdb.gz".into());
+            let s = formats::load_bytes(SAMPLES[3].file, SAMPLES[3].bytes.to_vec()).unwrap();
+            this.finish(Ok(s), cx);
+        });
+        assert_eq!(crate::settings::recent().first().map(String::as_str), Some("sample:1ubq.pdb.gz"));
+        click(cx, "tab-samples");
+        assert!(cx.debug_bounds("recent-0").is_some(), "no recent entry in the menu");
     }
 
     #[gpui::test]

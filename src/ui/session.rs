@@ -96,6 +96,14 @@ impl Viewer {
             "measurements": measurements,
             "selected": selected,
             "site": self.site.as_ref().map(|site| site.ligand),
+            "views": self.views.iter().map(|c| {
+                let o = c.orientation;
+                json!({
+                    "orientation": [o[0][0], o[0][1], o[0][2], o[1][0], o[1][1], o[1][2], o[2][0], o[2][1], o[2][2]],
+                    "zoom": c.zoom, "pan": c.pan, "center": c.center, "radius": c.radius,
+                    "perspective": c.perspective, "slab": c.slab,
+                })
+            }).collect::<Vec<_>>(),
             "layers": self.layers.iter().map(|l| json!({
                 "select": l.selection.text(),
                 "style": l.style.label(),
@@ -184,6 +192,23 @@ impl Viewer {
             which: 0,
             picked: Picked { atom, residue: v["selected"]["residue"].as_bool().unwrap_or(false), depth: 0.0 },
         });
+        self.views = v["views"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| {
+                let (o, pan, center) = (floats::<9>(&c["orientation"])?, floats::<2>(&c["pan"])?, floats::<3>(&c["center"])?);
+                Some(Camera {
+                    orientation: [[o[0], o[1], o[2]], [o[3], o[4], o[5]], [o[6], o[7], o[8]]],
+                    zoom: c["zoom"].as_f64()? as f32,
+                    pan,
+                    center,
+                    radius: c["radius"].as_f64()? as f32,
+                    perspective: c["perspective"].as_bool().unwrap_or(false),
+                    slab: floats::<2>(&c["slab"]),
+                })
+            })
+            .collect();
         for l in v["layers"].as_array().into_iter().flatten() {
             let Some(selection) = l["select"].as_str().and_then(|t| crate::select::Selection::parse(t).ok()) else {
                 continue;
