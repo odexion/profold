@@ -663,7 +663,10 @@ impl Structure {
             card.title = atom_label;
             card.tag = format!("atom {}", atom + 1);
             if symbol.is_none() {
-                card.kind = self.kinds.get(a.kind as usize).map(|k| format!("type {k}"));
+                if let Some(k) = self.kinds.get(a.kind as usize) {
+                    card.title = format!("Type {k}");
+                    card.kind = Some((a.kind as usize, k.clone()));
+                }
             }
         }
         if residue {
@@ -1147,8 +1150,9 @@ pub struct Card {
     pub atom: Option<String>,
     /// Its element, and that element's colour.
     pub element: Option<(&'static str, [f32; 3])>,
-    /// A simulation's atom type, where there is no element.
-    pub kind: Option<String>,
+    /// A simulation's atom type, where there is no element: its index
+    /// among the structure's kinds, and its name.
+    pub kind: Option<(usize, String)>,
     pub ss: Option<Ss>,
     /// pLDDT or B-factor, by which the file means it.
     pub b: Option<(&'static str, f32)>,

@@ -6861,11 +6861,27 @@ impl Viewer {
         let on_ink = theme::on_ink();
         let soft = |a: f32| gpui::Hsla { a, ..on_ink };
         // A residue shows its letter in its kind's colour; an atom, its
-        // element in the element's.
-        let (badge, color, round) = match (card.class, card.element) {
-            (_, Some((e, c))) => (e.to_string(), c, true),
-            (Some((code, _, c)), None) => (code.to_string(), c, false),
-            (None, None) => ("·".to_string(), [0.55, 0.55, 0.58], true),
+        // element or type in the colour the atoms list gives it.
+        let atom = &s.atoms[t.picked.atom];
+        let species_color = |species: &Species, fallback: [f32; 3]| {
+            self.appearance.get(species).color.unwrap_or(fallback)
+        };
+        let element_color = |c: [f32; 3]| {
+            let z = atom.element.0;
+            let c = if self.standard_colors {
+                c
+            } else {
+                render::element_colors(s, self.palette, false)[z as usize]
+            };
+            species_color(&Species::Element(z), c)
+        };
+        let (badge, color, round) = match (card.class, card.element, &card.kind) {
+            (_, Some((e, c)), _) => (e.to_string(), element_color(c), true),
+            (_, None, Some((k, name))) => {
+                (name.clone(), species_color(&Species::Kind(name.clone()), self.palette.chain(*k)), true)
+            }
+            (Some((code, _, c)), None, None) => (code.to_string(), c, false),
+            (None, None, None) => ("·".to_string(), [0.55, 0.55, 0.58], true),
         };
         let light = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] > 0.62;
         let badge = div()
@@ -6930,7 +6946,7 @@ impl Viewer {
             let mut v = div().flex().items_center().gap(px(5.)).child(
                 div().font_family(theme::MONO).text_size(px(10.5)).child(name.clone()),
             );
-            if let Some((e, c)) = card.element.filter(|(e, _)| e != name) {
+            if let Some((e, c)) = card.element.filter(|(e, _)| e != name).map(|(e, c)| (e, element_color(c))) {
                 v = v.child(
                     div()
                         .flex()
@@ -6944,9 +6960,6 @@ impl Viewer {
                 );
             }
             rows.push(row("atom", v.into_any_element()).into_any_element());
-        }
-        if let Some(kind) = &card.kind {
-            rows.push(row("type", div().text_size(px(10.5)).child(kind.clone()).into_any_element()).into_any_element());
         }
         if let Some((_, kind, c)) = card.class {
             let v = div().flex().items_center().gap(px(5.)).child(dot(c)).child(div().text_size(px(10.5)).child(kind));
