@@ -409,6 +409,47 @@ fn a_dna_strand_is_traced_and_its_bases_are_no_ligands() {
 }
 
 #[test]
+fn each_base_ends_at_the_atom_that_pairs() {
+    let s = read(CGC, Format::Pdb);
+    // A pyrimidine pairs through N3, a purine through N1.
+    let tips: Vec<&str> = s.residues.iter().map(|r| s.atoms[r.base.unwrap() as usize].name()).collect();
+    assert_eq!(tips, ["N3", "N1", "N3"]);
+    assert_eq!(s.atoms[s.residues[1].base.unwrap() as usize].residue, 1);
+}
+
+/// 7BHO, a DNA origami of 14,450 nucleotides, froze the app: every base was
+/// looked for among all the atoms, while building the cartoon and again on
+/// each move of the pointer. Thousands of nucleotides draw and pick at once.
+#[test]
+fn a_large_dna_cartoon_builds_and_picks_at_once() {
+    use crate::render::{build_scene, pick, Appearance, Camera, Coloring, Palette, Repr, Style};
+    // The three nucleotides, copied 1,700 times 40 Å apart on a grid in each
+    // of four chains: 20,400 nucleotides, more than 7BHO has.
+    let mut text = String::new();
+    for (c, chain) in ["A", "B", "C", "D"].iter().enumerate() {
+        for copy in 0..1700 {
+            let shift = [(copy % 12) as f32 * 40.0, (copy / 12 % 12) as f32 * 40.0, (copy / 144 + 15 * c) as f32 * 40.0];
+            for line in CGC.lines() {
+                let seq: i32 = line[22..26].trim().parse().unwrap();
+                let x: Vec<f32> = (0..3).map(|k| line[30 + 8 * k..38 + 8 * k].trim().parse::<f32>().unwrap() + shift[k]).collect();
+                text += &format!("{}{chain}{:4}{}{:8.3}{:8.3}{:8.3}{}\n", &line[..21], seq + 3 * copy as i32, &line[26..30], x[0], x[1], x[2], &line[54..]);
+            }
+        }
+    }
+    let s = read(&text, Format::Pdb);
+    assert_eq!(s.residues.iter().filter(|r| r.base.is_some()).count(), 20400);
+    let t = std::time::Instant::now();
+    let scene = build_scene(&s, Repr::Cartoon, Coloring::Chain, 1.0, Style::Soft, Palette::Spectrum, false, false, &Appearance::default());
+    assert!(!scene.capsules.is_empty());
+    let cam = Camera::frame(&s);
+    for x in [100.0, 200.0, 300.0] {
+        pick(&s, Repr::Cartoon, &Appearance::default(), &cam, 400, 400, x, 200.0);
+    }
+    // Searching every atom for every base took over ten seconds here.
+    assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+}
+
+#[test]
 fn a_free_nucleotide_stays_a_ligand() {
     // One residue on its own, linked to nothing.
     let one: String = CGC.lines().filter(|l| l.get(22..26).is_some_and(|n| n.trim() == "2")).map(|l| format!("{}\n", l.replacen("ATOM  ", "HETATM", 1))).collect();

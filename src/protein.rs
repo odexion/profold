@@ -136,6 +136,9 @@ pub struct Residue {
     /// The atom a nucleic acid strand is traced through, its phosphorus or
     /// else its C4', when it is linked into one: set once the file is read.
     pub nucleic: Option<u32>,
+    /// Where a nucleotide's base ends, the atom that pairs across the helix:
+    /// N1 of a purine, N3 of a pyrimidine. Set with `nucleic`.
+    pub base: Option<u32>,
 }
 
 impl Residue {
@@ -391,12 +394,17 @@ impl Structure {
     /// names keeps up with, are found as well; a free nucleotide, ATP say,
     /// is linked to nothing and stays a ligand.
     pub fn mark_nucleic(&mut self) {
-        let mut named: Vec<[Option<u32>; 3]> = vec![[None; 3]; self.residues.len()];
+        // P, C4', O3', and for the base N9, N1 and N3, in one pass: a strand
+        // of tens of thousands of nucleotides is not searched residue by residue.
+        let mut named: Vec<[Option<u32>; 6]> = vec![[None; 6]; self.residues.len()];
         for (i, a) in self.atoms.iter().enumerate() {
             let slot = match a.name() {
                 "P" => 0,
                 "C4'" | "C4*" => 1,
                 "O3'" | "O3*" => 2,
+                "N9" => 3,
+                "N1" => 4,
+                "N3" => 5,
                 _ => continue,
             };
             named[a.residue as usize][slot].get_or_insert(i as u32);
@@ -422,6 +430,9 @@ impl Structure {
         }
         for (r, res) in self.residues.iter_mut().enumerate() {
             res.nucleic = if linked[r] { named[r][0].or(named[r][1]) } else { None };
+            // A purine pairs through N1, a pyrimidine through N3.
+            let tip = if named[r][3].is_some() { named[r][4] } else { named[r][5] };
+            res.base = if linked[r] { tip } else { None };
         }
     }
 
@@ -959,6 +970,7 @@ impl Builder {
                 code: three_to_one(r.res_name),
                 ss: Ss::Coil,
                 nucleic: None,
+                base: None,
             });
         }
 

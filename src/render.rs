@@ -2301,15 +2301,9 @@ fn nucleic_runs(s: &Structure, chain: &crate::protein::Chain, hidden: Option<&[b
 }
 
 /// Where a base's rung ends: N1 of a purine, N3 of a pyrimidine, the atoms
-/// that pair across the helix.
+/// that pair across the helix. Found once, when the file is read.
 fn base_tip(s: &Structure, residue: usize) -> Option<usize> {
-    let atoms = s.residue_atoms(residue);
-    let named = |n: &str| atoms.iter().copied().find(|&i| s.atoms[i].name() == n);
-    if named("N9").is_some() {
-        named("N1")
-    } else {
-        named("N3")
-    }
+    s.residues[residue].base.map(|a| a as usize)
 }
 
 /// Nucleic acids as a tube along the backbone, through each phosphorus,

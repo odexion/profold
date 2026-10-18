@@ -229,6 +229,7 @@ pub fn build(s: &Structure, a: &Assembly) -> Structure {
                     res.c = remap(old.c);
                     res.o = remap(old.o);
                     res.nucleic = remap(old.nucleic);
+                    res.base = remap(old.base);
                     out.residues.push(res);
                     residues.push(new_r);
                 }
