@@ -24,6 +24,7 @@ use crate::align;
 use crate::fetch::{self, Input, Retrieval};
 use crate::formats;
 use crate::job::{self, Event, Outcome};
+use crate::measure::{self, Measurement};
 use crate::protein::{LigandPaint, Source, Structure};
 use crate::render::{
     self, Appearance, Camera, Coloring, Look, Palette, PaletteGroup, Picked, Repr, Scene, Species,
@@ -237,6 +238,14 @@ pub struct Viewer {
     /// The scene without anything glowing in it, which a glow is laid over
     /// without building the rest again.
     base: Arc<Scene>,
+    /// Whether clicks in the viewport pick atoms to measure between.
+    measuring: bool,
+    measure_kind: measure::Kind,
+    /// The atoms picked towards the next measurement, all of structure
+    /// `pending_which`.
+    pending: Vec<usize>,
+    pending_which: usize,
+    measurements: Vec<Measurement>,
     /// The triangles and capsules of `base` each structure was built into,
     /// by `Target::which`, for painting one of its residues.
     parts: [(std::ops::Range<usize>, std::ops::Range<usize>); 2],
@@ -380,6 +389,11 @@ impl Viewer {
             selected: None,
             seq_hover: None,
             base: Arc::new(Scene::default()),
+            measuring: false,
+            measure_kind: measure::Kind::Distance,
+            pending: Vec::new(),
+            pending_which: 0,
+            measurements: Vec::new(),
             parts: [(0..0, 0..0), (0..0, 0..0)],
             open: None,
             export: None,
@@ -581,6 +595,8 @@ impl Viewer {
         self.selected = None;
         self.seq_hover = None;
         self.hover = None;
+        self.pending.clear();
+        self.measurements.clear();
         self.rebuild(cx);
     }
 
@@ -607,6 +623,8 @@ impl Viewer {
         self.selected = None;
         self.seq_hover = None;
         self.hover = None;
+        self.pending.clear();
+        self.measurements.clear();
         self.rebuild(cx);
     }
 
@@ -805,8 +823,85 @@ impl Viewer {
                 scene.merge(render::build_highlight(s, t.picked, self.repr, self.style, &self.appearance));
             }
         }
+        // The atoms picked towards a measurement glow; its lines are drawn
+        // over the viewport, by `measure_lines`.
+        if let Some(s) = self.shown(self.pending_which) {
+            for &atom in &self.pending {
+                let picked = Picked { atom, residue: false, depth: 0.0 };
+                scene.merge(render::build_highlight(s, picked, self.repr, self.style, &self.appearance));
+            }
+        }
         self.scene = Arc::new(scene.stamp());
         cx.notify();
+    }
+
+    /// Start measuring, or stop. What was being picked is let go of either way.
+    fn toggle_measuring(&mut self, cx: &mut Context<Self>) {
+        self.measuring = !self.measuring;
+        self.pending.clear();
+        self.selected = None;
+        self.compose(cx);
+    }
+
+    fn set_measure_kind(&mut self, kind: measure::Kind, cx: &mut Context<Self>) {
+        self.measure_kind = kind;
+        self.pending.truncate(kind.atoms() - 1);
+        self.compose(cx);
+    }
+
+    /// A click while measuring: one more atom towards the measurement, which
+    /// is made once there are enough. A click on nothing starts over.
+    fn measure_click(&mut self, target: Option<Target>, cx: &mut Context<Self>) {
+        match target {
+            None => self.pending.clear(),
+            Some(t) => {
+                let atom = t.picked.atom;
+                // One measurement is within one structure.
+                if t.which != self.pending_which {
+                    self.pending.clear();
+                    self.pending_which = t.which;
+                }
+                if self.pending.last() == Some(&atom) {
+                    return;
+                }
+                self.pending.push(atom);
+                if self.pending.len() == self.measure_kind.atoms() {
+                    self.measurements.push(Measurement {
+                        kind: self.measure_kind,
+                        which: t.which,
+                        atoms: std::mem::take(&mut self.pending),
+                    });
+                }
+            }
+        }
+        self.compose(cx);
+    }
+
+    fn remove_measurement(&mut self, i: usize, cx: &mut Context<Self>) {
+        if i < self.measurements.len() {
+            self.measurements.remove(i);
+            self.compose(cx);
+        }
+    }
+
+    /// Where a point of structure space is drawn in the viewport, from its
+    /// top left corner, as the frame last painted puts it.
+    fn project(&self, p: [f32; 3]) -> Option<Point<Pixels>> {
+        let cache = self.cache.borrow();
+        let (w, h) = cache.size;
+        let width = f32::from(cache.bounds.size.width);
+        if w == 0 || width <= 0.0 {
+            return None;
+        }
+        let cam = &self.camera;
+        let m = cam.basis();
+        let q = [p[0] - cam.center[0], p[1] - cam.center[1], p[2] - cam.center[2]];
+        let d = |r: [f32; 3]| r[0] * q[0] + r[1] * q[1] + r[2] * q[2];
+        let scale = w.min(h) as f32 / (2.2 * cam.radius) * cam.zoom;
+        let k = w as f32 / width;
+        let x = (w as f32 * 0.5 + cam.pan[0] + d(m[0]) * scale) / k;
+        let y = (h as f32 * 0.5 + cam.pan[1] - d(m[1]) * scale) / k;
+        Some(gpui::point(px(x), px(y)))
     }
 
     fn finish(&mut self, result: anyhow::Result<Structure>, cx: &mut Context<Self>) {
@@ -1702,7 +1797,11 @@ impl Viewer {
             // A click, not a drag: the view has not moved, so nothing coasts.
             self.last_step = [0.0; 2];
             let target = self.pick_at(p);
-            self.select(target, cx);
+            if self.measuring {
+                self.measure_click(target, cx);
+            } else {
+                self.select(target, cx);
+            }
             self.set_hover(Some(e.position), cx);
         }
         if was.is_some() {
@@ -2470,6 +2569,11 @@ impl Viewer {
                     })
                     .collect(),
             ))
+            .child(group(vec![pill("measure", "Measure", self.measuring)
+                .debug_selector(|| "measure".into())
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_measuring(cx)))
+                .into_any_element()]))
             .when(has_cell, |d| {
                 d.child(group(vec![pill("cell", "Cell", self.show_cell)
                     .cursor_pointer()
@@ -4596,7 +4700,11 @@ impl Viewer {
             ))
             .children(self.comparison(cx))
             .when(self.busy.is_none(), |d| {
-                d.children(self.selected_card()).children(self.hover_tip())
+                d.children(self.measure_lines())
+                    .children(self.measure_labels())
+                    .children(self.measure_card(cx))
+                    .children(self.selected_card())
+                    .children(self.hover_tip())
             })
             .when(!has_structure && self.busy.is_none(), |d| {
                 d.child(
@@ -4714,8 +4822,194 @@ impl Viewer {
         Some(tip.child(card).into_any_element())
     }
 
+    /// The lines of every measurement, and of the one under way, as drawn
+    /// in the viewport from its top left corner.
+    fn measure_segments(&self) -> Vec<(Point<Pixels>, Point<Pixels>)> {
+        let partial = Measurement {
+            kind: self.measure_kind,
+            which: self.pending_which,
+            atoms: self.pending.clone(),
+        };
+        self.measurements
+            .iter()
+            .chain(std::iter::once(&partial))
+            .filter_map(|m| Some((m, self.shown(m.which)?)))
+            .flat_map(|(m, s)| m.segments(s))
+            .filter_map(|(a, b)| Some((self.project(a)?, self.project(b)?)))
+            .collect()
+    }
+
+    /// Measurements drawn on top of the molecule rather than in it, so a line
+    /// through the middle of a protein is not lost inside it: dashes, dark
+    /// under yellow, to stand out on either page.
+    fn measure_lines(&self) -> Option<gpui::AnyElement> {
+        let segments = self.measure_segments();
+        if segments.is_empty() {
+            return None;
+        }
+        Some(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let dash = [px(5.), px(4.)];
+                    for (width, color) in [
+                        (3.5, gpui::Hsla::from(gpui::rgba(0x1a1a1acc))),
+                        (1.75, gpui::Hsla::from(gpui::rgb(0xffd23f))),
+                    ] {
+                        let mut path = gpui::PathBuilder::stroke(px(width)).dash_array(&dash);
+                        for &(a, b) in &segments {
+                            path.move_to(bounds.origin + a);
+                            path.line_to(bounds.origin + b);
+                        }
+                        if let Ok(path) = path.build() {
+                            window.paint_path(path, color);
+                        }
+                    }
+                },
+            )
+            .absolute()
+            .inset_0()
+            .into_any_element(),
+        )
+    }
+
+    /// Each measurement's figure, written beside it in the viewport.
+    fn measure_labels(&self) -> Vec<gpui::AnyElement> {
+        self.measurements
+            .iter()
+            .filter_map(|m| {
+                let s = self.shown(m.which)?;
+                let at = self.project(m.anchor(s)?)?;
+                let text = m.kind.format(m.value(s)?);
+                Some(
+                    div()
+                        .absolute()
+                        .left(at.x + px(6.))
+                        .top(at.y - px(9.))
+                        .px(px(5.))
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .bg(theme::ink())
+                        .text_color(theme::on_ink())
+                        .font_family(theme::MONO)
+                        .text_size(px(10.))
+                        .whitespace_nowrap()
+                        .child(text)
+                        .into_any_element(),
+                )
+            })
+            .collect()
+    }
+
+    /// While measuring: what kind, what to click next, and every measurement
+    /// made, each with its figure and a way to take it away.
+    fn measure_card(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.measuring {
+            return None;
+        }
+        let kind = self.measure_kind;
+        let need = kind.atoms();
+        let hint = match self.pending.len() {
+            0 => format!("Click {need} atoms"),
+            n => format!("{n} of {need} picked · click empty space to start over"),
+        };
+        let kinds = div().flex().gap(px(2.)).children(measure::Kind::ALL.iter().map(|&k| {
+            pill_keyed(("measure-kind", k as usize), k.label(), k == kind)
+                .debug_selector(move || format!("measure-kind-{}", k as usize))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| this.set_measure_kind(k, cx)))
+                .into_any_element()
+        }));
+        let rows = self.measurements.iter().enumerate().filter_map(|(i, m)| {
+            let s = self.shown(m.which).or_else(|| {
+                // A hidden structure's measurements stay listed.
+                if m.which == 0 { self.structure.as_ref() } else { self.compare.as_ref() }
+            })?;
+            let tags = m.atoms.iter().map(|&a| s.atom_tag(a)).collect::<Vec<_>>().join(" – ");
+            let value = m.kind.format(m.value(s)?);
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .py(px(3.))
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(10.))
+                            .text_color(theme::muted())
+                            .child(clip(&tags, 44)),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme::MONO)
+                            .text_size(px(10.5))
+                            .text_color(theme::ink())
+                            .child(value),
+                    )
+                    .child(
+                        div()
+                            .id(("remove-measurement", i))
+                            .debug_selector(move || format!("remove-measurement-{i}"))
+                            .px(px(4.))
+                            .rounded(px(3.))
+                            .text_size(px(11.))
+                            .text_color(theme::faint())
+                            .cursor_pointer()
+                            .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
+                            .child("×")
+                            .on_click(cx.listener(move |this, _, _, cx| this.remove_measurement(i, cx))),
+                    ),
+            )
+        });
+        Some(
+            div()
+                .absolute()
+                .top(px(56.))
+                .right(px(20.))
+                .w(px(300.))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .p(px(8.))
+                .rounded(px(8.))
+                .bg(theme::surface())
+                .border_1()
+                .border_color(theme::border())
+                .shadow_sm()
+                // Clicks on the card are its own, not the viewport's.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(kinds)
+                .child(div().text_size(px(10.)).text_color(theme::faint()).child(hint))
+                .child(div().flex().flex_col().children(rows))
+                .when(!self.measurements.is_empty(), |d| {
+                    d.child(div().flex().justify_end().child(
+                        div()
+                            .id("clear-measurements")
+                            .debug_selector(|| "clear-measurements".into())
+                            .text_size(px(9.5))
+                            .text_color(theme::muted())
+                            .cursor_pointer()
+                            .hover(|d| d.text_color(theme::ink()))
+                            .child("Clear")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.measurements.clear();
+                                this.compose(cx);
+                            })),
+                    ))
+                })
+                .into_any_element(),
+        )
+    }
+
     /// What was clicked on, named in the corner until it is let go of.
     fn selected_card(&self) -> Option<gpui::AnyElement> {
+        if self.measuring {
+            return None;
+        }
         let card = self.atom_card(self.selected?)?;
         Some(
             div()
@@ -5107,6 +5401,75 @@ mod ui_tests {
             (this.selected_residue(), this.selected.map(|t| s.atoms[t.picked.atom].residue as usize))
         });
         assert_eq!(picked, hit);
+    }
+
+    /// Where in the window atom `i` is drawn.
+    fn atom_on_screen(view: &Entity<Viewer>, cx: &mut VisualTestContext, i: usize) -> Point<Pixels> {
+        view.update(cx, |this, _| {
+            let p = this.structure.as_ref().unwrap().atoms[i].pos;
+            this.cache.borrow().bounds.origin + this.project(p).unwrap()
+        })
+    }
+
+    #[gpui::test]
+    fn measuring_takes_two_clicks_for_a_distance(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        click(cx, "measure");
+        assert!(view.update(cx, |this, _| this.measuring));
+
+        // Two atoms that are each the nearest under their own point.
+        let first = front_atom(&view, cx);
+        let a = view.update(cx, |this, _| this.pick_at(first)).unwrap().picked.atom;
+        let atoms = view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms.len());
+        let mut found = None;
+        for i in (0..atoms).filter(|&i| i != a) {
+            let at = atom_on_screen(&view, cx, i);
+            if view.update(cx, |this, _| this.pick_at(at)).is_some_and(|t| t.picked.atom == i) {
+                found = Some((i, at));
+                break;
+            }
+        }
+        let (b, second) = found.expect("no second atom to click");
+
+        cx.simulate_click(first, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.pending.clone()), vec![a]);
+        assert!(view.update(cx, |this, _| this.selected.is_none()), "measuring picked the atom out");
+        cx.simulate_click(second, Modifiers::none());
+        cx.run_until_parked();
+
+        let (made, value, expected) = view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            let m = this.measurements.first().cloned();
+            let (p, q) = (s.atoms[a].pos, s.atoms[b].pos);
+            let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+            (m.clone(), m.and_then(|m| m.value(s)), d)
+        });
+        let made = made.expect("no measurement made");
+        assert_eq!(made.atoms, vec![a, b]);
+        assert!((value.unwrap() - expected).abs() < 1e-4);
+        assert!(view.update(cx, |this, _| this.pending.is_empty()));
+        // Its line is drawn, and its figure is written.
+        assert_eq!(view.update(cx, |this, _| this.measure_segments().len()), 1);
+        assert_eq!(view.update(cx, |this, _| this.measure_labels().len()), 1);
+
+        click(cx, "remove-measurement-0");
+        assert!(view.update(cx, |this, _| this.measurements.is_empty()));
+        assert!(view.update(cx, |this, _| this.measure_segments().is_empty()));
+
+        // An angle wants a third.
+        click(cx, "measure-kind-1");
+        assert_eq!(view.update(cx, |this, _| this.measure_kind), measure::Kind::Angle);
+        cx.simulate_click(first, Modifiers::none());
+        cx.simulate_click(second, Modifiers::none());
+        cx.run_until_parked();
+        assert!(view.update(cx, |this, _| this.measurements.is_empty() && this.pending.len() == 2));
+
+        // Done measuring, a click picks atoms out again.
+        click(cx, "measure");
+        cx.simulate_click(first, Modifiers::none());
+        cx.run_until_parked();
+        assert!(view.update(cx, |this, _| this.selected.is_some()));
     }
 
     #[gpui::test]

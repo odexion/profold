@@ -319,6 +319,25 @@ impl Structure {
         self.residues.iter().filter(|r| r.ca.is_some()).take(3).count() >= 3
     }
 
+    /// A short name for an atom, as a measurement lists it: `SER42 OG`
+    /// in a polymer or beside one, else its name or element and number.
+    pub fn atom_tag(&self, atom: usize) -> String {
+        let Some(a) = self.atoms.get(atom) else {
+            return String::new();
+        };
+        let r = &self.residues[a.residue as usize];
+        let name = match (a.name(), a.element.is_known()) {
+            ("", true) => a.element.symbol(),
+            ("", false) => "atom",
+            (n, _) => n,
+        };
+        if !r.outside_polymer() || self.has_polymer() {
+            format!("{}{} {name}", r.name, r.seq)
+        } else {
+            format!("{name} {}", atom + 1)
+        }
+    }
+
     /// What to say about an atom pointed at: a heading, and the lines under
     /// it. With `residue`, the residue it belongs to is what was pointed at,
     /// as on a ribbon, and its atom is not named.

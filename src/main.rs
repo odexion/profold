@@ -12,6 +12,7 @@ mod fetch;
 mod formats;
 mod gpu;
 mod job;
+mod measure;
 mod plugins;
 mod protein;
 mod render;
