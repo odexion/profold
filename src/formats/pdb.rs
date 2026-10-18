@@ -19,6 +19,7 @@ fn is_crystal_water(res_name: &str) -> bool {
 
 pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
     let mut b = Builder::new("PDB");
+    b.assemblies = crate::assembly::from_pdb(text);
     let mut title = String::new();
     // Which model the lines belong to; past the first, only positions are kept.
     let mut model = 0usize;

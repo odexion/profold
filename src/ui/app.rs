@@ -270,6 +270,10 @@ pub struct Viewer {
     site: Option<Site>,
     /// The camera on its way to something, while it is.
     fly_task: Option<Task<()>>,
+    /// The structure as the file deposits it, while one of its assemblies
+    /// is shown in its place; and which.
+    deposited: Option<Arc<Structure>>,
+    assembly: Option<usize>,
     /// The triangles and capsules of `base` each structure was built into,
     /// by `Target::which`, for painting one of its residues.
     parts: [(std::ops::Range<usize>, std::ops::Range<usize>); 2],
@@ -420,6 +424,8 @@ impl Viewer {
             measurements: Vec::new(),
             site: None,
             fly_task: None,
+            deposited: None,
+            assembly: None,
             parts: [(0..0, 0..0), (0..0, 0..0)],
             open: None,
             export: None,
@@ -618,6 +624,8 @@ impl Viewer {
         self.structure = Some(Arc::new(structure));
         self.compare = None;
         self.fit = None;
+        self.deposited = None;
+        self.assembly = None;
         self.selected = None;
         self.seq_hover = None;
         self.hover = None;
@@ -961,6 +969,40 @@ impl Viewer {
         if self.site.take().is_some() {
             self.compose(cx);
         }
+    }
+
+    /// Show one of the structure's assemblies in its place, or with `None`
+    /// the structure as deposited. Style and colours stay; what was picked,
+    /// measured or looked into goes, as its atoms are numbered anew.
+    fn show_assembly(&mut self, k: Option<usize>, cx: &mut Context<Self>) {
+        let Some(base) = self.deposited.clone().or_else(|| self.structure.clone()) else { return };
+        if k == self.assembly {
+            return;
+        }
+        let shown = match k.and_then(|k| base.assemblies.get(k)) {
+            Some(a) => {
+                let mut built = crate::assembly::build(&base, a);
+                if built.has_polymer() {
+                    crate::dssp::assign(&mut built);
+                }
+                self.deposited = Some(base.clone());
+                Arc::new(built)
+            }
+            None => {
+                self.deposited = None;
+                base
+            }
+        };
+        self.assembly = k;
+        self.camera = Camera::frame(&shown);
+        self.structure = Some(shown);
+        self.selected = None;
+        self.seq_hover = None;
+        self.hover = None;
+        self.pending.clear();
+        self.measurements.clear();
+        self.site = None;
+        self.rebuild(cx);
     }
 
     /// Start measuring, or stop. What was being picked is let go of either way.
@@ -3674,6 +3716,64 @@ impl Viewer {
         )
     }
 
+    /// The deposited structure, and each assembly that is more than it.
+    fn assembly_choice(&self, shown: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let base: &Structure = self.deposited.as_deref().unwrap_or(shown);
+        let offered: Vec<(usize, String)> = base
+            .assemblies
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !a.is_deposited(base))
+            .map(|(i, a)| (i, a.label(base)))
+            .collect();
+        if offered.is_empty() || self.compare.is_some() {
+            return None;
+        }
+        // Two assemblies of one name are told apart by number.
+        let named = |i: usize, label: &str| {
+            if offered.iter().filter(|(_, l)| l == label).count() > 1 {
+                format!("{label} {}", base.assemblies[i].id)
+            } else {
+                label.to_string()
+            }
+        };
+        let option = |k: Option<usize>, label: String| {
+            let chosen = self.assembly == k;
+            div()
+                .id(("assembly", k.map_or(0, |k| k + 1)))
+                .debug_selector(move || format!("assembly-{}", k.map_or("deposited".to_string(), |k| k.to_string())))
+                .px(px(7.))
+                .py(px(1.))
+                .rounded(px(5.))
+                .text_size(px(10.))
+                .when(chosen, |d| d.bg(theme::surface()).text_color(theme::ink()).shadow_sm())
+                .when(!chosen, |d| d.text_color(theme::muted()).cursor_pointer().hover(|s| s.text_color(theme::ink())))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| this.show_assembly(k, cx)))
+        };
+        Some(
+            div()
+                .pt(px(14.))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(8.))
+                .child(key("assembly"))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .p(px(2.))
+                        .gap(px(2.))
+                        .rounded(px(7.))
+                        .bg(theme::sunken())
+                        .child(option(None, "Deposited".into()))
+                        .children(offered.iter().map(|(i, l)| option(Some(*i), named(*i, l)))),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// What the colours mean, for the colourings whose colours are not the
     /// chains': a ramp with its ends for B-factors, a swatch each for
     /// helix, strand and coil, and pLDDT's bands.
@@ -4841,6 +4941,7 @@ impl Viewer {
                         .child(blurb),
                 )
             })
+            .children(self.assembly_choice(structure, cx))
             .child(self.legend(structure, cx))
             .children(self.colour_key(structure))
             .child(self.ligand_list(structure, cx))
@@ -5991,6 +6092,31 @@ mod ui_tests {
         click(cx, "close-site");
         assert!(view.update(cx, |this, _| this.site.is_none()));
         assert_eq!(extra(&view, cx), 0);
+    }
+
+    const DIMER: &str = "REMARK 350 BIOMOLECULE: 1\nREMARK 350 APPLY THE FOLLOWING TO CHAINS: A\nREMARK 350   BIOMT1   1  1.000000  0.000000  0.000000        0.00000\nREMARK 350   BIOMT2   1  0.000000  1.000000  0.000000        0.00000\nREMARK 350   BIOMT3   1  0.000000  0.000000  1.000000        0.00000\nREMARK 350   BIOMT1   2 -1.000000  0.000000  0.000000       30.00000\nREMARK 350   BIOMT2   2  0.000000 -1.000000  0.000000        0.00000\nREMARK 350   BIOMT3   2  0.000000  0.000000  1.000000        0.00000\nATOM      1  N   GLY A   1       1.000   2.000   3.000  1.00 10.00           N\nATOM      2  CA  GLY A   1       2.450   2.000   3.000  1.00 10.00           C\nATOM      3  C   GLY A   1       3.000   3.400   3.000  1.00 10.00           C\nATOM      4  O   GLY A   1       2.300   4.400   3.000  1.00 10.00           O\nATOM      5  N   GLY A   2       4.800   2.000   3.000  1.00 10.00           N\nATOM      6  CA  GLY A   2       6.250   2.000   3.000  1.00 10.00           C\nATOM      7  C   GLY A   2       6.800   3.400   3.000  1.00 10.00           C\nATOM      8  O   GLY A   2       6.100   4.400   3.000  1.00 10.00           O\nATOM      9  N   GLY A   3       8.600   2.000   3.000  1.00 10.00           N\nATOM     10  CA  GLY A   3      10.050   2.000   3.000  1.00 10.00           C\nATOM     11  C   GLY A   3      10.600   3.400   3.000  1.00 10.00           C\nATOM     12  O   GLY A   3       9.900   4.400   3.000  1.00 10.00           O\n";
+
+    #[gpui::test]
+    fn an_assembly_is_shown_in_place_of_the_deposited_chains(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let s = formats::parse(DIMER, formats::Format::Pdb, "dimer".into(), Source::File).unwrap();
+            this.show(s, cx);
+        });
+        cx.run_until_parked();
+        let chains = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.structure.as_ref().unwrap().chains.len())
+        };
+        assert_eq!(chains(&view, cx), 1);
+        click(cx, "assembly-0");
+        assert_eq!(chains(&view, cx), 2);
+        assert_eq!(view.update(cx, |this, _| this.assembly), Some(0));
+        // Both copies are drawn: twice the ribbon.
+        let tris = view.update(cx, |this, _| this.base.tris.len());
+        click(cx, "assembly-deposited");
+        assert_eq!(chains(&view, cx), 1);
+        assert!(view.update(cx, |this, _| this.deposited.is_none()));
+        assert_eq!(view.update(cx, |this, _| this.base.tris.len()) * 2, tris);
     }
 
     #[gpui::test]

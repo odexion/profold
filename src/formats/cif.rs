@@ -66,6 +66,9 @@ fn cif_tokens(line: &str) -> Vec<&str> {
 fn parse_mmcif(text: &str, id: String, source: Source) -> Result<Structure> {
     let mut b = Builder::new("mmCIF");
     let mut title = String::new();
+    // Assemblies name chains by label_asym_id; the structure, by the
+    // author's chain.
+    let mut label_to_auth: std::collections::HashMap<String, String> = Default::default();
 
     let mut lines = text.lines().peekable();
     while let Some(line) = lines.next() {
@@ -126,6 +129,7 @@ fn parse_mmcif(text: &str, id: String, source: Source) -> Result<Structure> {
         let i_alt = idx("_atom_site.label_alt_id");
         let i_comp = idx("_atom_site.auth_comp_id").or_else(|| idx("_atom_site.label_comp_id"));
         let i_asym = idx("_atom_site.auth_asym_id").or_else(|| idx("_atom_site.label_asym_id"));
+        let i_label_asym = idx("_atom_site.label_asym_id");
         let i_seq = idx("_atom_site.auth_seq_id").or_else(|| idx("_atom_site.label_seq_id"));
         let i_ins = idx("_atom_site.pdbx_PDB_ins_code");
         let i_x = idx("_atom_site.Cartn_x");
@@ -204,6 +208,11 @@ fn parse_mmcif(text: &str, id: String, source: Source) -> Result<Structure> {
                 "?" | "." => "",
                 v => v,
             };
+            if let Some(label) = i_label_asym.and_then(|i| f.get(i)) {
+                if !label_to_auth.contains_key(*label) {
+                    label_to_auth.insert(label.to_string(), f[i_asym].to_string());
+                }
+            }
             b.push(Record {
                 chain: f[i_asym],
                 res_name,
@@ -225,7 +234,111 @@ fn parse_mmcif(text: &str, id: String, source: Source) -> Result<Structure> {
     if b.len() == 0 {
         bail!("no atoms found in mmCIF file");
     }
+    b.assemblies = mmcif_assemblies(text, &label_to_auth);
     Ok(b.finish(id, title, source))
+}
+
+/// The assemblies an mmCIF file describes, from its `pdbx_struct_assembly`,
+/// `_gen` and `oper_list` categories, which may be loops or single rows.
+/// Only those categories are read, so the atom sites are not tokenised again.
+fn mmcif_assemblies(text: &str, label_to_auth: &std::collections::HashMap<String, String>) -> Vec<crate::assembly::Assembly> {
+    use crate::assembly::{expand, Assembly, Part};
+    const WANTED: [&str; 3] = ["_pdbx_struct_assembly.", "_pdbx_struct_assembly_gen.", "_pdbx_struct_oper_list."];
+    // Categories are separated by lines of a lone #.
+    let mut picked = String::new();
+    let mut block = String::new();
+    let mut keep = false;
+    for line in text.lines() {
+        if line.trim() == "#" {
+            if keep {
+                picked.push_str(&block);
+            }
+            block.clear();
+            keep = false;
+            continue;
+        }
+        let t = line.trim_start();
+        if t.starts_with('_') && WANTED.iter().any(|w| t.starts_with(w)) {
+            keep = true;
+        }
+        block.push_str(line);
+        block.push('\n');
+    }
+    if keep {
+        picked.push_str(&block);
+    }
+    if picked.is_empty() {
+        return Vec::new();
+    }
+    let (items, tables) = read_blocks(&picked);
+    // Each category as rows of (column, value), loop or not.
+    let rows = |prefix: &str| -> Vec<std::collections::HashMap<String, String>> {
+        if let Some(t) = tables.iter().find(|t| t.cols.first().is_some_and(|c| c.starts_with(prefix))) {
+            return t
+                .rows
+                .iter()
+                .map(|r| {
+                    t.cols
+                        .iter()
+                        .zip(r)
+                        .map(|(c, v)| (c[prefix.len()..].to_string(), unquote(v)))
+                        .collect()
+                })
+                .collect();
+        }
+        let one: std::collections::HashMap<String, String> = items
+            .iter()
+            .filter(|(k, _)| k.starts_with(prefix))
+            .map(|(k, v)| (k[prefix.len()..].to_string(), unquote(v)))
+            .collect();
+        if one.is_empty() { Vec::new() } else { vec![one] }
+    };
+    let mut ops = std::collections::HashMap::new();
+    for r in rows("_pdbx_struct_oper_list.") {
+        let m = |k: &str| r.get(k).and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0);
+        let op: crate::assembly::Op = std::array::from_fn(|i| {
+            [
+                m(&format!("matrix[{}][1]", i + 1)),
+                m(&format!("matrix[{}][2]", i + 1)),
+                m(&format!("matrix[{}][3]", i + 1)),
+                m(&format!("vector[{}]", i + 1)),
+            ]
+        });
+        if let Some(id) = r.get("id") {
+            ops.insert(id.clone(), op);
+        }
+    }
+    let names: std::collections::HashMap<String, String> = rows("_pdbx_struct_assembly.")
+        .into_iter()
+        .filter_map(|r| Some((r.get("id")?.clone(), r.get("oligomeric_details").cloned().unwrap_or_default())))
+        .collect();
+    let mut out: Vec<Assembly> = Vec::new();
+    for r in rows("_pdbx_struct_assembly_gen.") {
+        let (Some(id), Some(expr), Some(asyms)) = (r.get("assembly_id"), r.get("oper_expression"), r.get("asym_id_list")) else {
+            continue;
+        };
+        let mut chains: Vec<String> = Vec::new();
+        for label in asyms.split(',').map(str::trim) {
+            if let Some(auth) = label_to_auth.get(label) {
+                if !chains.contains(auth) {
+                    chains.push(auth.clone());
+                }
+            }
+        }
+        let part = Part { chains, ops: expand(expr, &ops) };
+        if part.chains.is_empty() || part.ops.is_empty() {
+            continue;
+        }
+        match out.iter_mut().find(|a| &a.id == id) {
+            Some(a) => a.parts.push(part),
+            None => out.push(Assembly {
+                id: id.clone(),
+                name: names.get(id).cloned().unwrap_or_default(),
+                parts: vec![part],
+            }),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

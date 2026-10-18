@@ -262,6 +262,9 @@ pub struct Structure {
     /// Drawing radius for atoms of unknown element, set from the spacing of
     /// the atoms: a Lennard-Jones fluid in reduced units is one wide, not 1.6.
     pub unknown_radius: f32,
+    /// The biological assemblies the file describes, which may be bigger
+    /// than what it deposits.
+    pub assemblies: Vec<crate::assembly::Assembly>,
     /// The span of B-factors colouring runs over, worked out when first asked.
     b_span: std::sync::OnceLock<Option<(f32, f32)>>,
 }
@@ -286,6 +289,7 @@ impl Structure {
             kinds: Vec::new(),
             format: None,
             unknown_radius: Element::UNKNOWN.vdw(),
+            assemblies: Vec::new(),
             b_span: std::sync::OnceLock::new(),
         }
     }
@@ -754,6 +758,7 @@ pub struct Builder {
     pub frames: Vec<Snapshot>,
     pub kinds: Vec<String>,
     pub format: Option<&'static str>,
+    pub assemblies: Vec<crate::assembly::Assembly>,
 }
 
 impl Builder {
@@ -879,6 +884,7 @@ impl Builder {
         structure.format = self.format;
         structure.cell = self.cell;
         structure.kinds = self.kinds;
+        structure.assemblies = self.assemblies;
         structure.bonds = if self.bonds.is_empty() {
             crate::bonds::infer(&self.atoms)
         } else {
