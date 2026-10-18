@@ -7,8 +7,8 @@
 # A protein cartoon: a ribbon wound into a helix that leaves as a strand and
 # ends in an arrowhead, coloured along its length from the N-terminus to the C.
 # The ribbon's outer face is lit, its inner face is shaded, and a dark edge
-# keeps one turn apart from the next where they cross. The small glyph has
-# fewer, wider turns so it still reads at 16 pixels.
+# keeps one turn apart from the next where they cross. The small glyph is the
+# same fold in a wider ribbon and a heavier line, so it still reads at 16 pixels.
 import math, sys
 
 SMALL = '--small' in sys.argv
@@ -19,11 +19,15 @@ TILE = ('#ffffff', '#f1f2f6')     # top and bottom of the paper
 INK = (8, 6, 20)                  # what the inner face and the edge darken toward
 # the ramp along the chain, start to end
 RAMP = [(0x43, 0x38, 0xca), (0x7c, 0x3a, 0xed), (0xc0, 0x26, 0xd3), (0xf4, 0x3f, 0x5e), (0xfb, 0x92, 0x3c)]
-TURNS = 2.0 if SMALL else 2.5
-RISE = 2.4 if SMALL else 2.1      # along the axis per turn, in radii
+TURNS = 2.5
+RISE = 2.5 if SMALL else 2.1      # along the axis per turn, in radii
 W = 1.45 if SMALL else 1.1        # ribbon width, in radii
 EDGE = 9.0 if SMALL else 5.0      # edge line, in pixels
 BOX = 660.0 if SMALL else 620.0
+PHASE = 0.7                       # where the helix starts, in half turns
+EXIT_ANGLE = 30.0                 # the strand, in degrees above the page's horizontal
+EXIT_LEN = 2.0                    # and its length, in radii
+HANDLE = 0.8                      # how gently it bends out of the helix
 
 def ramp(t):
     t = max(0.0, min(1.0, t))*(len(RAMP)-1)
@@ -38,54 +42,62 @@ def dot(p, q): return sum(p[k]*q[k] for k in range(3))
 def cross(p, q): return (p[1]*q[2]-p[2]*q[1], p[2]*q[0]-p[0]*q[2], p[0]*q[1]-p[1]*q[0])
 def unit(p): return mul(p, 1/math.sqrt(dot(p, p)))
 
+def view(p):
+    x, y, z = p
+    a = math.radians(24)     # tip the axis toward the eye
+    y, z = y*math.cos(a) - z*math.sin(a), y*math.sin(a) + z*math.cos(a)
+    b = math.radians(-26)                     # lay it on the diagonal
+    x, y = x*math.cos(b) - y*math.sin(b), x*math.sin(b) + y*math.cos(b)
+    return (x, -y, z)
+# the page's right, up and toward the eye, in the chain's own frame
+BASIS = [view(v) for v in ((1, 0, 0), (0, 1, 0), (0, 0, 1))]
+RIGHT = tuple(v[0] for v in BASIS); UP = tuple(-v[1] for v in BASIS); EYE = tuple(v[2] for v in BASIS)
+
 # The centreline, with the direction the ribbon's width lies along. On the
-# helix that is the axis, kept on the cylinder; past it, carried along.
+# helix that is the axis, kept on the cylinder; past it, the ribbon turns to
+# lie flat to the eye, so the strand and its arrowhead are seen face on.
 H = TURNS*RISE
-PH = math.pi*0.15
+PH = math.pi*PHASE
 C, across = [], []
 NH = int(260*TURNS)
 for i in range(NH+1):
     th = i/NH*TURNS*2*math.pi + PH
-    C.append((math.cos(th), i/NH*H, math.sin(th)))
-    t = unit((-math.sin(th)*TURNS*2*math.pi, H, math.cos(th)*TURNS*2*math.pi))
+    C.append((math.cos(th), i/NH*H, -math.sin(th)))   # right-handed, as an α-helix is
+    t = unit((-math.sin(th)*TURNS*2*math.pi, H, -math.cos(th)*TURNS*2*math.pi))
     across.append(unit(sub((0, 1, 0), mul(t, t[1]))))
 # out of the helix along its tangent, and round into a straight strand
 tH = unit(sub(C[-1], C[-2]))
-P0 = C[-1]; P1 = add(P0, mul(tH, 0.6))
-P3 = add(P0, (1.0, 0.7, 0.5) if SMALL else (1.3, 0.9, 0.6))
-tS = unit((0.9, 1.0, 0.3))
-P2 = sub(P3, mul(tS, 0.5))
+# the strand points up and to the right on the page, flat to the eye
+EXIT = math.radians(EXIT_ANGLE)
+tS = unit(add(mul(RIGHT, math.cos(EXIT)), mul(UP, math.sin(EXIT))))
+P0 = C[-1]; P1 = add(P0, mul(tH, HANDLE))
+P3 = add(P0, mul(tS, EXIT_LEN))
+P2 = sub(P3, mul(tS, HANDLE))
 for i in range(1, 71):
     u = i/70
     C.append(tuple((1-u)**3*P0[k] + 3*(1-u)**2*u*P1[k] + 3*(1-u)*u*u*P2[k] + u**3*P3[k] for k in range(3)))
     across.append(None)
-SL = 0.0 if SMALL else 0.5
+SL = 0.5
 for i in range(1, 51 if SL else 1):
     C.append(add(P3, mul(tS, SL*i/50))); across.append(None)
+last = across[NH]
 for k in range(NH+1, len(C)):
     t = unit(sub(C[k], C[k-1]))
-    b = across[k-1]
+    flat = unit(cross(t, EYE))
+    if dot(flat, last) < 0: flat = mul(flat, -1)
+    e = min(1.0, (k-NH)/60); e = e*e*(3-2*e)
+    b = add(mul(last, 1-e), mul(flat, e))
     across[k] = unit(sub(b, mul(t, dot(b, t))))
 body = len(C)
 # the arrowhead: the same point twice, narrow then wide, makes its shoulders
-AL, NA = (0.9 if SMALL else 1.0), 30
+AL, NA = 1.0, 30
 tE = unit(sub(C[-1], C[-2])); E = C[-1]
-def width(k):
-    e = min(1.0, k/40); e = e*e*(3-2*e)     # the N-terminus opens out
-    return W*(0.35 + 0.65*e)
-wd = [width(k) for k in range(body)]
+wd = [W]*body
 C.append(E); across.append(across[-1]); wd.append(1.6*W)
 for i in range(1, NA+1):
     C.append(add(E, mul(tE, AL*i/NA))); across.append(across[body-1]); wd.append(1.6*W*(1 - i/NA) + 1e-3)
 n = len(C)
 
-def view(p):
-    x, y, z = p
-    a = math.radians(26 if SMALL else 24)     # tip the axis toward the eye
-    y, z = y*math.cos(a) - z*math.sin(a), y*math.sin(a) + z*math.cos(a)
-    b = math.radians(-42)                     # lay it on the diagonal
-    x, y = x*math.cos(b) - y*math.sin(b), x*math.sin(b) + y*math.cos(b)
-    return (x, -y, z)
 L = [view(add(C[k], mul(across[k], wd[k]/2))) for k in range(n)]
 R = [view(sub(C[k], mul(across[k], wd[k]/2))) for k in range(n)]
 x0 = min(p[0] for p in L+R); x1 = max(p[0] for p in L+R)
