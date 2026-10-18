@@ -3803,6 +3803,8 @@ impl Viewer {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         };
 
+        // Up top, how it is drawn; at the foot, what it is coloured by
+        // beside the palette it is coloured from.
         let top = bar()
             .top(px(12.))
             .child(group(
@@ -3820,35 +3822,6 @@ impl Viewer {
                     })
                     .collect(),
             ))
-            .child(group(
-                options
-                    .iter()
-                    // pLDDT means nothing without a predicted model, so it
-                    // is offered only for one; B-factors only where the file
-                    // has them, and helices only in a protein.
-                    .filter(|c| **c != Coloring::Confidence || has_confidence)
-                    .filter(|c| **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some()))
-                    .filter(|c| **c != Coloring::Structure || polymer)
-                    .map(|c| {
-                        let c = *c;
-                        let name = match c {
-                            Coloring::Chain if !polymer => "Molecule",
-                            _ => c.label(),
-                        };
-                        pill_keyed(("colour", c as usize), name, c == coloring)
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.coloring = c;
-                                this.rebuild(cx);
-                            }))
-                            .into_any_element()
-                    })
-                    .collect(),
-            ));
-
-        let bottom = bar()
-            .bottom(px(bottom))
-            .child(self.palette_button(cx))
             .child(group(
                 Style::ALL
                     .iter()
@@ -3875,6 +3848,35 @@ impl Viewer {
                     }))
                     .into_any_element()]))
             });
+
+        let bottom = bar()
+            .bottom(px(bottom))
+            .child(self.palette_button(cx))
+            .child(group(
+                options
+                    .iter()
+                    // pLDDT means nothing without a predicted model, so it
+                    // is offered only for one; B-factors only where the file
+                    // has them, and helices only in a protein.
+                    .filter(|c| **c != Coloring::Confidence || has_confidence)
+                    .filter(|c| **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some()))
+                    .filter(|c| **c != Coloring::Structure || polymer)
+                    .map(|c| {
+                        let c = *c;
+                        let name = match c {
+                            Coloring::Chain if !polymer => "Molecule",
+                            _ => c.label(),
+                        };
+                        pill_keyed(("colour", c as usize), name, c == coloring)
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.coloring = c;
+                                this.rebuild(cx);
+                            }))
+                            .into_any_element()
+                    })
+                    .collect(),
+            ));
 
         vec![top.into_any_element(), bottom.into_any_element()]
     }
