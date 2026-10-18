@@ -231,6 +231,12 @@ pub struct Viewer {
     hover: Option<(Target, Point<Pixels>)>,
     /// What was clicked on, which glows until something else is.
     selected: Option<Target>,
+    /// The residue of the loaded structure the pointer is over in the
+    /// sequence, which glows in the viewport while it is.
+    seq_hover: Option<usize>,
+    /// The scene without anything glowing in it, which a glow is laid over
+    /// without building the rest again.
+    base: Arc<Scene>,
 
     open: Option<Dropdown>,
     export: Option<Task<()>>,
@@ -369,6 +375,8 @@ impl Viewer {
             press: None,
             hover: None,
             selected: None,
+            seq_hover: None,
+            base: Arc::new(Scene::default()),
             open: None,
             export: None,
             prompt: None,
@@ -567,6 +575,7 @@ impl Viewer {
         self.compare = None;
         self.fit = None;
         self.selected = None;
+        self.seq_hover = None;
         self.hover = None;
         self.rebuild(cx);
     }
@@ -592,6 +601,7 @@ impl Viewer {
         self.show_reference = true;
         self.show_prediction = true;
         self.selected = None;
+        self.seq_hover = None;
         self.hover = None;
         self.rebuild(cx);
     }
@@ -658,8 +668,30 @@ impl Viewer {
         });
         if target != self.selected {
             self.selected = target;
-            self.rebuild(cx);
+            self.compose(cx);
         }
+    }
+
+    /// Point at a residue in the sequence, or with `None` at none.
+    fn set_seq_hover(&mut self, residue: Option<usize>, cx: &mut Context<Self>) {
+        if residue != self.seq_hover {
+            self.seq_hover = residue;
+            self.compose(cx);
+        }
+    }
+
+    /// The residue of the loaded structure that is picked, if one is.
+    fn selected_residue(&self) -> Option<usize> {
+        let t = self.selected.filter(|t| t.which == 0)?;
+        let s = self.structure.as_ref()?;
+        Some(s.atoms.get(t.picked.atom)?.residue as usize)
+    }
+
+    /// The residue of the loaded structure under the pointer in the viewport.
+    fn hovered_residue(&self) -> Option<usize> {
+        let (t, _) = self.hover.filter(|(t, _)| t.which == 0)?;
+        let s = self.structure.as_ref()?;
+        Some(s.atoms.get(t.picked.atom)?.residue as usize)
     }
 
     /// Draw again after the theme has changed: the scene's colours are
@@ -736,7 +768,21 @@ impl Viewer {
                 &self.appearance,
             ));
         }
-        if let Some(t) = self.selected {
+        self.base = Arc::new(scene);
+        self.compose(cx);
+        self.persist();
+    }
+
+    /// Lay what glows over the scene: the atom or residue picked, and the
+    /// residue pointed at in the sequence.
+    fn compose(&mut self, cx: &mut Context<Self>) {
+        let hovered = self.seq_hover.and_then(|r| {
+            let s = self.structure.as_ref()?;
+            Some(Target { which: 0, picked: residue_pick(s, r)? })
+        });
+        let glows: Vec<Target> = self.selected.into_iter().chain(hovered).collect();
+        let mut scene = Scene::clone(&self.base);
+        for t in glows {
             if let Some(s) = self.shown(t.which) {
                 scene.merge(render::build_highlight(
                     s,
@@ -750,7 +796,6 @@ impl Viewer {
             }
         }
         self.scene = Arc::new(scene.stamp());
-        self.persist();
         cx.notify();
     }
 
@@ -1920,6 +1965,28 @@ fn swatch_strip(p: Palette) -> impl IntoElement {
         }))
 }
 
+
+/// A whole residue picked: by its alpha carbon, or else its first atom.
+fn residue_pick(s: &Structure, residue: usize) -> Option<Picked> {
+    let r = s.residues.get(residue)?;
+    let atom = match r.ca {
+        Some(ca) => ca as usize,
+        None => s.atoms.iter().position(|a| a.residue as usize == residue)?,
+    };
+    Some(Picked { atom, residue: true, depth: 0.0 })
+}
+
+/// The letter a residue goes by in the sequence: its amino acid's, or a
+/// nucleotide's base.
+fn residue_letter(r: &crate::protein::Residue) -> char {
+    if r.code != 'X' || r.outside_polymer() {
+        return r.code;
+    }
+    r.name.trim().chars().last().unwrap_or('X')
+}
+
+/// Residues per block of the sequence, each block numbered.
+const SEQUENCE_BLOCK: usize = 10;
 
 fn rule() -> impl IntoElement {
     div().h(px(1.)).w_full().bg(theme::border())
@@ -4256,22 +4323,107 @@ impl Viewer {
     /// What is on screen, set like the opening of an article: the category in
     /// small capitals, the name large, the sentence beneath it, then the
     /// figures in a ruled table that reads straight down the left edge.
+    /// The sequence, chain by chain, in numbered blocks of ten. A letter
+    /// glows its residue in the viewport while pointed at and picks it out
+    /// when clicked; what is picked or pointed at in the viewport is marked
+    /// here in turn.
+    fn sequence_view(&self, structure: &Structure, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.selected_residue();
+        let pointed = self.hovered_residue().or(self.seq_hover);
+        let total = structure.chains.len();
+        let shown = if self.all_chains { total } else { total.min(6) };
+        let several = total > 1;
+        div()
+            .pt(px(9.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .children(structure.chains.iter().take(shown).enumerate().filter_map(|(ci, chain)| {
+                let residues: Vec<usize> = chain
+                    .residues
+                    .iter()
+                    .map(|&r| r as usize)
+                    .filter(|&r| !structure.residues[r].outside_polymer())
+                    .collect();
+                if residues.is_empty() {
+                    return None;
+                }
+                let blocks = residues.chunks(SEQUENCE_BLOCK).map(|block| {
+                    let first = structure.residues[block[0]].seq;
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .h(px(11.))
+                                .font_family(theme::MONO)
+                                .text_size(px(8.))
+                                .text_color(theme::faint())
+                                .child(first.to_string()),
+                        )
+                        .child(div().flex().children(block.iter().map(|&ri| {
+                            let r = &structure.residues[ri];
+                            let tip: SharedString = format!("{} {}", r.name, r.seq).into();
+                            let on = selected == Some(ri);
+                            let near = pointed == Some(ri);
+                            div()
+                                .id(("residue", ri))
+                                .debug_selector(move || format!("residue-{ri}"))
+                                .w(px(7.5))
+                                .h(px(14.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(2.))
+                                .cursor_pointer()
+                                .font_family(theme::MONO)
+                                .text_size(px(10.5))
+                                .when(on, |d| d.bg(theme::ink()).text_color(theme::on_ink()))
+                                .when(!on && near, |d| d.bg(theme::sunken()).text_color(theme::ink()))
+                                .when(!on && !near, |d| d.text_color(theme::muted()))
+                                .child(residue_letter(r).to_string())
+                                .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone())).into())
+                                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                    if *hovered {
+                                        this.set_seq_hover(Some(ri), cx);
+                                    } else if this.seq_hover == Some(ri) {
+                                        this.set_seq_hover(None, cx);
+                                    }
+                                }))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let Some(s) = this.structure.as_ref() else { return };
+                                    let target = residue_pick(s, ri).map(|picked| Target { which: 0, picked });
+                                    this.select(target, cx);
+                                }))
+                        })))
+                });
+                Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .when(several, |d| {
+                            let id = chain.id.trim();
+                            d.child(
+                                div()
+                                    .text_size(px(9.))
+                                    .text_color(theme::faint())
+                                    .child(spaced(&if id.is_empty() {
+                                        format!("CHAIN {}", ci + 1)
+                                    } else {
+                                        format!("CHAIN {}", id.to_uppercase())
+                                    })),
+                            )
+                        })
+                        .child(div().flex().flex_wrap().gap_x(px(6.)).gap_y(px(2.)).children(blocks)),
+                )
+            }))
+    }
+
     fn info(&self, structure: &Structure, cx: &mut Context<Self>) -> gpui::AnyElement {
         if !structure.has_polymer() {
             return self.info_atoms(structure, cx).into_any_element();
         }
         let sequence = structure.sequence();
-        // Enough to recognise it by: both termini, and the length. The whole
-        // thing goes to the clipboard.
-        let preview = if sequence.len() <= 34 {
-            sequence.clone()
-        } else {
-            format!(
-                "{} … {}",
-                &sequence[..20],
-                &sequence[sequence.len() - 10..]
-            )
-        };
         let (name, blurb) = headline(structure);
         // The numbering is worth showing only when the file does not start at
         // one, which is the sign of a fragment or a trimmed construct.
@@ -4398,16 +4550,7 @@ impl Viewer {
                             ),
                     ),
             )
-            .child(
-                div()
-                    .pt(px(9.))
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .font_family(theme::MONO)
-                    .text_size(px(10.))
-                    .text_color(theme::faint())
-                    .child(preview),
-            )
+            .child(self.sequence_view(structure, cx))
             .when(structure.frame_count() > 1, |d| {
                 d.child(
                     div()
@@ -4906,6 +5049,48 @@ mod ui_tests {
         cx.run_until_parked();
         assert_eq!(view.update(cx, |this, _| this.selected), None);
         assert_eq!(glows(&view, cx), 0);
+    }
+
+    #[gpui::test]
+    fn the_sequence_and_the_viewport_point_at_each_other(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(SAMPLES[2].file, SAMPLES[2].bytes.to_vec()).unwrap();
+            this.show(s, cx);
+        });
+        cx.run_until_parked();
+        let glows = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.scene.spheres.iter().filter(|s| s.alpha < 1.0).count())
+        };
+        assert_eq!(glows(&view, cx), 0);
+
+        // Pointing at a letter glows its residue, and leaving it lets go.
+        let letter = cx.debug_bounds("residue-3").expect("no sequence on screen");
+        cx.simulate_mouse_move(letter.center(), None, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.seq_hover), Some(3));
+        assert!(glows(&view, cx) > 0, "the residue pointed at does not glow");
+        let away = view.update(cx, |this, _| this.cache.borrow().bounds.origin) + gpui::point(px(3.), px(120.));
+        cx.simulate_mouse_move(away, None, Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.seq_hover), None);
+
+        // Clicking it picks the residue out, as a click on its ribbon would.
+        click(cx, "residue-3");
+        let picked = view.update(cx, |this, _| this.selected_residue());
+        assert_eq!(picked, Some(3));
+        assert!(view.update(cx, |this, _| this.selected.unwrap().picked.residue));
+        assert!(glows(&view, cx) > 0);
+
+        // And what is picked in the viewport is the one marked here.
+        let at = front_atom(&view, cx);
+        cx.simulate_click(at, Modifiers::none());
+        cx.run_until_parked();
+        let (picked, hit) = view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            (this.selected_residue(), this.selected.map(|t| s.atoms[t.picked.atom].residue as usize))
+        });
+        assert_eq!(picked, hit);
     }
 
     #[gpui::test]

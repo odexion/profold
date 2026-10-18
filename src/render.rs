@@ -797,7 +797,7 @@ pub struct Tri {
     pub c: [f32; 3],
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Scene {
     pub spheres: Vec<Sphere>,
     pub capsules: Vec<Capsule>,
