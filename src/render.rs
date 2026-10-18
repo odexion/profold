@@ -48,7 +48,7 @@ impl Look {
 /// The size and opacity set for each species. Kept by element and by type
 /// name rather than per structure, so hiding hydrogens stays hidden from one
 /// file to the next.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct Appearance {
     looks: HashMap<Species, Look>,
     /// Water and other solvent is hidden, as it is by default beside a

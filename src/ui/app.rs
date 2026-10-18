@@ -275,6 +275,28 @@ fn ground(dark: bool) -> Arc<gpui::RenderImage> {
     })
 }
 
+/// How a structure is shown, as undo steps back through it: everything a
+/// change of style, colour, layer or measurement touches, and nothing of
+/// where the camera is or what the pointer is over.
+#[derive(Clone, PartialEq)]
+struct ShownAs {
+    repr: Repr,
+    coloring: Coloring,
+    style: Style,
+    palette: Palette,
+    standard_colors: bool,
+    show_cell: bool,
+    appearance: Appearance,
+    layers: Vec<(String, render::LayerStyle, Option<[f32; 3]>)>,
+    measurements: Vec<Measurement>,
+    chain_colors: Vec<Option<[f32; 3]>>,
+    ligand_paint: Vec<(String, LigandPaint)>,
+}
+
+/// Changes closer together than this are one step to undo, as a slider's
+/// drag is.
+const UNDO_PAUSE: Duration = Duration::from_millis(500);
+
 /// The camera turning by itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Turn {
@@ -409,6 +431,10 @@ pub struct Viewer {
     /// Where a selection is typed, and what was wrong with the last one.
     select_input: Entity<TextInput>,
     select_error: Option<SharedString>,
+    /// What can be undone, the present last, and what was undone, to redo.
+    history: Vec<ShownAs>,
+    undone: Vec<ShownAs>,
+    last_change: std::time::Instant,
     /// The plots: where each was last laid out, what the pointer is over in
     /// it, and what is worked out once per structure.
     rama_bounds: Rc<Shared<Bounds<Pixels>>>,
@@ -595,6 +621,9 @@ impl Viewer {
             layers: Vec::new(),
             select_input,
             select_error: None,
+            history: Vec::new(),
+            undone: Vec::new(),
+            last_change: std::time::Instant::now(),
             rama_bounds: Rc::new(Shared::new(Bounds::default())),
             rama_hover: None,
             pae_bounds: Rc::new(Shared::new(Bounds::default())),
@@ -804,6 +833,8 @@ impl Viewer {
         self.deposited = None;
         self.assembly = None;
         self.layers.clear();
+        self.history.clear();
+        self.undone.clear();
         self.selected = None;
         self.seq_hover = None;
         self.hover = None;
@@ -1117,7 +1148,90 @@ impl Viewer {
             }
         }
         self.scene = Arc::new(scene.stamp());
+        self.remember();
         cx.notify();
+    }
+
+    /// How the structure is shown now.
+    fn look_now(&self) -> Option<ShownAs> {
+        let s = self.structure.as_ref()?;
+        let mut appearance = self.appearance.clone();
+        appearance.hidden = None;
+        let mut ligand_paint: Vec<(String, LigandPaint)> = s.ligand_paint.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        ligand_paint.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(ShownAs {
+            repr: self.repr,
+            coloring: self.coloring,
+            style: self.style,
+            palette: self.palette,
+            standard_colors: self.standard_colors,
+            show_cell: self.show_cell,
+            appearance,
+            layers: self.layers.iter().map(|l| (l.selection.text().to_string(), l.style, l.color)).collect(),
+            measurements: self.measurements.clone(),
+            chain_colors: s.chains.iter().map(|c| c.color).collect(),
+            ligand_paint,
+        })
+    }
+
+    /// Keep how the structure is shown, if it changed, as a step to undo.
+    fn remember(&mut self) {
+        let Some(now) = self.look_now() else { return };
+        if self.history.last() == Some(&now) {
+            return;
+        }
+        // A burst of changes, a slider dragged, is one step.
+        if self.history.len() > 1 && self.last_change.elapsed() < UNDO_PAUSE {
+            self.history.pop();
+        }
+        self.history.push(now);
+        self.last_change = std::time::Instant::now();
+        self.undone.clear();
+        if self.history.len() > 200 {
+            self.history.remove(0);
+        }
+    }
+
+    /// Show the structure as it was shown a step ago, or with `redo` a step
+    /// on again.
+    pub fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
+        let target = if redo {
+            let Some(next) = self.undone.pop() else { return };
+            self.history.push(next.clone());
+            next
+        } else {
+            if self.history.len() < 2 {
+                return;
+            }
+            let now = self.history.pop().unwrap();
+            self.undone.push(now);
+            self.history.last().unwrap().clone()
+        };
+        self.repr = target.repr;
+        self.coloring = target.coloring;
+        self.style = target.style;
+        self.palette = target.palette;
+        self.standard_colors = target.standard_colors;
+        self.show_cell = target.show_cell;
+        self.appearance = target.appearance.clone();
+        self.layers = target
+            .layers
+            .iter()
+            .filter_map(|(text, style, color)| {
+                Some(Layer { selection: Selection::parse(text).ok()?, atoms: Arc::new(Vec::new()), style: *style, color: *color })
+            })
+            .collect();
+        self.measurements = target.measurements.clone();
+        if let Some(s) = self.structure.as_mut() {
+            let s = Arc::make_mut(s);
+            for (c, color) in s.chains.iter_mut().zip(&target.chain_colors) {
+                c.color = *color;
+            }
+            s.ligand_paint = target.ligand_paint.iter().cloned().collect();
+        }
+        // Not a new step: the look being shown is the one the history ends on.
+        self.last_change = std::time::Instant::now() - UNDO_PAUSE;
+        self.rebuild(cx);
     }
 
     /// Turn the camera's attention to a point: it slides across and zooms
@@ -7779,6 +7893,57 @@ mod ui_tests {
         assert_eq!(decoded.len(), 6);
         assert_eq!(decoded[0].buffer().dimensions(), (120, 90));
         assert_ne!(decoded[0].buffer().as_raw(), decoded[3].buffer().as_raw(), "every frame the same");
+    }
+
+    #[gpui::test]
+    fn undo_steps_back_through_how_it_was_shown(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        // Each change after a pause, so none is folded into the last.
+        let pause = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.last_change = std::time::Instant::now() - UNDO_PAUSE * 2)
+        };
+        let state = |view: &Entity<Viewer>, cx: &mut VisualTestContext| view.update(cx, |this, _| (this.repr, this.coloring, this.measurements.len()));
+        let start = state(&view, cx);
+        pause(&view, cx);
+        view.update(cx, |this, cx| this.set_repr(Repr::Spacefill, cx));
+        pause(&view, cx);
+        view.update(cx, |this, cx| {
+            this.coloring = Coloring::Rainbow;
+            this.rebuild(cx);
+        });
+        pause(&view, cx);
+        view.update(cx, |this, cx| {
+            this.measurements.push(Measurement { kind: measure::Kind::Distance, which: 0, atoms: vec![0, 1] });
+            this.compose(cx);
+        });
+        assert_eq!(state(&view, cx), (Repr::Spacefill, Coloring::Rainbow, 1));
+        view.update(cx, |this, cx| this.undo(false, cx));
+        assert_eq!(state(&view, cx), (Repr::Spacefill, Coloring::Rainbow, 0));
+        view.update(cx, |this, cx| this.undo(false, cx));
+        assert_eq!(state(&view, cx), (Repr::Spacefill, start.1, 0));
+        view.update(cx, |this, cx| this.undo(false, cx));
+        assert_eq!(state(&view, cx), start);
+        // Nothing before the start.
+        view.update(cx, |this, cx| this.undo(false, cx));
+        assert_eq!(state(&view, cx), start);
+        view.update(cx, |this, cx| this.undo(true, cx));
+        view.update(cx, |this, cx| this.undo(true, cx));
+        assert_eq!(state(&view, cx), (Repr::Spacefill, Coloring::Rainbow, 0));
+        // A new change drops what could be redone.
+        pause(&view, cx);
+        view.update(cx, |this, cx| this.set_style(Style::Studio, cx));
+        view.update(cx, |this, cx| this.undo(true, cx));
+        assert_eq!(view.update(cx, |this, _| this.style), Style::Studio);
+        // A slider's drag, many changes at once, is one step.
+        pause(&view, cx);
+        for size in [1.1, 1.3, 1.6] {
+            view.update(cx, |this, cx| {
+                this.appearance.set(Species::Element(6), Look { size, ..Look::default() });
+                this.rebuild(cx);
+            });
+        }
+        view.update(cx, |this, cx| this.undo(false, cx));
+        assert_eq!(view.update(cx, |this, _| this.appearance.get(&Species::Element(6)).size), 1.0);
     }
 
     #[gpui::test]

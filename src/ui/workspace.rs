@@ -53,6 +53,8 @@ actions!(
         ShowSpacefill,
         ShowSurface,
         ShowShortcuts,
+        Undo,
+        Redo,
         StyleIllustrative,
         StyleFlat,
         StyleSoft,
@@ -107,6 +109,8 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("alt-secondary-5", ShowSpacefill, None),
         gpui::KeyBinding::new("alt-secondary-6", ShowSurface, None),
         gpui::KeyBinding::new("secondary-/", ShowShortcuts, None),
+        gpui::KeyBinding::new("secondary-z", Undo, None),
+        gpui::KeyBinding::new("secondary-shift-z", Redo, None),
         gpui::KeyBinding::new("ctrl-secondary-1", StyleIllustrative, None),
         gpui::KeyBinding::new("ctrl-secondary-2", StyleFlat, None),
         gpui::KeyBinding::new("ctrl-secondary-3", StyleSoft, None),
@@ -168,6 +172,9 @@ pub fn menus() -> Vec<Menu> {
         Menu {
             name: "Edit".into(),
             items: vec![
+                MenuItem::action("Undo", Undo),
+                MenuItem::action("Redo", Redo),
+                MenuItem::separator(),
                 MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
                 MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
                 MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
@@ -1107,6 +1114,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowLicorice, _, cx| this.show(Repr::Licorice, cx)))
             .on_action(cx.listener(|this, _: &ShowSpacefill, _, cx| this.show(Repr::Spacefill, cx)))
             .on_action(cx.listener(|this, _: &ShowSurface, _, cx| this.show(Repr::Surface, cx)))
+            .on_action(cx.listener(|this, _: &Undo, _, cx| this.active().update(cx, |tab, cx| tab.undo(false, cx))))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| this.active().update(cx, |tab, cx| tab.undo(true, cx))))
             .on_action(cx.listener(|this, _: &ShowShortcuts, _, cx| {
                 this.active().update(cx, |tab, cx| tab.toggle_shortcuts(cx))
             }))
