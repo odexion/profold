@@ -51,6 +51,7 @@ actions!(
         ShowBallAndStick,
         ShowLicorice,
         ShowSpacefill,
+        ShowSurface,
         StyleIllustrative,
         StyleFlat,
         StyleSoft,
@@ -103,6 +104,7 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("alt-secondary-3", ShowBallAndStick, None),
         gpui::KeyBinding::new("alt-secondary-4", ShowLicorice, None),
         gpui::KeyBinding::new("alt-secondary-5", ShowSpacefill, None),
+        gpui::KeyBinding::new("alt-secondary-6", ShowSurface, None),
         gpui::KeyBinding::new("ctrl-secondary-1", StyleIllustrative, None),
         gpui::KeyBinding::new("ctrl-secondary-2", StyleFlat, None),
         gpui::KeyBinding::new("ctrl-secondary-3", StyleSoft, None),
@@ -180,6 +182,7 @@ pub fn menus() -> Vec<Menu> {
                 MenuItem::action(Repr::BallAndStick.label(), ShowBallAndStick),
                 MenuItem::action(Repr::Licorice.label(), ShowLicorice),
                 MenuItem::action(Repr::Spacefill.label(), ShowSpacefill),
+                MenuItem::action(Repr::Surface.label(), ShowSurface),
                 MenuItem::separator(),
                 MenuItem::action(Style::Illustrative.label(), StyleIllustrative),
                 MenuItem::action(Style::Flat.label(), StyleFlat),
@@ -1100,6 +1103,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowBallAndStick, _, cx| this.show(Repr::BallAndStick, cx)))
             .on_action(cx.listener(|this, _: &ShowLicorice, _, cx| this.show(Repr::Licorice, cx)))
             .on_action(cx.listener(|this, _: &ShowSpacefill, _, cx| this.show(Repr::Spacefill, cx)))
+            .on_action(cx.listener(|this, _: &ShowSurface, _, cx| this.show(Repr::Surface, cx)))
             .on_action(cx.listener(|this, _: &StyleIllustrative, _, cx| this.draw_in(Style::Illustrative, cx)))
             .on_action(cx.listener(|this, _: &StyleFlat, _, cx| this.draw_in(Style::Flat, cx)))
             .on_action(cx.listener(|this, _: &StyleSoft, _, cx| this.draw_in(Style::Soft, cx)))

@@ -19,6 +19,7 @@ mod render;
 mod samples;
 mod search;
 mod settings;
+mod surface;
 mod theme;
 mod ui;
 mod update;

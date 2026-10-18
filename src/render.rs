@@ -126,15 +126,19 @@ pub enum Repr {
     Licorice,
     /// Every atom at its van der Waals radius.
     Spacefill,
+    /// The molecule's skin, smooth over its atoms; ligands stand inside it as
+    /// atoms.
+    Surface,
 }
 
 impl Repr {
-    pub const ALL: [Repr; 5] = [
+    pub const ALL: [Repr; 6] = [
         Repr::Cartoon,
         Repr::Tube,
         Repr::BallAndStick,
         Repr::Licorice,
         Repr::Spacefill,
+        Repr::Surface,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -143,6 +147,7 @@ impl Repr {
             Repr::BallAndStick => "Ball & stick",
             Repr::Licorice => "Licorice",
             Repr::Spacefill => "Spacefill",
+            Repr::Surface => "Surface",
         }
     }
 
@@ -1236,6 +1241,7 @@ fn build_primitives(paint: &Paint, repr: Repr, quality: f32) -> Scene {
                 .collect(),
             ..Scene::default()
         },
+        Repr::Surface => build_surface(paint, quality),
         Repr::BallAndStick | Repr::Licorice => {
             let all: Vec<bool> = vec![true; s.atoms.len()];
             build_sticks(paint, &all, repr == Repr::Licorice)
@@ -1263,6 +1269,53 @@ fn build_primitives(paint: &Paint, repr: Repr, quality: f32) -> Scene {
             scene
         }
     }
+}
+
+/// Whether atom `i` is under the skin in the surface style: a polymer's own
+/// atoms beside a polymer, every atom of anything else, and never solvent.
+fn under_skin(s: &Structure, polymer: bool, i: usize) -> bool {
+    let r = &s.residues[s.atoms[i].residue as usize];
+    !is_solvent(&r.name) && (!polymer || !r.outside_polymer())
+}
+
+/// The surface over the atoms under the skin, each patch in its atom's
+/// colour; ligands beside a polymer stand in it as ball and stick.
+fn build_surface(paint: &Paint, quality: f32) -> Scene {
+    let s = paint.s;
+    let polymer = paint.polymer;
+    let skin: Vec<usize> = (0..s.atoms.len())
+        .filter(|&i| under_skin(s, polymer, i) && !paint.looks[i].hidden())
+        .collect();
+    let points: Vec<[f32; 3]> = skin.iter().map(|&i| s.atoms[i].pos).collect();
+    let radii: Vec<f32> = skin.iter().map(|&i| paint.radius(i)).collect();
+    // A fixed share of the structure's width, so a molecule framed close
+    // up is as smooth as a protein framed whole; past the size of a large
+    // protein, the grid's own cap takes over.
+    let (lo, hi) = points.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), p| {
+        ([0, 1, 2].map(|k| lo[k].min(p[k])), [0, 1, 2].map(|k| hi[k].max(p[k])))
+    });
+    let width = (0..3).map(|k| hi[k] - lo[k]).fold(0.0, f32::max);
+    let spacing = (width / 100.0).clamp(0.15, 1.2) / quality.max(0.5);
+    let facets = crate::surface::gaussian(&points, &radii, spacing);
+    let mut scene = Scene {
+        tris: Vec::with_capacity(facets.len()),
+        tri_residue: Vec::with_capacity(facets.len()),
+        ..Scene::default()
+    };
+    for f in facets {
+        let atom = skin[f.atom as usize];
+        scene.tris.push(Tri { p: f.p, n: f.n, c: paint.atom(atom) });
+        scene.tri_residue.push(s.atoms[atom].residue);
+    }
+    if polymer {
+        let ligand: Vec<bool> = (0..s.atoms.len())
+            .map(|i| !under_skin(s, polymer, i) && !is_solvent(&s.residues[s.atoms[i].residue as usize].name))
+            .collect();
+        if ligand.iter().any(|l| *l) {
+            scene.merge(build_sticks(paint, &ligand, false));
+        }
+    }
+    scene
 }
 
 /// Atoms and bonds among the atoms marked in `keep`. Each bond is two
@@ -1429,10 +1482,26 @@ pub fn pick(
 
     // The atoms drawn as atoms, and how: as in `build_primitives`.
     let backbone = matches!(repr, Repr::Tube | Repr::Cartoon);
+    let surface = repr == Repr::Surface;
+    let polymer = paint.polymer;
     let drawn = |i: usize| {
         let r = &s.residues[s.atoms[i].residue as usize];
-        !paint.looks[i].hidden() && (!backbone || (r.ca.is_none() && !is_solvent(&r.name)))
+        !paint.looks[i].hidden()
+            && if backbone {
+                r.ca.is_none() && !is_solvent(&r.name)
+            } else if surface {
+                !under_skin(s, polymer, i) && !is_solvent(&r.name)
+            } else {
+                true
+            }
     };
+    // Under a skin, each atom stands for the patch over it, which is its
+    // residue's in a polymer.
+    if surface {
+        for i in (0..s.atoms.len()).filter(|&i| under_skin(s, polymer, i) && !paint.looks[i].hidden()) {
+            offer(ball(s.atoms[i].pos, paint.radius(i) + crate::surface::SWELL), i, polymer);
+        }
+    }
     match repr {
         Repr::Spacefill => {
             for i in (0..s.atoms.len()).filter(|&i| drawn(i)) {
@@ -1536,6 +1605,7 @@ pub fn build_highlight(
     // The radius an atom is drawn at in this style.
     let drawn = |i: usize| match repr {
         Repr::Spacefill => paint.radius(i),
+        Repr::Surface => paint.radius(i) + crate::surface::SWELL,
         Repr::Licorice => (paint.radius(i) * 0.3).max(0.22),
         _ => paint.radius(i) * 0.25,
     };
@@ -1548,8 +1618,11 @@ pub fn build_highlight(
     let backbone = matches!(repr, Repr::Tube | Repr::Cartoon);
     let residue = &s.residues[atom.residue as usize];
     let mut scene = Scene::default();
+    let skin = repr == Repr::Surface && under_skin(s, paint.polymer, picked.atom);
     match (picked.residue, backbone, residue.ca) {
+        // Painted on the ribbon or the skin instead.
         (true, true, Some(_)) => {}
+        (true, _, _) if skin => {}
         (true, _, _) => {
             scene.spheres.extend(
                 (0..s.atoms.len())
@@ -3249,6 +3322,33 @@ mod tests {
                 assert!(z > 0.999, "{d:?} ends {z}");
             }
         }
+    }
+
+    #[test]
+    fn a_surface_is_picked_and_painted_by_residue() {
+        let s = sample("1crn.pdb.gz");
+        let cam = Camera::frame(&s);
+        let look = Appearance::default();
+        let base = scene(&s, Repr::Surface, Coloring::Chain, false);
+        assert!(base.tris.len() > 10_000);
+        assert_eq!(base.tri_residue.len(), base.tris.len());
+        // Water is left out of the skin.
+        assert!(base.tri_residue.iter().all(|&r| !is_solvent(&s.residues[r as usize].name)));
+
+        // A point on the skin picks the residue under it.
+        let hit = (100..300)
+            .step_by(10)
+            .find_map(|x| pick(&s, Repr::Surface, &look, &cam, 400, 400, x as f32, 200.0))
+            .expect("nothing picked across the middle");
+        assert!(hit.residue);
+        let residue = s.atoms[hit.atom].residue;
+        // Painted on the skin rather than glowing.
+        let glow = build_highlight(&s, hit, Repr::Surface, Style::Soft, &look);
+        assert!(glow.is_empty());
+        let mut painted = base.clone();
+        painted.paint_residue(0..base.tris.len(), 0..0, residue, Style::Soft, false);
+        let changed = (0..base.tris.len()).filter(|&i| painted.tris[i].c != base.tris[i].c).count();
+        assert!(changed > 0);
     }
 
     #[test]
