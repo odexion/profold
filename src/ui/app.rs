@@ -297,6 +297,8 @@ pub struct Viewer {
     turn_task: Option<Task<()>>,
     /// Images are saved with nothing behind the molecule.
     transparent: bool,
+    /// The keyboard shortcuts, laid over the viewport.
+    shortcuts: bool,
     /// The triangles and capsules of `base` each structure was built into,
     /// by `Target::which`, for painting one of its residues.
     parts: [(std::ops::Range<usize>, std::ops::Range<usize>); 2],
@@ -419,6 +421,8 @@ impl Viewer {
                 pan: [0.0, 0.0],
                 center: [0.0; 3],
                 radius: 1.0,
+                perspective: false,
+                slab: None,
             },
             repr: Repr::Cartoon,
             coloring: Coloring::Chain,
@@ -453,6 +457,7 @@ impl Viewer {
             turning: None,
             turn_task: None,
             transparent: false,
+            shortcuts: false,
             parts: [(0..0, 0..0), (0..0, 0..0)],
             open: None,
             export: None,
@@ -649,7 +654,7 @@ impl Viewer {
         // solvent is half of what it shows.
         self.appearance.hide_solvent = polymer;
         self.stop_playing();
-        self.camera = Camera::frame(&structure);
+        self.camera = Camera { perspective: self.camera.perspective, ..Camera::frame(&structure) };
         self.all_chains = false;
         self.structure = Some(Arc::new(structure));
         self.compare = None;
@@ -677,7 +682,7 @@ impl Viewer {
         reference.tint = Some(align::REFERENCE_TINT);
         prediction.tint = Some(align::PREDICTION_TINT);
         self.coloring = Coloring::Pair;
-        self.camera = Camera::frame_all(&[&reference, &prediction]);
+        self.camera = Camera { perspective: self.camera.perspective, ..Camera::frame_all(&[&reference, &prediction]) };
         self.structure = Some(Arc::new(reference));
         self.compare = Some(Arc::new(prediction));
         self.fit = Some((rmsd, matched));
@@ -821,7 +826,7 @@ impl Viewer {
         // structures is over by then.
         let framed = {
             let all: Vec<&Structure> = self.visible().into_iter().map(|s| s.as_ref()).collect();
-            (!all.is_empty()).then(|| Camera::frame_all(&all))
+            (!all.is_empty()).then(|| Camera { perspective: self.camera.perspective, slab: self.camera.slab, ..Camera::frame_all(&all) })
         };
         if let Some(camera) = framed {
             self.camera = camera;
@@ -1024,7 +1029,7 @@ impl Viewer {
             }
         };
         self.assembly = k;
-        self.camera = Camera::frame(&shown);
+        self.camera = Camera { perspective: self.camera.perspective, ..Camera::frame(&shown) };
         self.structure = Some(shown);
         self.selected = None;
         self.seq_hover = None;
@@ -1097,10 +1102,11 @@ impl Viewer {
         let m = cam.basis();
         let q = [p[0] - cam.center[0], p[1] - cam.center[1], p[2] - cam.center[2]];
         let d = |r: [f32; 3]| r[0] * q[0] + r[1] * q[1] + r[2] * q[2];
+        let (v, _) = cam.warp([d(m[0]), d(m[1]), d(m[2])]);
         let scale = w.min(h) as f32 / (2.2 * cam.radius) * cam.zoom;
         let k = w as f32 / width;
-        let x = (w as f32 * 0.5 + cam.pan[0] + d(m[0]) * scale) / k;
-        let y = (h as f32 * 0.5 + cam.pan[1] - d(m[1]) * scale) / k;
+        let x = (w as f32 * 0.5 + cam.pan[0] + v[0] * scale) / k;
+        let y = (h as f32 * 0.5 + cam.pan[1] - v[1] * scale) / k;
         Some(gpui::point(px(x), px(y)))
     }
 
@@ -2127,6 +2133,174 @@ impl Viewer {
 
     /// Let go of the view and it keeps turning, slowing to a stop. The throw
     /// is whatever the last step of the drag was.
+    /// Cut the structure down to a slab a fifth of it thick, through the
+    /// middle, or show it whole again.
+    fn toggle_slab(&mut self, cx: &mut Context<Self>) {
+        let r = self.camera.radius;
+        self.camera.slab = match self.camera.slab {
+            Some(_) => None,
+            None => Some([0.2 * r, -0.2 * r]),
+        };
+        cx.notify();
+    }
+
+    /// Show the keyboard shortcuts, or put them away.
+    pub fn toggle_shortcuts(&mut self, cx: &mut Context<Self>) {
+        self.shortcuts = !self.shortcuts;
+        cx.notify();
+    }
+
+    /// The slab's place in the structure: a gauge at the right of the
+    /// viewport, the structure's depth along it and the slab a band on it,
+    /// with how to move it.
+    fn slab_gauge(&self) -> Option<gpui::AnyElement> {
+        let [near, far] = self.camera.slab?;
+        let r = self.camera.radius.max(1e-3);
+        const H: f32 = 160.0;
+        // Near at the top.
+        let at = |z: f32| ((r - z) / (2.0 * r)).clamp(0.0, 1.0) * H;
+        let (top, bottom) = (at(near), at(far));
+        let hint = format!("{}-scroll moves it · {} thickens", theme::keys("⌥"), theme::keys("⌥⇧"));
+        Some(
+            div()
+                .absolute()
+                .right(px(14.))
+                .top(px(120.))
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap(px(6.))
+                .child(div().text_size(px(9.)).text_color(theme::faint()).child(spaced("SLAB")))
+                .child(
+                    div()
+                        .relative()
+                        .w(px(6.))
+                        .h(px(H))
+                        .rounded(px(3.))
+                        .bg(theme::sunken())
+                        .child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .top(px(top))
+                                .h(px((bottom - top).max(2.0)))
+                                .rounded(px(3.))
+                                .bg(theme::ink()),
+                        ),
+                )
+                .child(div().w(px(90.)).text_size(px(9.)).text_color(theme::faint()).child(hint))
+                .into_any_element(),
+        )
+    }
+
+    /// Every shortcut, keys and mouse, over the viewport until dismissed.
+    fn shortcut_sheet(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.shortcuts {
+            return None;
+        }
+        let groups: [(&str, &[(&str, &str)]); 4] = [
+            (
+                "Tabs and files",
+                &[
+                    ("⌘O", "Open a file"),
+                    ("⌘T", "New tab"),
+                    ("⇧⌘T", "New fold tab"),
+                    ("⌘W", "Close the tab"),
+                    ("⌘1 – ⌘9", "Go to a tab"),
+                    ("⌃Tab", "Next tab"),
+                    ("⇧⌘S", "Save a picture"),
+                ],
+            ),
+            (
+                "Viewing",
+                &[
+                    ("⌥⌘1 – ⌥⌘6", "Cartoon … Surface"),
+                    ("⌃⌘1 – ⌃⌘4", "Illustrative … Studio"),
+                    ("⌘0", "Reset the view"),
+                    ("⇧⌘D", "Light or dark"),
+                    ("⌘/", "These shortcuts"),
+                ],
+            ),
+            (
+                "In the viewport",
+                &[
+                    ("Drag", "Turn"),
+                    ("⇧ Drag", "Move"),
+                    ("Scroll", "Zoom"),
+                    ("Double-click", "Frame it all"),
+                    ("Click", "Pick an atom or residue"),
+                    ("⌥ Scroll", "Move the slab"),
+                    ("⌥⇧ Scroll", "Thicken the slab"),
+                ],
+            ),
+            (
+                "In the field",
+                &[("Return", "Open the best match"), ("↑ ↓", "Choose a result"), ("Esc", "Close the results")],
+            ),
+        ];
+        // Written the Mac way; elsewhere a chord is spelled out, and a lone
+        // modifier before a mouse action named.
+        let say = |k: &str| -> String {
+            k.split(' ')
+                .map(|w| match w {
+                    "⌥" if !cfg!(target_os = "macos") => "Alt".to_string(),
+                    "⇧" if !cfg!(target_os = "macos") => "Shift".to_string(),
+                    "⌥⇧" if !cfg!(target_os = "macos") => "Alt+Shift".to_string(),
+                    w if w.starts_with(['⌘', '⌥', '⌃', '⇧']) => theme::keys(w),
+                    w => w.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let row = |k: &str, what: &str| {
+            let k = say(k);
+            div()
+                .flex()
+                .justify_between()
+                .gap(px(16.))
+                .child(div().text_size(px(11.)).text_color(theme::text()).child(what.to_string()))
+                .child(div().font_family(theme::MONO).text_size(px(10.5)).text_color(theme::muted()).child(k))
+        };
+        Some(
+            div()
+                .id("shortcuts")
+                .debug_selector(|| "shortcuts".into())
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui::Hsla { a: 0.35, ..theme::ink() })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_shortcuts(cx)))
+                .child(
+                    div()
+                        .w(px(560.))
+                        .p(px(20.))
+                        .rounded(px(10.))
+                        .bg(theme::surface())
+                        .border_1()
+                        .border_color(theme::border())
+                        .shadow_lg()
+                        .flex()
+                        .flex_wrap()
+                        .gap_x(px(28.))
+                        .gap_y(px(16.))
+                        .children(groups.iter().map(|(name, keys)| {
+                            div()
+                                .w(px(240.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(5.))
+                                .child(div().pb(px(2.)).child(key(name)))
+                                .children(keys.iter().map(|(k, w)| row(k, w)))
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Set the camera turning by itself, or with the same again stop it.
     fn toggle_turn(&mut self, turn: Turn, cx: &mut Context<Self>) {
         self.open = None;
@@ -2210,7 +2384,7 @@ impl Viewer {
         if e.click_count >= 2 {
             let all: Vec<&Structure> = self.visible().into_iter().map(|s| s.as_ref()).collect();
             if !all.is_empty() {
-                self.camera = Camera::frame_all(&all);
+                self.camera = Camera { perspective: self.camera.perspective, slab: self.camera.slab, ..Camera::frame_all(&all) };
             }
         } else {
             self.drag = Some(if e.modifiers.shift || e.button == MouseButton::Right {
@@ -2289,6 +2463,26 @@ impl Viewer {
     fn on_scroll(&mut self, e: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.halt();
         self.hover = None;
+        // With a slab, the option key moves it through the structure, and
+        // with shift too, thickens or thins it.
+        if let (true, Some([near, far])) = (e.modifiers.alt, self.camera.slab) {
+            let dy = match e.delta {
+                ScrollDelta::Pixels(p) => f32::from(p.y) + f32::from(p.x),
+                ScrollDelta::Lines(p) => (p.y + p.x) * 18.0,
+            };
+            let r = self.camera.radius;
+            let step = dy * r * 0.004;
+            self.camera.slab = Some(if e.modifiers.shift {
+                let mid = (near + far) * 0.5;
+                let half = ((near - far) * 0.5 + step * 0.5).clamp(0.25, 2.0 * r);
+                [mid + half, mid - half]
+            } else {
+                let shift = step.clamp(-2.0 * r - far, 2.0 * r - near);
+                [near + shift, far + shift]
+            });
+            cx.notify();
+            return;
+        }
         let dy = match e.delta {
             ScrollDelta::Pixels(p) => f32::from(p.y),
             ScrollDelta::Lines(p) => p.y * 18.0,
@@ -3353,6 +3547,20 @@ impl Viewer {
                 item("rock", "Rock".into(), self.turning == Some(Turn::Rock))
                     .debug_selector(|| "rock".into())
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_turn(Turn::Rock, cx))),
+            )
+            .child(divide())
+            .child(
+                item("perspective", "Perspective".into(), self.camera.perspective)
+                    .debug_selector(|| "perspective".into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.camera.perspective = !this.camera.perspective;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                item("slab", "Clipping slab".into(), self.camera.slab.is_some())
+                    .debug_selector(|| "slab".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_slab(cx))),
             )
             .child(divide())
             .child(
@@ -5498,6 +5706,7 @@ impl Viewer {
                 .flatten()
                 .collect();
                 d.children(self.site_labels())
+                    .children(self.slab_gauge())
                     .children(self.measure_lines())
                     .children(self.measure_labels())
                     .when(!cards.is_empty(), |d| {
@@ -5569,9 +5778,13 @@ impl Viewer {
                         .justify_center()
                         .text_size(px(9.5))
                         .text_color(theme::faint())
-                        .child("drag to orbit · shift-drag to pan · scroll to zoom · double-click to reset"),
+                        .child(format!(
+                            "drag to orbit · shift-drag to pan · scroll to zoom · double-click to reset · {} for shortcuts",
+                            theme::keys("⌘/")
+                        )),
                 )
             })
+            .children(self.shortcut_sheet(cx))
     }
 }
 
@@ -6717,6 +6930,50 @@ mod ui_tests {
         click(cx, "tab-image");
         click(cx, "transparent");
         assert!(view.update(cx, |this, _| this.transparent));
+    }
+
+    #[gpui::test]
+    fn the_slab_moves_with_option_scroll_and_shortcuts_show(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        click(cx, "tab-camera");
+        click(cx, "perspective");
+        assert!(view.update(cx, |this, _| this.camera.perspective));
+        // A double-click reframes, and keeps the lens.
+        let middle = view.update(cx, |this, _| this.cache.borrow().bounds.center());
+        cx.simulate_event(MouseDownEvent { position: middle, button: MouseButton::Left, modifiers: Modifiers::none(), click_count: 2, first_mouse: false });
+        cx.simulate_mouse_up(middle, MouseButton::Left, Modifiers::none());
+        cx.run_until_parked();
+        assert!(view.update(cx, |this, _| this.camera.perspective));
+
+        click(cx, "tab-camera");
+        click(cx, "slab");
+        let slab = view.update(cx, |this, _| this.camera.slab).expect("no slab");
+        let scroll = |cx: &mut VisualTestContext, shift: bool| {
+            cx.simulate_event(ScrollWheelEvent {
+                position: middle,
+                delta: ScrollDelta::Pixels(gpui::point(px(0.), px(40.))),
+                modifiers: Modifiers { alt: true, shift, ..Modifiers::none() },
+                ..Default::default()
+            });
+            cx.run_until_parked();
+        };
+        let zoom = view.update(cx, |this, _| this.camera.zoom);
+        scroll(cx, false);
+        let moved = view.update(cx, |this, _| this.camera.slab).unwrap();
+        assert!(moved[0] > slab[0] && moved[1] > slab[1], "{slab:?} to {moved:?}");
+        assert!(((moved[0] - moved[1]) - (slab[0] - slab[1])).abs() < 1e-4, "it changed thickness");
+        assert_eq!(view.update(cx, |this, _| this.camera.zoom), zoom, "it zoomed as well");
+        scroll(cx, true);
+        let thick = view.update(cx, |this, _| this.camera.slab).unwrap();
+        assert!(thick[0] - thick[1] > moved[0] - moved[1]);
+        click(cx, "tab-camera");
+        click(cx, "slab");
+        assert!(view.update(cx, |this, _| this.camera.slab.is_none()));
+
+        view.update(cx, |this, cx| this.toggle_shortcuts(cx));
+        cx.run_until_parked();
+        click(cx, "shortcuts");
+        assert!(view.update(cx, |this, _| !this.shortcuts));
     }
 
     #[gpui::test]

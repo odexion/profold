@@ -52,6 +52,7 @@ actions!(
         ShowLicorice,
         ShowSpacefill,
         ShowSurface,
+        ShowShortcuts,
         StyleIllustrative,
         StyleFlat,
         StyleSoft,
@@ -105,6 +106,7 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("alt-secondary-4", ShowLicorice, None),
         gpui::KeyBinding::new("alt-secondary-5", ShowSpacefill, None),
         gpui::KeyBinding::new("alt-secondary-6", ShowSurface, None),
+        gpui::KeyBinding::new("secondary-/", ShowShortcuts, None),
         gpui::KeyBinding::new("ctrl-secondary-1", StyleIllustrative, None),
         gpui::KeyBinding::new("ctrl-secondary-2", StyleFlat, None),
         gpui::KeyBinding::new("ctrl-secondary-3", StyleSoft, None),
@@ -192,6 +194,7 @@ pub fn menus() -> Vec<Menu> {
                 MenuItem::action("Centre", Recentre),
                 MenuItem::action("Reset View", ResetView),
                 MenuItem::separator(),
+                MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
                 MenuItem::action("Enter Full Screen", ToggleFullScreen),
             ],
         },
@@ -1104,6 +1107,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowLicorice, _, cx| this.show(Repr::Licorice, cx)))
             .on_action(cx.listener(|this, _: &ShowSpacefill, _, cx| this.show(Repr::Spacefill, cx)))
             .on_action(cx.listener(|this, _: &ShowSurface, _, cx| this.show(Repr::Surface, cx)))
+            .on_action(cx.listener(|this, _: &ShowShortcuts, _, cx| {
+                this.active().update(cx, |tab, cx| tab.toggle_shortcuts(cx))
+            }))
             .on_action(cx.listener(|this, _: &StyleIllustrative, _, cx| this.draw_in(Style::Illustrative, cx)))
             .on_action(cx.listener(|this, _: &StyleFlat, _, cx| this.draw_in(Style::Flat, cx)))
             .on_action(cx.listener(|this, _: &StyleSoft, _, cx| this.draw_in(Style::Soft, cx)))

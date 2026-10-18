@@ -409,17 +409,20 @@ impl Gpu {
         }
         let span = (zmax - zmin).max(1e-3);
 
+        let (near, far) = cam.depths();
         let weight = (width.min(height) / 700).max(1);
         // Lines of one or two pixels are found by the ink pass itself.
         let fused = weight <= 2;
         let uniforms = Uniforms {
+            // The slab's near and far depths ride in the rotation's spare
+            // column, perspective's eye in the view's.
             rot: [
-                [m[0][0], m[0][1], m[0][2], 0.0],
-                [m[1][0], m[1][1], m[1][2], 0.0],
+                [m[0][0], m[0][1], m[0][2], near.min(1e30)],
+                [m[1][0], m[1][1], m[1][2], far.max(-1e30)],
                 [m[2][0], m[2][1], m[2][2], 0.0],
             ],
             center: [cam.center[0], cam.center[1], cam.center[2], 0.0],
-            view: [cx, cy, scale, 0.0],
+            view: [cx, cy, scale, if cam.perspective { 1.0 / (crate::render::Camera::EYE * cam.radius) } else { 0.0 }],
             size: [
                 width as f32,
                 height as f32,

@@ -633,9 +633,39 @@ pub struct Camera {
     pub pan: [f32; 2],
     pub center: [f32; 3],
     pub radius: f32,
+    /// Near things drawn larger than far ones, as a lens sees them, rather
+    /// than all at one scale.
+    pub perspective: bool,
+    /// Only what lies between these two depths is drawn, near then far, in
+    /// view space about the centre: a slice through the structure.
+    pub slab: Option<[f32; 2]>,
 }
 
 impl Camera {
+    /// How far the eye stands from the centre in perspective, in radii of
+    /// the structure framed.
+    pub const EYE: f32 = 3.0;
+
+    /// A point in view space as drawn: in perspective, moved out from the
+    /// middle of the view by how near it is, and with it the factor sizes
+    /// there scale by. Each sphere or rod keeps its round section, scaled
+    /// whole, as impostors drawn in perspective commonly are.
+    pub fn warp(&self, v: [f32; 3]) -> ([f32; 3], f32) {
+        if !self.perspective {
+            return (v, 1.0);
+        }
+        let k = 1.0 / (1.0 - v[2] / (Self::EYE * self.radius)).max(0.2);
+        ([v[0] * k, v[1] * k, v[2]], k)
+    }
+
+    /// The nearest and furthest depths drawn.
+    pub fn depths(&self) -> (f32, f32) {
+        match self.slab {
+            Some([near, far]) => (near, far),
+            None => (f32::INFINITY, f32::NEG_INFINITY),
+        }
+    }
+
     /// The three-quarter view every structure opens at, which reads as
     /// zero degrees on the angle readout.
     pub const HOME_YAW: f32 = 0.55;
@@ -712,6 +742,8 @@ impl Camera {
                 pan: [0.0, 0.0],
                 center: [0.0; 3],
                 radius: 1.0,
+                perspective: false,
+                slab: None,
             };
         }
         let center = [
@@ -737,6 +769,8 @@ impl Camera {
             pan: [0.0, 0.0],
             center,
             radius,
+            perspective: false,
+            slab: None,
         }
     }
 
@@ -1519,9 +1553,16 @@ pub fn pick(
             }
         }
     };
-    let ball = |c: [f32; 3], r: f32| sphere_depth(to_view(c), r.max(slack), p);
+    // As drawn: in perspective, and cut by the slab.
+    let (near, far) = cam.depths();
+    let within = |z: Option<f32>| z.filter(|z| *z <= near && *z >= far);
+    let ball = |c: [f32; 3], r: f32| {
+        let (v, k) = cam.warp(to_view(c));
+        within(sphere_depth(v, (r * k).max(slack), p))
+    };
     let rod = |a: [f32; 3], b: [f32; 3], r: f32| {
-        capsule_depth(to_view(a), to_view(b), r.max(slack), p)
+        let ((a, ka), (b, kb)) = (cam.warp(to_view(a)), cam.warp(to_view(b)));
+        within(capsule_depth(a, b, (r * (ka + kb) * 0.5).max(slack), p))
     };
 
     // The atoms drawn as atoms, and how: as in `build_primitives`.
@@ -2236,19 +2277,27 @@ fn shade(n: [f32; 3], base: [f32; 3], style: Style) -> [f32; 3] {
 /// One horizontal band of the frame: its slices of the colour and depth
 /// buffers, from row `top`. Bands are drawn in parallel, each with only the
 /// primitives that reach into it.
+/// The face a slab cuts, looking straight back at the viewer, and how much
+/// darker it is than the outside, so a cut reads as one.
+const CAP: [f32; 3] = [0.0, 0.0, 1.0];
+const CAP_SHADE: f32 = 0.82;
+
 struct Band<'a> {
     /// Index of the band's first pixel in the frame.
     offset: usize,
     color: &'a mut [f32],
     depth: &'a mut [f32],
     style: Style,
+    /// The slab: nothing nearer than the first or further than the second.
+    near: f32,
+    far: f32,
 }
 
 impl Band<'_> {
     #[inline]
     fn plot(&mut self, idx: usize, z: f32, n: [f32; 3], base: [f32; 3]) {
         let idx = idx - self.offset;
-        if z <= self.depth[idx] {
+        if z <= self.depth[idx] || z > self.near || z < self.far {
             return;
         }
         self.depth[idx] = z;
@@ -2428,6 +2477,10 @@ pub fn render_cpu(
         top: 0,
         bottom: height,
     };
+    let (near, far) = cam.depths();
+    // Where the near plane cuts through a solid, it is drawn cut: a flat face
+    // on the plane, so atoms sliced open read as solid rather than hollow.
+    let cap = |front: f32, back: f32| (front > near && back <= near).then_some(near);
 
     // Everything in view space, with the rows it covers, opaque in the
     // order it was built and translucent held back to be laid over the
@@ -2444,35 +2497,37 @@ pub fn render_cpu(
         if s.alpha <= 0.0 || s.r <= 0.0 {
             continue;
         }
-        let v = to_view(s.c);
+        let (v, w) = cam.warp(to_view(s.c));
+        let r = s.r * w;
         track(v[2] - s.r, v[2] + s.r);
-        let Some(rows) = grid.sphere_rows(v, s.r) else {
+        let Some(rows) = grid.sphere_rows(v, r) else {
             continue;
         };
         if s.alpha < OPAQUE {
-            translucent.push((v[2], Prim::Sphere(k, v), rows));
+            translucent.push((v[2], Prim::Sphere(k, v, r), rows));
         } else {
-            opaque.push((Prim::Sphere(k, v), rows));
+            opaque.push((Prim::Sphere(k, v, r), rows));
         }
     }
     for (k, c) in scene.capsules.iter().enumerate() {
         if c.alpha <= 0.0 {
             continue;
         }
-        let a = to_view(c.a);
-        let b = to_view(c.b);
+        let (a, wa) = cam.warp(to_view(c.a));
+        let (b, wb) = cam.warp(to_view(c.b));
+        let r = c.r * (wa + wb) * 0.5;
         track(a[2].min(b[2]) - c.r, a[2].max(b[2]) + c.r);
-        let Some(rows) = grid.capsule_rows(a, b, c.r) else {
+        let Some(rows) = grid.capsule_rows(a, b, r) else {
             continue;
         };
         if c.alpha < OPAQUE {
-            translucent.push(((a[2] + b[2]) * 0.5, Prim::Capsule(k, a, b), rows));
+            translucent.push(((a[2] + b[2]) * 0.5, Prim::Capsule(k, a, b, r), rows));
         } else {
-            opaque.push((Prim::Capsule(k, a, b), rows));
+            opaque.push((Prim::Capsule(k, a, b, r), rows));
         }
     }
     for (k, tri) in scene.tris.iter().enumerate() {
-        let v = [to_view(tri.p[0]), to_view(tri.p[1]), to_view(tri.p[2])];
+        let v = tri.p.map(|p| cam.warp(to_view(p)).0);
         track(
             v[0][2].min(v[1][2]).min(v[2][2]),
             v[0][2].max(v[1][2]).max(v[2][2]),
@@ -2517,17 +2572,27 @@ pub fn render_cpu(
                 color,
                 depth,
                 style,
+                near,
+                far,
             };
             for &i in bin {
                 match &opaque[i as usize].0 {
-                    Prim::Sphere(k, v) => {
+                    Prim::Sphere(k, v, r) => {
                         let s = &scene.spheres[*k];
-                        grid.sphere(*v, s.r, |idx, z, n, _| t.plot(idx, z, n, s.color));
+                        grid.sphere(*v, *r, |idx, z, n, _| match cap(z, 2.0 * v[2] - z) {
+                            Some(z) => t.plot(idx, z, CAP, s.color.map(|c| c * CAP_SHADE)),
+                            None => t.plot(idx, z, n, s.color),
+                        });
                     }
-                    Prim::Capsule(k, a, b) => {
+                    Prim::Capsule(k, a, b, r) => {
                         let c = &scene.capsules[*k];
-                        grid.capsule(*a, *b, c.r, |idx, z, n, f| {
-                            t.plot(idx, z, n, mix(c.ca, c.cb, f))
+                        grid.capsule(*a, *b, *r, |idx, z, n, f| {
+                            let base = mix(c.ca, c.cb, f);
+                            let axis = a[2] + (b[2] - a[2]) * f;
+                            match cap(z, 2.0 * axis - z) {
+                                Some(z) => t.plot(idx, z, CAP, base.map(|c| c * CAP_SHADE)),
+                                None => t.plot(idx, z, n, base),
+                            }
                         });
                     }
                     Prim::Tri(k, v, nv) => t.tri(&grid, v, nv, scene.tris[*k].c),
@@ -2703,7 +2768,7 @@ pub fn render_cpu(
                                  alpha: f32,
                                  edge: bool| {
                     let idx = idx - offset;
-                    if z <= depth[idx] {
+                    if z <= depth[idx] || z > near || z < far {
                         return;
                     }
                     let mut c = shade(n, base, style);
@@ -2725,16 +2790,16 @@ pub fn render_cpu(
                 };
                 for &i in bin {
                     match &translucent[i as usize].1 {
-                        Prim::Sphere(k, v) => {
+                        Prim::Sphere(k, v, r) => {
                             let s = &scene.spheres[*k];
-                            let inner = (s.r * scale - rim).max(0.0);
-                            grid.sphere(*v, s.r, |idx, z, n, from_centre| {
+                            let inner = (r * scale - rim).max(0.0);
+                            grid.sphere(*v, *r, |idx, z, n, from_centre| {
                                 blend(idx, z, n, s.color, s.alpha, from_centre > inner)
                             });
                         }
-                        Prim::Capsule(k, a, b) => {
+                        Prim::Capsule(k, a, b, r) => {
                             let c = &scene.capsules[*k];
-                            grid.capsule(*a, *b, c.r, |idx, z, n, f| {
+                            grid.capsule(*a, *b, *r, |idx, z, n, f| {
                                 blend(idx, z, n, mix(c.ca, c.cb, f), c.alpha, false)
                             });
                         }
@@ -2792,8 +2857,9 @@ pub(crate) const OPAQUE: f32 = 0.999;
 
 /// A primitive in view space, with its index in the scene.
 enum Prim {
-    Sphere(usize, [f32; 3]),
-    Capsule(usize, [f32; 3], [f32; 3]),
+    /// Which, where in view space as drawn, and how big there.
+    Sphere(usize, [f32; 3], f32),
+    Capsule(usize, [f32; 3], [f32; 3], f32),
     /// The corners and their normals.
     Tri(usize, [[f32; 3]; 3], [[f32; 3]; 3]),
 }
@@ -3377,7 +3443,7 @@ mod tests {
 
     #[test]
     fn a_turn_brings_a_direction_to_face_the_viewer() {
-        let cam = Camera { orientation: Camera::home(), zoom: 1.0, pan: [0.0; 2], center: [0.0; 3], radius: 10.0 };
+        let cam = Camera { orientation: Camera::home(), zoom: 1.0, pan: [0.0; 2], center: [0.0; 3], radius: 10.0, perspective: false, slab: None };
         for d in [[1.0, 0.0, 0.0], [0.3, -0.8, 0.2], [0.0, 0.0, -1.0], [-0.5, 0.5, 0.7]] {
             let (axis, angle) = cam.turn_to_face(d);
             let m = Camera { orientation: cam.turned(axis, angle), ..cam }.basis();
@@ -3476,6 +3542,45 @@ mod tests {
     }
 
     #[test]
+    fn a_slab_cuts_and_perspective_widens_the_near_side() {
+        let s = sample("1crn.pdb.gz");
+        let base = Camera::frame(&s);
+        let sc = scene(&s, Repr::Spacefill, Coloring::Element, false);
+        let page = [0.97, 0.96, 0.94];
+        let covered = |cam: &Camera| {
+            let f = render_cpu(&sc, cam, 300, 300, page, Style::Flat);
+            f.bgra.chunks_exact(4).filter(|p| p[2] != (page[0] * 255.0 + 0.5) as u8 || p[1] != (page[1] * 255.0 + 0.5) as u8).count()
+        };
+        let whole = covered(&base);
+        let r = base.radius;
+        // A thin slab through the middle leaves less of it, and one out past
+        // the structure leaves nothing.
+        let thin = covered(&Camera { slab: Some([0.1 * r, -0.1 * r]), ..base });
+        assert!(thin < whole * 9 / 10, "{thin} of {whole}");
+        assert_eq!(covered(&Camera { slab: Some([3.0 * r, 2.5 * r]), ..base }), 0);
+        // In perspective the near half of the structure, spread wider, covers
+        // more than it does flat.
+        let near = |perspective| covered(&Camera { perspective, slab: Some([2.0 * r, 0.0]), ..base });
+        assert!(near(true) > near(false), "{} vs {}", near(true), near(false));
+        // And a pick finds what is drawn: the nearest atom, at its warped place.
+        let cam = Camera { perspective: true, ..base };
+        let m = cam.basis();
+        let view = |p: [f32; 3]| {
+            let q = sub(p, cam.center);
+            [dot(m[0], q), dot(m[1], q), dot(m[2], q)]
+        };
+        let front = (0..s.atoms.len()).max_by(|&a, &b| view(s.atoms[a].pos)[2].total_cmp(&view(s.atoms[b].pos)[2])).unwrap();
+        let (v, _) = cam.warp(view(s.atoms[front].pos));
+        let scale = 400.0 / (2.2 * cam.radius) * cam.zoom;
+        let hit = pick(&s, Repr::Spacefill, &Appearance::default(), &cam, 400, 400, 200.0 + v[0] * scale, 200.0 - v[1] * scale);
+        assert_eq!(hit.map(|h| h.atom), Some(front));
+        // A slab in front of it hides it from the pick too.
+        let cut = Camera { slab: Some([v[2] - 2.0, v[2] - 6.0]), ..cam };
+        let hit = pick(&s, Repr::Spacefill, &Appearance::default(), &cut, 400, 400, 200.0 + v[0] * scale, 200.0 - v[1] * scale);
+        assert_ne!(hit.map(|h| h.atom), Some(front));
+    }
+
+    #[test]
     fn angles_start_at_zero() {
         let mut cam = Camera::frame_all(&[]);
         assert_eq!(cam.angles(), [0.0, 0.0]);
@@ -3547,6 +3652,8 @@ mod tests {
             pan: [0.0, 0.0],
             center: [0.0; 3],
             radius: 2.0,
+            perspective: false,
+            slab: None,
         };
         let draw = |spheres: Vec<Sphere>| {
             let scene = Scene {
@@ -3756,6 +3863,35 @@ mod gpu_tests {
 #[cfg(test)]
 mod gallery {
     use super::*;
+
+    #[test]
+    fn gpu_matches_cpu_in_perspective_through_a_slab() {
+        let Some(gpu) = crate::gpu::get() else {
+            eprintln!("no GPU here; skipped");
+            return;
+        };
+        let s = crate::formats::load_bytes("1crn.pdb.gz", include_bytes!("../samples/1crn.pdb.gz").to_vec()).unwrap();
+        for repr in [Repr::Cartoon, Repr::BallAndStick, Repr::Spacefill, Repr::Surface] {
+            for style in [Style::Illustrative, Style::Soft] {
+                let scene = build_scene(&s, repr, Coloring::Chain, 1.0, style, Palette::Spectrum, false, false, &Appearance::default()).stamp();
+                let mut cam = Camera::frame(&s);
+                cam.rotate(0.3, 0.2);
+                cam.perspective = true;
+                cam.slab = Some([0.4 * cam.radius, -0.3 * cam.radius]);
+                let page = [0.97, 0.96, 0.94];
+                let cpu = render_cpu(&scene, &cam, 640, 480, page, style);
+                let gpu = gpu.render(&scene, &cam, 640, 480, page, style).unwrap();
+                let off = cpu
+                    .bgra
+                    .chunks_exact(4)
+                    .zip(gpu.bgra.chunks_exact(4))
+                    .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > 6))
+                    .count();
+                let frac = off as f32 / (640.0 * 480.0);
+                assert!(frac < 0.01, "{repr:?} {style:?}: {:.2}% of pixels differ", frac * 100.0);
+            }
+        }
+    }
 
     #[test]
     #[ignore]

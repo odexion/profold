@@ -26,7 +26,7 @@ struct Key {
     width: usize,
     height: usize,
     /// Camera parameters, compared bitwise.
-    cam: [u32; 12],
+    cam: [u32; 15],
     /// The scene's own stamp. Its address will not do: a freed scene's
     /// memory is reused, and a recoloured scene has the same number of
     /// primitives, so the old frame would be shown again.
@@ -51,6 +51,9 @@ fn key(scene: &Arc<Scene>, cam: &Camera, width: usize, height: usize, style: Sty
             cam.zoom.to_bits(),
             cam.pan[0].to_bits(),
             cam.pan[1].to_bits(),
+            cam.perspective as u32,
+            cam.slab.map_or(0, |s| s[0].to_bits()),
+            cam.slab.map_or(0, |s| s[1].to_bits()),
         ],
         scene: scene.version,
         style,

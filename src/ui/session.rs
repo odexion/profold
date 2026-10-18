@@ -82,6 +82,8 @@ impl Viewer {
                 "pan": c.pan,
                 "center": c.center,
                 "radius": c.radius,
+                "perspective": c.perspective,
+                "slab": c.slab,
             },
             "repr": self.repr.label(),
             "coloring": self.coloring.label(),
@@ -158,6 +160,8 @@ impl Viewer {
                 pan,
                 center,
                 radius: cam["radius"].as_f64().unwrap_or(self.camera.radius as f64) as f32,
+                perspective: cam["perspective"].as_bool().unwrap_or(false),
+                slab: floats::<2>(&cam["slab"]),
             };
         }
         let in_range = |i: &Value| i.as_u64().map(|i| i as usize).filter(|&i| i < atoms);

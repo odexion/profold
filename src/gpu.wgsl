@@ -38,6 +38,22 @@ fn to_view(p: vec3f) -> vec3f {
     return rot(p - u.center.xyz);
 }
 
+// A view-space point as drawn, and the factor sizes scale by there: in
+// perspective, moved out from the middle by how near it is. As in
+// Camera::warp.
+fn warp(v: vec3f) -> vec4f {
+    if u.view.w <= 0.0 {
+        return vec4f(v, 1.0);
+    }
+    let k = 1.0 / max(1.0 - v.z * u.view.w, 0.2);
+    return vec4f(v.xy * k, v.z, k);
+}
+
+// Whether a depth lies outside the slab.
+fn clipped(z: f32) -> bool {
+    return z > u.rot0.w || z < u.rot1.w;
+}
+
 fn clip(v: vec3f) -> vec4f {
     let sx = u.view.x + v.x * u.view.z;
     let sy = u.view.y - v.y * u.view.z;
@@ -162,25 +178,34 @@ struct Outline {
     b: vec3f,
     dir: vec2f,
     perp: vec2f,
+    // The radius as drawn.
+    r: f32,
 }
 
 fn outline(ar: vec4f, bk: vec4f) -> Outline {
-    let a = to_view(ar.xyz);
-    let b = to_view(bk.xyz);
+    let wa = warp(to_view(ar.xyz));
+    let wb = warp(to_view(bk.xyz));
+    let a = wa.xyz;
+    let b = wb.xyz;
+    // A sphere's second end is its first.
+    var k = wa.w;
+    if bk.w > 0.5 {
+        k = (wa.w + wb.w) * 0.5;
+    }
     let d = b.xy - a.xy;
     let len = length(d);
     var dir = vec2f(1.0, 0.0);
     if len > 1e-6 {
         dir = d / len;
     }
-    return Outline(a, b, dir, vec2f(-dir.y, dir.x));
+    return Outline(a, b, dir, vec2f(-dir.y, dir.x), ar.w * k);
 }
 
 fn impostor(o: Outline, xy: vec2f, ar: vec4f, bk: vec4f, ca: vec4f, cb: vec4f) -> ImpOut {
     var out: ImpOut;
     out.pos = clip(vec3f(xy, 0.0));
     out.pos.z = 0.5;
-    out.a = vec4f(o.a, ar.w);
+    out.a = vec4f(o.a, o.r);
     out.b = vec4f(o.b, bk.w);
     out.ca = ca;
     out.cb = cb;
@@ -205,7 +230,7 @@ fn imp_vs(
     @location(3) cb: vec4f,
 ) -> ImpOut {
     let o = outline(ar, bk);
-    let pad = reach(ar.w);
+    let pad = reach(o.r);
     // x runs from `a` to `b`, y across.
     let c = vec2f(f32(vi & 1u), f32(vi >> 1u) * 2.0 - 1.0);
     let xy = mix(o.a.xy - o.dir * pad, o.b.xy + o.dir * pad, c.x) + o.perp * pad * c.y;
@@ -224,7 +249,7 @@ fn glass_vs(
     @location(3) cb: vec4f,
 ) -> ImpOut {
     let o = outline(ar, bk);
-    let pad = reach(ar.w) / cos(PI / 8.0);
+    let pad = reach(o.r) / cos(PI / 8.0);
     let tri = vi / 3u;
     let corner = vi % 3u;
     var k = 0u;
@@ -253,6 +278,10 @@ struct Opaque {
     @builtin(frag_depth) depth: f32,
 }
 
+// The face a slab cuts, as in render.rs.
+const CAP = vec3f(0.0, 0.0, 1.0);
+const CAP_SHADE = 0.82;
+
 @fragment
 fn imp_fs(in: ImpOut) -> Opaque {
     let h = trace(in);
@@ -260,6 +289,19 @@ fn imp_fs(in: ImpOut) -> Opaque {
         discard;
     }
     let base = mix(in.ca.rgb, in.cb.rgb, h.f);
+    if clipped(h.z) {
+        // Cut by the near plane: a flat face there, if the solid reaches
+        // back through it.
+        var axis = in.a.z;
+        if in.b.w > 0.5 {
+            axis = mix(in.a.z, in.b.z, h.f);
+        }
+        let back = 2.0 * axis - h.z;
+        if h.z > u.rot0.w && back <= u.rot0.w {
+            return Opaque(vec4f(shade(CAP, base * CAP_SHADE), 1.0), to_depth(u.rot0.w));
+        }
+        discard;
+    }
     return Opaque(vec4f(shade(h.n, base), 1.0), to_depth(h.z));
 }
 
@@ -273,7 +315,7 @@ struct Blended {
 @fragment
 fn glass_fs(in: ImpOut) -> Blended {
     let h = trace(in);
-    if !h.ok {
+    if !h.ok || clipped(h.z) {
         discard;
     }
     var c = shade(h.n, mix(in.ca.rgb, in.cb.rgb, h.f));
@@ -300,15 +342,17 @@ struct TriOut {
     @builtin(position) pos: vec4f,
     @location(0) n: vec3f,
     @location(1) @interpolate(flat) c: vec3f,
+    @location(2) z: f32,
 }
 
 @vertex
 fn tri_vs(@location(0) p: vec3f, @location(1) n: vec3f, @location(2) c: vec3f) -> TriOut {
-    let v = to_view(p);
+    let v = warp(to_view(p)).xyz;
     var out: TriOut;
     out.pos = clip(v);
     out.n = rot(n);
     out.c = c;
+    out.z = v.z;
     return out;
 }
 
@@ -317,7 +361,7 @@ fn tri_vs(@location(0) p: vec3f, @location(1) n: vec3f, @location(2) c: vec3f) -
 @fragment
 fn tri_fs(in: TriOut) -> @location(0) vec4f {
     let len = length(in.n);
-    if len < 1e-6 {
+    if len < 1e-6 || clipped(in.z) {
         discard;
     }
     var n = in.n / len;
