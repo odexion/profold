@@ -177,6 +177,11 @@ pub enum Coloring {
     Rainbow,
     /// pLDDT, for predicted models.
     Confidence,
+    /// Low to high B-factor along the palette's ramp: how still each part
+    /// of a crystal structure sat.
+    BFactor,
+    /// Helix, strand and coil, each its own colour.
+    Structure,
     Element,
     /// One colour per structure, when two are superimposed.
     Pair,
@@ -185,10 +190,12 @@ pub enum Coloring {
 }
 
 impl Coloring {
-    pub const ALL: [Coloring; 4] = [
+    pub const ALL: [Coloring; 6] = [
         Coloring::Chain,
         Coloring::Rainbow,
         Coloring::Confidence,
+        Coloring::BFactor,
+        Coloring::Structure,
         Coloring::Element,
     ];
     /// The options that mean something while two structures are overlaid.
@@ -203,6 +210,8 @@ impl Coloring {
             Coloring::Chain => "Chain",
             Coloring::Rainbow => "Rainbow",
             Coloring::Confidence => "pLDDT",
+            Coloring::BFactor => "B-factor",
+            Coloring::Structure => "Secondary",
             Coloring::Element => "Element",
             Coloring::Pair => "Pair",
             Coloring::Deviation => "Deviation",
@@ -1026,8 +1035,32 @@ fn residue_color(
                 s.chain_color(r.chain as usize, palette)
             }
         }
+        Coloring::BFactor => match s.b_span() {
+            Some((lo, hi)) => palette.ramp(((r.b - lo) / (hi - lo)).clamp(0.0, 1.0)),
+            None => s.chain_color(r.chain as usize, palette),
+        },
+        Coloring::Structure => ss_color(r.ss),
         Coloring::Element => [0.42, 0.44, 0.47],
     }
+}
+
+/// The colours of helix, strand and coil: kept apart from the palette, as
+/// pLDDT's bands are, so they read the same whatever it is.
+pub const SS_COLORS: [(Ss, &str, [f32; 3]); 3] = [
+    (Ss::Helix, "Helix", [0.86, 0.26, 0.46]),
+    (Ss::Sheet, "Strand", [0.98, 0.76, 0.20]),
+    (Ss::Coil, "Coil", [0.78, 0.78, 0.76]),
+];
+
+fn ss_color(ss: Ss) -> [f32; 3] {
+    SS_COLORS.iter().find(|(s, _, _)| *s == ss).map_or([0.78; 3], |(_, _, c)| *c)
+}
+
+/// pLDDT's bands, from the top down, as AlphaFold DB shows them.
+pub const PLDDT_BANDS: [(&str, f32); 4] = [("Very high", 95.0), ("Confident", 80.0), ("Low", 60.0), ("Very low", 30.0)];
+
+pub fn plddt_band_color(v: f32) -> [f32; 3] {
+    plddt_color(v)
 }
 
 fn catmull_rom(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3], p3: [f32; 3], t: f32) -> [f32; 3] {
@@ -3349,6 +3382,38 @@ mod tests {
         painted.paint_residue(0..base.tris.len(), 0..0, residue, Style::Soft, false);
         let changed = (0..base.tris.len()).filter(|&i| painted.tris[i].c != base.tris[i].c).count();
         assert!(changed > 0);
+    }
+
+    #[test]
+    fn colours_follow_b_factors_and_secondary_structure() {
+        let s = sample("1crn.pdb.gz");
+        let (lo, hi) = s.b_span().expect("crambin has B-factors");
+        assert!(hi > lo);
+        let polymer: Vec<usize> = (0..s.residues.len()).filter(|&r| !s.residues[r].outside_polymer()).collect();
+        let stillest = *polymer.iter().min_by(|&&a, &&b| s.residues[a].b.total_cmp(&s.residues[b].b)).unwrap();
+        let floppiest = *polymer.iter().max_by(|&&a, &&b| s.residues[a].b.total_cmp(&s.residues[b].b)).unwrap();
+        let p = Palette::Viridis;
+        assert_eq!(residue_color(&s, stillest, Coloring::BFactor, p), p.ramp(0.0));
+        assert_eq!(residue_color(&s, floppiest, Coloring::BFactor, p), p.ramp(1.0));
+
+        let helix = polymer.iter().find(|&&r| s.residues[r].ss == Ss::Helix).unwrap();
+        let strand = polymer.iter().find(|&&r| s.residues[r].ss == Ss::Sheet).unwrap();
+        let (h, e) = (residue_color(&s, *helix, Coloring::Structure, p), residue_color(&s, *strand, Coloring::Structure, p));
+        assert_ne!(h, e);
+        // The palette does not move them.
+        assert_eq!(h, residue_color(&s, *helix, Coloring::Structure, Palette::Magma));
+    }
+
+    #[test]
+    fn a_flat_or_predicted_column_is_no_b_factor() {
+        let mut predicted = sample("1crn.pdb.gz");
+        predicted.has_confidence = true;
+        assert_eq!(predicted.b_span(), None, "pLDDT taken for B-factors");
+        let mut flat = sample("1crn.pdb.gz");
+        for r in &mut flat.residues {
+            r.b = 100.0;
+        }
+        assert_eq!(flat.b_span(), None);
     }
 
     #[test]

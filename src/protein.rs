@@ -262,6 +262,8 @@ pub struct Structure {
     /// Drawing radius for atoms of unknown element, set from the spacing of
     /// the atoms: a Lennard-Jones fluid in reduced units is one wide, not 1.6.
     pub unknown_radius: f32,
+    /// The span of B-factors colouring runs over, worked out when first asked.
+    b_span: std::sync::OnceLock<Option<(f32, f32)>>,
 }
 
 impl Structure {
@@ -284,7 +286,34 @@ impl Structure {
             kinds: Vec::new(),
             format: None,
             unknown_radius: Element::UNKNOWN.vdw(),
+            b_span: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The B-factors of the polymer's residues, from the 5th to the 95th
+    /// percentile, so that a floppy tail or two does not wash the rest out.
+    /// `None` where there are none worth colouring by: a predicted model's
+    /// column is pLDDT, and a flat column says nothing.
+    pub fn b_span(&self) -> Option<(f32, f32)> {
+        *self.b_span.get_or_init(|| {
+            if self.has_confidence {
+                return None;
+            }
+            let mut b: Vec<f32> = self
+                .residues
+                .iter()
+                .filter(|r| !r.outside_polymer())
+                .map(|r| r.b)
+                .filter(|b| b.is_finite())
+                .collect();
+            if b.len() < 3 {
+                return None;
+            }
+            b.sort_by(f32::total_cmp);
+            let at = |q: f32| b[((b.len() - 1) as f32 * q).round() as usize];
+            let (lo, hi) = (at(0.05), at(0.95));
+            (hi - lo > 0.5).then_some((lo, hi))
+        })
     }
 
     pub fn sequence(&self) -> String {

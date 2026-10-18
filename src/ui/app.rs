@@ -2673,8 +2673,11 @@ impl Viewer {
                 options
                     .iter()
                     // pLDDT means nothing without a predicted model, so it
-                    // is offered only for one.
+                    // is offered only for one; B-factors only where the file
+                    // has them, and helices only in a protein.
                     .filter(|c| **c != Coloring::Confidence || has_confidence)
+                    .filter(|c| **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some()))
+                    .filter(|c| **c != Coloring::Structure || polymer)
                     .map(|c| {
                         let c = *c;
                         let name = match c {
@@ -3662,6 +3665,78 @@ impl Viewer {
                                 .child(format!("Cα RMSD · {matched} residues")),
                         ),
                 ),
+        )
+    }
+
+    /// What the colours mean, for the colourings whose colours are not the
+    /// chains': a ramp with its ends for B-factors, a swatch each for
+    /// helix, strand and coil, and pLDDT's bands.
+    fn colour_key(&self, structure: &Structure) -> Option<gpui::AnyElement> {
+        let row = |color: [f32; 3], label: String| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(div().size(px(8.)).rounded_full().bg(swatch(color)))
+                .child(div().text_size(px(10.5)).text_color(theme::text()).child(label))
+        };
+        let body = match self.coloring {
+            Coloring::BFactor => {
+                let (lo, hi) = structure.b_span()?;
+                let palette = self.palette;
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .font_family(theme::MONO)
+                    .text_size(px(10.))
+                    .text_color(theme::muted())
+                    .child(format!("{lo:.0}"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(8.))
+                            .flex()
+                            .rounded(px(4.))
+                            .overflow_hidden()
+                            .children((0..24).map(move |i| {
+                                div().flex_1().h_full().bg(swatch(palette.ramp(i as f32 / 23.0)))
+                            })),
+                    )
+                    .child(format!("{hi:.0} Å²"))
+                    .into_any_element()
+            }
+            Coloring::Structure => div()
+                .flex()
+                .gap(px(14.))
+                .children(render::SS_COLORS.iter().map(|(_, name, c)| row(*c, name.to_string())))
+                .into_any_element(),
+            Coloring::Confidence if structure.has_confidence => div()
+                .flex()
+                .flex_wrap()
+                .gap_x(px(14.))
+                .gap_y(px(4.))
+                .children(
+                    render::PLDDT_BANDS
+                        .iter()
+                        .map(|(name, v)| row(render::plddt_band_color(*v), name.to_string())),
+                )
+                .into_any_element(),
+            _ => return None,
+        };
+        Some(
+            div()
+                .pt(px(14.))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(key(match self.coloring {
+                    Coloring::BFactor => "b-factor",
+                    Coloring::Structure => "secondary structure",
+                    _ => "pLDDT",
+                }))
+                .child(body)
+                .into_any_element(),
         )
     }
 
@@ -4761,6 +4836,7 @@ impl Viewer {
                 )
             })
             .child(self.legend(structure, cx))
+            .children(self.colour_key(structure))
             .child(self.ligand_list(structure, cx))
             .child(self.species_table(structure, cx))
             .child(
