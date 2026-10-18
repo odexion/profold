@@ -425,6 +425,34 @@ impl Structure {
         }
     }
 
+    /// A trajectory on its own: anonymous beads, one residue each, moving
+    /// through the frames given.
+    pub fn beads(name: &str, n: usize, frames: Vec<Snapshot>) -> Structure {
+        let mut b = Builder::new("trajectory");
+        let first = frames.first().map(|f| f.pos.clone()).unwrap_or_default();
+        b.cell = frames.first().and_then(|f| f.cell);
+        for (i, p) in first.into_iter().enumerate().take(n) {
+            b.push(Record { chain: "A", res_name: "UNK", res_seq: i as i32 + 1, name: "X", element: Element::UNKNOWN, pos: p, ..Record::default() });
+        }
+        b.frames = frames.into_iter().skip(1).collect();
+        let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
+        b.finish(stem.to_string(), String::new(), Source::File)
+    }
+
+    /// The frames of a trajectory laid over this structure, whose atoms they
+    /// move: its own positions stay the first frame only if the trajectory's
+    /// first is not its own.
+    pub fn with_frames(&self, frames: Vec<Snapshot>) -> Option<Structure> {
+        if frames.first()?.pos.len() != self.atoms.len() {
+            return None;
+        }
+        let mut s = self.clone();
+        s.frames = Arc::new(frames);
+        s.frame = usize::MAX;
+        s.set_frame(0);
+        Some(s)
+    }
+
     /// Each copy of a ligand, by residue name: its residues, in file order.
     pub fn copies(&self, name: &str) -> Vec<usize> {
         (0..self.residues.len())
@@ -790,15 +818,17 @@ pub fn three_to_one(name: &str) -> char {
         "ALA" => 'A',
         "ARG" => 'R',
         "ASN" => 'N',
-        "ASP" => 'D',
-        "CYS" => 'C',
+        "ASP" | "ASH" => 'D',
+        "CYS" | "CYX" | "CYM" | "CYS2" => 'C',
         "GLN" => 'Q',
-        "GLU" => 'E',
+        "GLU" | "GLH" => 'E',
         "GLY" => 'G',
-        "HIS" => 'H',
+        // Force fields name some residues by how they are protonated:
+        // CHARMM's and AMBER's histidines, cystines, and the rest.
+        "HIS" | "HSD" | "HSE" | "HSP" | "HID" | "HIE" | "HIP" | "HISD" | "HISE" | "HISH" => 'H',
         "ILE" => 'I',
         "LEU" => 'L',
-        "LYS" => 'K',
+        "LYS" | "LYN" => 'K',
         "MET" => 'M',
         "PHE" => 'F',
         "PRO" => 'P',

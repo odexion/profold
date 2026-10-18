@@ -435,3 +435,10 @@ fn predicted_aligned_error_is_read_as_alphafold_writes_it() {
     assert_eq!(pae.at(2, 0), 5.0);
     assert!(crate::protein::Pae::from_json(r#"[{"predicted_aligned_error":[[0,1],[1]]}]"#).is_err());
 }
+
+#[test]
+fn force_field_names_are_amino_acids() {
+    for (name, code) in [("HSD", 'H'), ("HIE", 'H'), ("CYX", 'C'), ("ASH", 'D'), ("GLH", 'E'), ("LYN", 'K')] {
+        assert_eq!(crate::protein::three_to_one(name), code, "{name}");
+    }
+}

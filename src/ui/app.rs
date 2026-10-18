@@ -1300,6 +1300,26 @@ impl Viewer {
         self.busy = None;
         self.progress = None;
         match result {
+            // A trajectory with as many atoms as the structure shown moves
+            // that structure's atoms, rather than standing in for it.
+            Ok(s) if s.format == Some("trajectory")
+                && self.compare.is_none()
+                && self.structure.as_ref().is_some_and(|shown| shown.atoms.len() == s.atoms.len()) =>
+            {
+                self.opening = None;
+                let frames: Vec<crate::protein::Snapshot> = if s.frames.is_empty() {
+                    vec![crate::protein::Snapshot { pos: s.atoms.iter().map(|a| a.pos).collect(), cell: s.cell }]
+                } else {
+                    s.frames.to_vec()
+                };
+                let n = frames.len();
+                if let Some(moved) = self.structure.as_ref().and_then(|shown| shown.with_frames(frames)) {
+                    self.note(format!("{} frames from {} laid over {}", thousands(n), s.id, moved.id));
+                    self.stop_playing();
+                    self.structure = Some(Arc::new(moved));
+                    self.rebuild(cx);
+                }
+            }
             Ok(s) if std::mem::take(&mut self.overlay_next) => {
                 // The tab still reopens as what it was opened as.
                 self.opening = None;
@@ -7616,6 +7636,36 @@ mod ui_tests {
         cx.run_until_parked();
         let (i, j) = view.update(cx, |this, _| this.pae_hover).expect("nothing pointed at in the PAE");
         assert!(i > j, "rows run down, columns across: {i} {j}");
+    }
+
+    #[gpui::test]
+    fn a_trajectory_moves_the_structure_shown(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        let crambin = formats::load_bytes(SAMPLES[2].file, SAMPLES[2].bytes.to_vec()).unwrap();
+        view.update(cx, |this, cx| this.show(crambin.clone(), cx));
+        cx.run_until_parked();
+        // Three frames, each shifted a little further along x.
+        let frames: Vec<crate::protein::Snapshot> = (0..3)
+            .map(|k| crate::protein::Snapshot { pos: crambin.atoms.iter().map(|a| [a.pos[0] + k as f32, a.pos[1], a.pos[2]]).collect(), cell: None })
+            .collect();
+        let traj = Structure::beads("run.dcd", crambin.atoms.len(), frames);
+        view.update(cx, |this, cx| this.finish(Ok(traj), cx));
+        cx.run_until_parked();
+        let (count, name, first) = view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            (s.frame_count(), s.atoms[1].name().to_string(), s.atoms[0].pos)
+        });
+        assert_eq!(count, 3);
+        assert_eq!(name, crambin.atoms[1].name(), "the atoms are no longer the structure's");
+        assert_eq!(first, crambin.atoms[0].pos);
+        view.update(cx, |this, cx| this.set_frame(2, cx));
+        let moved = view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms[0].pos);
+        assert!((moved[0] - crambin.atoms[0].pos[0] - 2.0).abs() < 1e-5);
+
+        // One that does not fit opens on its own, as beads.
+        let other = Structure::beads("other.xtc", 10, vec![crate::protein::Snapshot { pos: vec![[0.0; 3]; 10], cell: None }]);
+        view.update(cx, |this, cx| this.finish(Ok(other), cx));
+        assert_eq!(view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms.len()), 10);
     }
 
     #[gpui::test]

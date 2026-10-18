@@ -201,7 +201,7 @@ fn write_assemblies(out: &mut String, s: &Structure) {
 }
 
 /// A CIF value, quoted where it has to be.
-fn quote(v: &str) -> String {
+pub(crate) fn quote(v: &str) -> String {
     if v.is_empty() {
         return ".".into();
     }

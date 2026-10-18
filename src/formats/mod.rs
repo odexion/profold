@@ -15,6 +15,8 @@ mod sdf;
 mod xsf;
 mod xyz;
 pub mod write;
+pub mod traj;
+mod bcif;
 
 use std::io::Read;
 use std::path::Path;
@@ -142,19 +144,37 @@ impl Format {
 
 /// Every extension the reader takes, for the open dialog's description.
 pub const SUPPORTED: &str =
-    "PDB, PQR, mmCIF, CIF, XYZ, GRO, MOL2, SDF, LAMMPS data and dump, POSCAR, cube, XSF";
+    "PDB, PQR, mmCIF, BinaryCIF, CIF, XYZ, GRO, MOL2, SDF, LAMMPS data and dump, POSCAR, cube, XSF, DCD, XTC";
 
-/// Read bytes as text, undoing gzip if that is what they are.
-pub fn decode(bytes: Vec<u8>) -> Result<String> {
-    let bytes = if bytes.starts_with(&[0x1f, 0x8b]) {
+/// Bytes, unzipped if they are gzipped.
+fn gunzip(bytes: Vec<u8>) -> Result<Vec<u8>> {
+    if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut out = Vec::new();
         flate2::read::MultiGzDecoder::new(&bytes[..])
             .read_to_end(&mut out)
             .context("could not decompress")?;
-        out
+        Ok(out)
     } else {
-        bytes
-    };
+        Ok(bytes)
+    }
+}
+
+/// Whether a file is a binary trajectory, DCD or XTC, by its name; and if so
+/// its atom count and frames.
+pub fn trajectory(name: &str, bytes: &[u8]) -> Option<Result<(usize, Vec<crate::protein::Snapshot>)>> {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".dcd") {
+        Some(traj::dcd(bytes))
+    } else if lower.ends_with(".xtc") {
+        Some(traj::xtc(bytes))
+    } else {
+        None
+    }
+}
+
+/// Read bytes as text, undoing gzip if that is what they are.
+pub fn decode(bytes: Vec<u8>) -> Result<String> {
+    let bytes = gunzip(bytes)?;
     Ok(match String::from_utf8(bytes) {
         Ok(s) => s,
         Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
@@ -173,6 +193,24 @@ pub fn load_path(path: &Path) -> Result<Structure> {
 
 /// Read a file's contents, given its name to tell the format by.
 pub fn load_bytes(name: &str, bytes: Vec<u8>) -> Result<Structure> {
+    // BinaryCIF is unpacked to mmCIF and read as that.
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".bcif") || lower.ends_with(".bcif.gz") {
+        let bytes = gunzip(bytes)?;
+        let text = bcif::to_mmcif(&bytes).with_context(|| format!("reading {name} as BinaryCIF"))?;
+        let stem = lower.trim_end_matches(".gz").trim_end_matches(".bcif");
+        let mut s = cif::parse(&text, stem.to_string(), Source::File)?;
+        if s.atoms.is_empty() {
+            bail!("no atoms in {name}");
+        }
+        s.format = Some("BinaryCIF");
+        return Ok(s);
+    }
+    if let Some(found) = trajectory(name, &bytes) {
+        // On its own, a trajectory's atoms are anonymous beads.
+        let (n, frames) = found?;
+        return Ok(Structure::beads(name, n, frames));
+    }
     let text = decode(bytes)?;
     let format = Format::from_name(name)
         .or_else(|| Format::sniff(&text))
