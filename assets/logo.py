@@ -1,5 +1,8 @@
 # Draws the logo: `python3 assets/logo.py assets/logo.svg`, and the glyph for
 # the smallest icon sizes with `python3 assets/logo.py --small assets/logo-small.svg`.
+# `--bare` leaves off the tile and crops to the strand, for the app's own
+# masthead: `python3 assets/logo.py --small --bare assets/mark.svg`.
+# scripts/icons.sh draws all three and renders the icons from them.
 #
 # A protein cartoon: a ribbon wound into a helix that leaves as a strand and
 # ends in an arrowhead, coloured along its length from the N-terminus to the C.
@@ -9,6 +12,7 @@
 import math, sys
 
 SMALL = '--small' in sys.argv
+BARE = '--bare' in sys.argv
 OUT = [s for s in sys.argv[1:] if not s.startswith('--')][0]
 
 TILE = ('#ffffff', '#f1f2f6')     # top and bottom of the paper
@@ -107,16 +111,18 @@ for k in range(n-1):
     quads.append(((l0[2]+l1[2]+r0[2]+r1[2])/4, k, col, mix(base, INK, 0.55)))
 quads.sort()
 
-o = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">',
+V = (512 - BOX/2 - EDGE, 518 - BOX/2 - EDGE, BOX + 2*EDGE) if BARE else (0, 0, 1024)
+o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{V[0]:.0f} {V[1]:.0f} {V[2]:.0f} {V[2]:.0f}" width="1024" height="1024">',
  '<defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">'
  f'<stop offset="0" stop-color="{TILE[0]}"/><stop offset="1" stop-color="{TILE[1]}"/></linearGradient></defs>']
 # the shadow as rings of faint tile, not a filter, so every renderer draws it
-for i in range(12, 0, -1):
+for i in range(0 if BARE else 12, 0, -1):
     g = i*2.5
     o.append(f'<rect x="{100-g:.1f}" y="{100-g+8:.1f}" width="{824+2*g:.1f}" height="{824+2*g:.1f}" '
              f'rx="{185+g:.1f}" fill="#0f0a1e" fill-opacity="0.009"/>')
-o += ['<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>',
- '<g stroke-linejoin="round" stroke-linecap="round">']
+if not BARE:
+    o.append('<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>')
+o += ['<g stroke-linejoin="round" stroke-linecap="round">']
 xy = lambda p: f'{p[0]:.1f},{p[1]:.1f}'
 for _, k, col, edge in quads:
     l0, l1, r1, r0 = L[k], L[k+1], R[k+1], R[k]
