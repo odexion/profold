@@ -561,73 +561,66 @@ impl Structure {
         }
     }
 
-    /// What to say about an atom pointed at: a heading, and the lines under
-    /// it. With `residue`, the residue it belongs to is what was pointed at,
-    /// as on a ribbon, and its atom is not named.
-    pub fn describe(&self, atom: usize, residue: bool) -> (String, Vec<String>) {
-        let Some(a) = self.atoms.get(atom) else {
-            return (String::new(), Vec::new());
-        };
+    /// What to say about an atom pointed at, for the card beside the
+    /// pointer. With `residue`, the residue it belongs to is what was
+    /// pointed at, as on a ribbon, and its atom is not named.
+    pub fn card(&self, atom: usize, residue: bool) -> Option<Card> {
+        let a = self.atoms.get(atom)?;
         let r = &self.residues[a.residue as usize];
         let chain = self.chains.get(r.chain as usize).map(|c| c.id.trim()).unwrap_or("");
         // A residue is worth naming in a polymer, or beside one; a lone
         // molecule's one residue, or a simulation's, is not.
         let named = !r.outside_polymer() || self.has_polymer();
         let symbol = a.element.is_known().then(|| a.element.symbol());
-        let heading = if named {
-            let mut h = format!("{} {}", r.name, r.seq);
-            if !chain.is_empty() {
-                h.push_str(&format!(" · chain {chain}"));
-            }
-            h
-        } else {
-            let label = match (a.name(), symbol) {
-                ("", Some(e)) => e.to_string(),
-                ("", None) => "Atom".to_string(),
-                (n, _) => n.to_string(),
-            };
-            format!("{label} {}", atom + 1)
+        let atom_label = match (a.name(), symbol) {
+            ("", Some(e)) => e.to_string(),
+            ("", None) => "Atom".to_string(),
+            (n, _) => n.to_string(),
         };
-
-        let mut lines = Vec::new();
-        if residue {
-            lines.push(
-                match r.ss {
-                    Ss::Helix => "helix",
-                    Ss::Sheet => "strand",
-                    Ss::Coil => "coil",
-                }
-                .to_string(),
-            );
-        } else {
-            let mut what = Vec::new();
-            if named && !a.name().is_empty() {
-                what.push(a.name().to_string());
-            }
-            match symbol {
-                Some(e) if what.first().is_none_or(|n| n != e) => what.push(e.to_string()),
-                Some(_) => {}
-                None => {
-                    if let Some(kind) = self.kinds.get(a.kind as usize) {
-                        what.push(format!("type {kind}"));
-                    }
-                }
-            }
-            if !what.is_empty() {
-                lines.push(what.join(" · "));
-            }
-        }
         let b = if residue { r.b } else { a.b };
-        if self.has_confidence {
-            lines.push(format!("pLDDT {b:.1}"));
-        } else if b != 0.0 && matches!(self.format, Some("PDB" | "mmCIF")) {
-            lines.push(format!("B-factor {b:.1}"));
+        let mut card = Card {
+            title: String::new(),
+            tag: String::new(),
+            chain: (named && !chain.is_empty()).then(|| chain.to_string()),
+            class: None,
+            atom: None,
+            element: symbol.map(|e| (e, a.element.color())),
+            kind: None,
+            ss: None,
+            b: if self.has_confidence {
+                Some(("pLDDT", b))
+            } else if b != 0.0 && matches!(self.format, Some("PDB" | "mmCIF")) {
+                Some(("B-factor", b))
+            } else {
+                None
+            },
+            pos: (!residue).then_some(a.pos),
+        };
+        if named {
+            let class = residue_class(r);
+            card.title = class.map_or(r.name.trim(), |c| c.1).to_string();
+            card.tag = format!("{} {}", r.name.trim(), r.seq);
+            card.class = class.map(|c| (residue_code(r), c.0, c.2)).or_else(|| {
+                let kind = if is_solvent(r.name.trim()) { "solvent" } else { "ligand" };
+                r.outside_polymer().then(|| (r.code, kind, [0.55, 0.55, 0.58]))
+            });
+            if !r.outside_polymer() {
+                card.ss = Some(r.ss);
+            }
+            if !residue && !a.name().is_empty() {
+                card.atom = Some(a.name().to_string());
+            }
+        } else {
+            card.title = atom_label;
+            card.tag = format!("atom {}", atom + 1);
+            if symbol.is_none() {
+                card.kind = self.kinds.get(a.kind as usize).map(|k| format!("type {k}"));
+            }
         }
-        if !residue {
-            let [x, y, z] = a.pos;
-            lines.push(format!("{x:.2}, {y:.2}, {z:.2} Å"));
+        if residue {
+            card.element = None;
         }
-        (heading, lines)
+        Some(card)
     }
 
     /// The kinds of ligand and ion beside a polymer, by residue name, with
@@ -1089,6 +1082,83 @@ impl Pae {
 
 /// Residue names that are solvent. Hidden under a cartoon, where a box of
 /// water would bury the protein; shown in the atomistic styles.
+/// What is said about an atom or residue pointed at.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Card {
+    /// A residue's full name, or a lone molecule's atom.
+    pub title: String,
+    /// `SER 42`, or `atom 5`.
+    pub tag: String,
+    pub chain: Option<String>,
+    /// The residue's one-letter code, the kind of residue it is, and that
+    /// kind's colour.
+    pub class: Option<(char, &'static str, [f32; 3])>,
+    /// The atom's name within its residue.
+    pub atom: Option<String>,
+    /// Its element, and that element's colour.
+    pub element: Option<(&'static str, [f32; 3])>,
+    /// A simulation's atom type, where there is no element.
+    pub kind: Option<String>,
+    pub ss: Option<Ss>,
+    /// pLDDT or B-factor, by which the file means it.
+    pub b: Option<(&'static str, f32)>,
+    pub pos: Option<[f32; 3]>,
+}
+
+/// A residue's one-letter code: its amino acid's, or a nucleotide's base.
+pub fn residue_code(r: &Residue) -> char {
+    if r.code != 'X' || r.outside_polymer() {
+        return r.code;
+    }
+    r.name.trim().chars().last().unwrap_or('X')
+}
+
+/// The kind of residue, its full name, and the kind's colour: amino acids
+/// by their side chains, as a biochemist sorts them.
+fn residue_class(r: &Residue) -> Option<(&'static str, &'static str, [f32; 3])> {
+    const HYDROPHOBIC: [f32; 3] = [0.85, 0.60, 0.22];
+    const POLAR: [f32; 3] = [0.18, 0.62, 0.56];
+    const POSITIVE: [f32; 3] = [0.27, 0.45, 0.86];
+    const NEGATIVE: [f32; 3] = [0.86, 0.30, 0.32];
+    const SPECIAL: [f32; 3] = [0.58, 0.50, 0.74];
+    const NUCLEIC: [f32; 3] = [0.40, 0.62, 0.30];
+    let out = match r.name.trim() {
+        "ALA" => ("hydrophobic", "Alanine", HYDROPHOBIC),
+        "VAL" => ("hydrophobic", "Valine", HYDROPHOBIC),
+        "LEU" => ("hydrophobic", "Leucine", HYDROPHOBIC),
+        "ILE" => ("hydrophobic", "Isoleucine", HYDROPHOBIC),
+        "MET" => ("hydrophobic", "Methionine", HYDROPHOBIC),
+        "MSE" => ("hydrophobic", "Selenomethionine", HYDROPHOBIC),
+        "PHE" => ("aromatic", "Phenylalanine", HYDROPHOBIC),
+        "TRP" => ("aromatic", "Tryptophan", HYDROPHOBIC),
+        "TYR" => ("aromatic, polar", "Tyrosine", POLAR),
+        "SER" => ("polar", "Serine", POLAR),
+        "THR" => ("polar", "Threonine", POLAR),
+        "ASN" => ("polar", "Asparagine", POLAR),
+        "GLN" => ("polar", "Glutamine", POLAR),
+        "CYS" => ("polar, thiol", "Cysteine", POLAR),
+        "LYS" => ("positive", "Lysine", POSITIVE),
+        "ARG" => ("positive", "Arginine", POSITIVE),
+        "HIS" | "HID" | "HIE" | "HIP" | "HSD" | "HSE" | "HSP" => ("positive", "Histidine", POSITIVE),
+        "ASP" => ("negative", "Aspartate", NEGATIVE),
+        "GLU" => ("negative", "Glutamate", NEGATIVE),
+        "GLY" => ("flexible", "Glycine", SPECIAL),
+        "PRO" => ("rigid", "Proline", SPECIAL),
+        "A" => ("nucleotide", "Adenosine", NUCLEIC),
+        "G" => ("nucleotide", "Guanosine", NUCLEIC),
+        "C" => ("nucleotide", "Cytidine", NUCLEIC),
+        "U" => ("nucleotide", "Uridine", NUCLEIC),
+        "DA" => ("nucleotide", "Deoxyadenosine", NUCLEIC),
+        "DG" => ("nucleotide", "Deoxyguanosine", NUCLEIC),
+        "DC" => ("nucleotide", "Deoxycytidine", NUCLEIC),
+        "DT" => ("nucleotide", "Thymidine", NUCLEIC),
+        _ if r.nucleic.is_some() => ("nucleotide", "Nucleotide", NUCLEIC),
+        _ if !r.outside_polymer() => ("residue", "Residue", SPECIAL),
+        _ => return None,
+    };
+    Some(out)
+}
+
 pub fn is_solvent(name: &str) -> bool {
     matches!(
         name,

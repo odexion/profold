@@ -3328,10 +3328,7 @@ fn residue_pick(s: &Structure, residue: usize) -> Option<Picked> {
 /// The letter a residue goes by in the sequence: its amino acid's, or a
 /// nucleotide's base.
 fn residue_letter(r: &crate::protein::Residue) -> char {
-    if r.code != 'X' || r.outside_polymer() {
-        return r.code;
-    }
-    r.name.trim().chars().last().unwrap_or('X')
+    crate::protein::residue_code(r)
 }
 
 /// Residues per block of the sequence, each block numbered.
@@ -6790,36 +6787,178 @@ impl Viewer {
 }
 
 impl Viewer {
-    /// What is said about an atom or residue: a heading over a few lines.
+    /// What is said about an atom or residue: a coloured badge and its
+    /// name, over a few labelled facts.
     fn atom_card(&self, t: Target) -> Option<gpui::Div> {
         let s = self.shown(t.which)?;
-        let (heading, lines) = s.describe(t.picked.atom, t.picked.residue);
+        let card = s.card(t.picked.atom, t.picked.residue)?;
         // Which of a superimposed pair, when both are drawn.
         let whose = (self.compare.is_some() && self.visible().len() > 1)
             .then(|| {
                 let s = if t.which == 0 { self.structure.as_ref() } else { self.compare.as_ref() };
                 s.map(|s| s.id.to_uppercase()).unwrap_or_default()
             });
+        let on_ink = theme::on_ink();
+        let soft = |a: f32| gpui::Hsla { a, ..on_ink };
+        // A residue shows its letter in its kind's colour; an atom, its
+        // element in the element's.
+        let (badge, color, round) = match (card.class, card.element) {
+            (_, Some((e, c))) => (e.to_string(), c, true),
+            (Some((code, _, c)), None) => (code.to_string(), c, false),
+            (None, None) => ("·".to_string(), [0.55, 0.55, 0.58], true),
+        };
+        let light = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] > 0.62;
+        let badge = div()
+            .flex_none()
+            .size(px(26.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(round, |d| d.rounded_full())
+            .when(!round, |d| d.rounded(px(6.)))
+            .bg(swatch(color))
+            .text_size(px(if badge.chars().count() > 1 { 11. } else { 13. }))
+            .font_weight(gpui::FontWeight::BOLD)
+            .text_color(if light { gpui::rgb(0x1d1d22) } else { gpui::rgb(0xffffff) })
+            .child(badge);
+        let mut sub = card.tag.clone();
+        if let Some(c) = &card.chain {
+            sub.push_str(&format!(" · chain {c}"));
+        }
+        let header = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(badge)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(card.title.clone()),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme::MONO)
+                            .text_size(px(9.5))
+                            .text_color(soft(0.6))
+                            .child(sub),
+                    ),
+            );
+
+        let dot = |c: [f32; 3]| div().flex_none().size(px(7.)).rounded_full().bg(swatch(c));
+        let row = |label: &'static str, value: gpui::AnyElement| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .w(px(54.))
+                        .flex_none()
+                        .text_size(px(9.))
+                        .text_color(soft(0.5))
+                        .child(if label == "pLDDT" { label.to_string() } else { spaced(&label.to_uppercase()) }),
+                )
+                .child(value)
+        };
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        if let Some(name) = &card.atom {
+            let mut v = div().flex().items_center().gap(px(5.)).child(
+                div().font_family(theme::MONO).text_size(px(10.5)).child(name.clone()),
+            );
+            if let Some((e, c)) = card.element.filter(|(e, _)| e != name) {
+                v = v.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(px(5.))
+                        .rounded(px(4.))
+                        .bg(soft(0.1))
+                        .child(dot(c))
+                        .child(div().text_size(px(9.5)).text_color(soft(0.75)).child(e)),
+                );
+            }
+            rows.push(row("atom", v.into_any_element()).into_any_element());
+        }
+        if let Some(kind) = &card.kind {
+            rows.push(row("type", div().text_size(px(10.5)).child(kind.clone()).into_any_element()).into_any_element());
+        }
+        if let Some((_, kind, c)) = card.class {
+            let v = div().flex().items_center().gap(px(5.)).child(dot(c)).child(div().text_size(px(10.5)).child(kind));
+            rows.push(row("kind", v.into_any_element()).into_any_element());
+        }
+        if let Some(ss) = card.ss {
+            let (_, name, c) = crate::render::SS_COLORS
+                .iter()
+                .find(|(s, _, _)| *s == ss)
+                .copied()
+                .unwrap_or((ss, "Coil", [0.78; 3]));
+            let v = div().flex().items_center().gap(px(5.)).child(dot(c)).child(div().text_size(px(10.5)).child(name.to_lowercase()));
+            rows.push(row("fold", v.into_any_element()).into_any_element());
+        }
+        if let Some((label, b)) = card.b {
+            let mut v = div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(div().font_family(theme::MONO).text_size(px(10.5)).child(format!("{b:.1}")));
+            if label == "pLDDT" {
+                let c = crate::render::plddt_band_color(b);
+                // AlphaFold's cut-offs, at 90, 70 and 50.
+                let band = match b {
+                    b if b >= 90.0 => "very high",
+                    b if b >= 70.0 => "confident",
+                    b if b >= 50.0 => "low",
+                    _ => "very low",
+                };
+                v = v
+                    .child(
+                        div()
+                            .w(px(40.))
+                            .h(px(4.))
+                            .rounded_full()
+                            .bg(soft(0.15))
+                            .child(div().h_full().rounded_full().w(px(40. * (b / 100.).clamp(0.04, 1.))).bg(swatch(c))),
+                    )
+                    .child(div().text_size(px(9.5)).text_color(soft(0.6)).child(band));
+            }
+            rows.push(row(label, v.into_any_element()).into_any_element());
+        }
+        if let Some([x, y, z]) = card.pos {
+            let v = div()
+                .font_family(theme::MONO)
+                .text_size(px(10.))
+                .text_color(soft(0.75))
+                .child(format!("{x:.2}  {y:.2}  {z:.2} Å"));
+            rows.push(row("xyz", v.into_any_element()).into_any_element());
+        }
+
         Some(
             div()
                 .flex()
                 .flex_col()
-                .gap(px(1.))
-                .px(px(8.))
-                .py(px(5.))
-                .rounded(px(6.))
+                .gap(px(7.))
+                .min_w(px(150.))
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(9.))
                 .bg(theme::ink())
-                .text_color(theme::on_ink())
+                .text_color(on_ink)
+                .shadow_lg()
                 .whitespace_nowrap()
-                .children(whose.map(|w| div().text_size(px(9.5)).opacity(0.7).child(w)))
-                .child(div().text_size(px(11.)).font_weight(gpui::FontWeight::SEMIBOLD).child(heading))
-                .children(lines.into_iter().map(|l| {
-                    div()
-                        .font_family(theme::MONO)
-                        .text_size(px(10.))
-                        .opacity(0.8)
-                        .child(l)
-                })),
+                .children(whose.map(|w| {
+                    div().text_size(px(9.)).text_color(soft(0.55)).child(spaced(&w))
+                }))
+                .child(header)
+                .when(!rows.is_empty(), |d| {
+                    d.child(div().h(px(1.)).w_full().bg(soft(0.12)))
+                        .child(div().flex().flex_col().gap(px(4.)).children(rows))
+                }),
         )
     }
 

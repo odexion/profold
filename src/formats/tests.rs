@@ -351,21 +351,25 @@ fn atoms_keep_their_names_and_say_what_they_are() {
     let s = read(SER, Format::Pdb);
     assert_eq!(s.atoms[1].name(), "CA");
     assert_eq!(s.atoms[4].name(), "OG");
-    let (heading, lines) = s.describe(4, false);
-    assert_eq!(heading, "SER 42 · chain A");
-    assert_eq!(lines, ["OG · O", "B-factor 18.5", "12.87, 5.32, -5.04 Å"]);
+    let card = s.card(4, false).unwrap();
+    assert_eq!((card.title.as_str(), card.tag.as_str()), ("Serine", "SER 42"));
+    assert_eq!(card.chain.as_deref(), Some("A"));
+    assert_eq!(card.atom.as_deref(), Some("OG"));
+    assert_eq!(card.element.map(|e| e.0), Some("O"));
+    assert_eq!(card.b, Some(("B-factor", 18.5)));
+    assert!(card.pos.is_some());
     // A residue picked off the ribbon is not one atom.
-    let (_, lines) = s.describe(1, true);
-    assert_eq!(lines[0], "coil");
-    assert!(!lines.iter().any(|l| l.contains('Å')));
+    let card = s.card(1, true).unwrap();
+    assert_eq!(card.ss, Some(crate::protein::Ss::Coil));
+    assert!(card.atom.is_none() && card.pos.is_none() && card.element.is_none());
 }
 
 #[test]
 fn a_lone_molecule_names_its_atoms_by_number() {
     let s = read(WATER_XYZ, Format::Xyz);
-    let (heading, lines) = s.describe(0, false);
-    assert!(heading.ends_with(" 1"), "{heading}");
-    assert!(lines.iter().any(|l| l.contains('O')), "{lines:?}");
+    let card = s.card(0, false).unwrap();
+    assert_eq!(card.tag, "atom 1");
+    assert_eq!(card.element.map(|e| e.0), Some("O"));
 }
 
 #[test]
