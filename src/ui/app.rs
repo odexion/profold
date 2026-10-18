@@ -784,15 +784,7 @@ impl Viewer {
         let mut scene = Scene::clone(&self.base);
         for t in glows {
             if let Some(s) = self.shown(t.which) {
-                scene.merge(render::build_highlight(
-                    s,
-                    t.picked,
-                    self.repr,
-                    self.style,
-                    self.palette,
-                    self.standard_colors,
-                    &self.appearance,
-                ));
+                scene.merge(render::build_highlight(s, t.picked, self.repr, self.style, &self.appearance));
             }
         }
         self.scene = Arc::new(scene.stamp());
@@ -5060,7 +5052,11 @@ mod ui_tests {
         });
         cx.run_until_parked();
         let glows = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
-            view.update(cx, |this, _| this.scene.spheres.iter().filter(|s| s.alpha < 1.0).count())
+            view.update(cx, |this, _| {
+                let scene = &this.scene;
+                scene.spheres.iter().filter(|s| s.alpha < 1.0).count()
+                    + scene.capsules.iter().filter(|c| c.alpha < 1.0).count()
+            })
         };
         assert_eq!(glows(&view, cx), 0);
 

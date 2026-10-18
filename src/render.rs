@@ -1429,17 +1429,15 @@ fn capsule_depth(a: [f32; 3], b: [f32; 3], r: f32, p: [f32; 2]) -> Option<f32> {
 /// The colour a picked atom or residue glows with.
 const HIGHLIGHT: [f32; 3] = [1.0, 0.78, 0.18];
 
-/// What marks a picked atom: a glow around it, or, for a residue picked off
-/// the backbone, its own atoms drawn as sticks in their elements' colours,
-/// each in a glow, so its side chain shows through the ribbon.
-#[allow(clippy::too_many_arguments)]
+/// What marks a picked atom: a glow around it. A residue picked in a
+/// backbone style glows as a sleeve over its stretch of the ribbon, halfway
+/// to each neighbour, and in an atomistic style as a glow on each of its
+/// atoms. Nothing is drawn that the style does not draw already.
 pub fn build_highlight(
     s: &Structure,
     picked: Picked,
     repr: Repr,
     style: Style,
-    palette: Palette,
-    standard_colors: bool,
     appearance: &Appearance,
 ) -> Scene {
     let Some(atom) = s.atoms.get(picked.atom) else {
@@ -1447,41 +1445,82 @@ pub fn build_highlight(
     };
     let paint = Paint {
         s,
-        elements: element_colors(s, palette, standard_colors),
+        elements: Vec::new(),
         coloring: Coloring::Element,
-        palette,
+        palette: Palette::Spectrum,
         polymer: s.has_polymer(),
         looks: appearance.resolve(s),
         own: s.atoms.len(),
         images: Vec::new(),
     };
-    let glow = |i: usize, r: f32, alpha: f32| Sphere {
-        c: s.atoms[i].pos,
+    // The radius an atom is drawn at in this style.
+    let drawn = |i: usize| match repr {
+        Repr::Spacefill => paint.radius(i),
+        Repr::Licorice => (paint.radius(i) * 0.3).max(0.22),
+        _ => paint.radius(i) * 0.25,
+    };
+    let glow = |c: [f32; 3], r: f32| Sphere {
+        c,
         r,
         color: HIGHLIGHT,
-        alpha,
+        alpha: 0.5,
     };
-    let mut scene = if picked.residue {
-        let keep: Vec<bool> = s.atoms.iter().map(|a| a.residue == atom.residue).collect();
-        let mut sticks = build_sticks(&paint, &keep, false);
-        let own: Vec<usize> = (0..s.atoms.len()).filter(|&i| keep[i]).collect();
-        sticks.spheres.extend(own.into_iter().map(|i| glow(i, 0.9, 0.4)));
-        sticks
-    } else {
-        let i = picked.atom;
-        let drawn = match repr {
-            Repr::Spacefill => paint.radius(i),
-            Repr::Licorice => (paint.radius(i) * 0.3).max(0.22),
-            _ => paint.radius(i) * 0.25,
-        };
-        Scene {
-            spheres: vec![glow(i, drawn + 0.7, 0.6)],
-            ..Scene::default()
+    let backbone = matches!(repr, Repr::Tube | Repr::Cartoon);
+    let residue = &s.residues[atom.residue as usize];
+    let mut scene = Scene::default();
+    match (picked.residue, backbone, residue.ca) {
+        (true, true, Some(ca)) => {
+            let here = s.atoms[ca as usize].pos;
+            // The neighbours along the same unbroken trace.
+            let chain = &s.chains[residue.chain as usize];
+            let mut ends = Vec::new();
+            for run in ca_runs(s, chain) {
+                if let Some(k) = run.iter().position(|&r| r == atom.residue as usize) {
+                    let at = |k: usize| s.atoms[s.residues[run[k]].ca.unwrap() as usize].pos;
+                    if k > 0 {
+                        ends.push(mix(here, at(k - 1), 0.5));
+                    }
+                    if k + 1 < run.len() {
+                        ends.push(mix(here, at(k + 1), 0.5));
+                    }
+                }
+            }
+            // The rods' own ends round off the sleeve; only a residue on
+            // its own needs a ball.
+            if ends.is_empty() {
+                scene.spheres.push(glow(here, SLEEVE_RADIUS));
+            }
+            scene.capsules.extend(ends.into_iter().map(|end| Capsule {
+                a: here,
+                b: end,
+                r: SLEEVE_RADIUS,
+                ca: HIGHLIGHT,
+                cb: HIGHLIGHT,
+                alpha: 0.5,
+            }));
         }
-    };
+        (true, _, _) => {
+            scene.spheres.extend(
+                (0..s.atoms.len())
+                    .filter(|&i| s.atoms[i].residue == atom.residue && !paint.looks[i].hidden())
+                    .map(|i| glow(s.atoms[i].pos, drawn(i) + 0.5)),
+            );
+        }
+        (false, _, _) => {
+            let i = picked.atom;
+            scene.spheres.push(Sphere {
+                alpha: 0.6,
+                ..glow(atom.pos, drawn(i) + 0.7)
+            });
+        }
+    }
     settle(&mut scene, style);
     scene
 }
+
+/// How far the glow on a picked residue reaches out from the trace: past
+/// the ribbon's edges, seen flat.
+const SLEEVE_RADIUS: f32 = 1.9;
 
 /// The edges of the simulation cell, as fine dark rods sized to the box.
 /// A crystal with the periodic copies of its atoms that fall on the cell's far
@@ -3044,26 +3083,23 @@ mod tests {
     }
 
     #[test]
-    fn a_picked_residue_shows_its_atoms() {
+    fn a_picked_residue_glows_without_new_atoms() {
         let s = sample("1crn.pdb.gz");
         let ca = s.residues[20].ca.unwrap() as usize;
         let picked = Picked { atom: ca, residue: true, depth: 0.0 };
-        let scene = build_highlight(
-            &s, picked, Repr::Cartoon, Style::Soft, Palette::Spectrum, false, &Appearance::default(),
-        );
+        let look = Appearance::default();
+        // On a ribbon, a sleeve halfway to each neighbour, and no atoms.
+        let ribbon = build_highlight(&s, picked, Repr::Cartoon, Style::Soft, &look);
+        assert!(ribbon.spheres.is_empty());
+        assert_eq!(ribbon.capsules.len(), 2);
+        let all = ribbon.spheres.iter().map(|p| p.alpha).chain(ribbon.capsules.iter().map(|c| c.alpha));
+        assert!(all.into_iter().all(|a| a < 1.0), "the glow hides what it marks");
+        // In atoms, a glow on each of its atoms.
         let atoms = s.atoms.iter().filter(|a| a.residue == 20).count();
-        // Each atom as a ball and in a glow, with the bonds between them.
-        assert_eq!(scene.spheres.len(), atoms * 2);
-        assert!(!scene.capsules.is_empty());
-        let one = build_highlight(
-            &s,
-            Picked { residue: false, ..picked },
-            Repr::Spacefill,
-            Style::Soft,
-            Palette::Spectrum,
-            false,
-            &Appearance::default(),
-        );
+        let sticks = build_highlight(&s, picked, Repr::BallAndStick, Style::Soft, &look);
+        assert_eq!(sticks.spheres.len(), atoms);
+        assert!(sticks.capsules.is_empty());
+        let one = build_highlight(&s, Picked { residue: false, ..picked }, Repr::Spacefill, Style::Soft, &look);
         assert_eq!(one.spheres.len(), 1);
         assert!(one.spheres[0].alpha < 1.0);
     }
