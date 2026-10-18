@@ -32,20 +32,6 @@ pub enum Input {
 }
 
 impl Input {
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Input::File(_) => "FILE",
-            Input::Sequence(_) => "SEQUENCE",
-            Input::Pdb(_) => "PDB ID",
-            Input::UniProt(_) => "UNIPROT",
-            Input::Cid(_) => "PUBCHEM",
-            Input::Query(_) => "SEARCH",
-            Input::Missing(_) => "FILE",
-            Input::Empty => "",
-            Input::Unknown => "UNRECOGNISED",
-        }
-    }
-
     pub fn detail(&self) -> String {
         match self {
             Input::File(p) => p

@@ -511,7 +511,7 @@ pub struct Viewer {
 impl Viewer {
     pub fn new(mode: Mode, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let placeholder = match mode {
-            Mode::View => "Search by name or gene, or paste an ID",
+            Mode::View => "Search or paste anything",
             Mode::Fold => "Sequence, PDB ID or accession",
         };
         let input = cx.new(|cx| TextInput::new(placeholder, cx));
@@ -4262,25 +4262,25 @@ impl Viewer {
     /// The logo and what the tab is for, at the head of the panel.
     fn masthead(&self) -> impl IntoElement {
         let (name, purpose) = match self.mode {
-            Mode::View => ("profold", "proteins, molecules and crystals"),
-            Mode::Fold => ("Fold a protein", "structure prediction with Apple's SimpleFold"),
+            Mode::View => ("profold", "Proteins, molecules and crystals"),
+            Mode::Fold => ("Fold a protein", "Structure prediction with Apple's SimpleFold"),
         };
         div()
             .flex()
             .items_center()
-            .gap(px(11.))
+            .gap(px(10.))
             .px(px(20.))
-            .child(gpui::img(self.mark.clone()).size(px(40.)).flex_none())
+            .child(gpui::img(self.mark.clone()).size(px(32.)).flex_none())
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .gap(px(1.))
-                    .child(div().text_size(px(17.)).text_color(theme::ink()).child(name))
+                    .child(div().text_size(px(16.)).text_color(theme::ink()).child(name))
                     .child(
                         div()
-                            .text_size(px(10.5))
-                            .text_color(theme::faint())
+                            .text_size(px(11.))
+                            .text_color(theme::muted())
                             .child(purpose),
                     ),
             )
@@ -4304,83 +4304,93 @@ impl Viewer {
         let busy = self.busy.is_some();
         let action = if folding { "Fold" } else { detected.action() };
 
+        let empty = detected == Input::Empty;
+        // What the field holds, named inside it, beside the key that acts on it.
+        let kind = match &detected {
+            Input::Sequence(s) => format!("Sequence · {} aa", s.len()),
+            Input::Pdb(_) => "PDB ID".into(),
+            Input::UniProt(_) => "UniProt".into(),
+            Input::Cid(_) => "PubChem".into(),
+            Input::File(_) | Input::Missing(_) => "File".into(),
+            Input::Query(_) if folding => "Not foldable".into(),
+            Input::Query(_) => "Search".into(),
+            Input::Unknown => "Unrecognised".into(),
+            Input::Empty => String::new(),
+        };
         let run = div()
             .id("run")
             .debug_selector(|| "run".into())
             .flex_none()
-            .h(px(38.))
-            .min_w(px(68.))
-            .px(px(15.))
+            .h(px(26.))
+            .px(px(9.))
             .flex()
             .items_center()
-            .justify_center()
-            .rounded(px(8.))
-            .text_size(px(11.5))
+            .gap(px(5.))
+            .rounded(px(6.))
+            .text_size(px(11.))
             .when(ready && !busy, |d| {
                 d.bg(theme::ink())
                     .text_color(theme::on_ink())
                     .hover(|s| s.opacity(0.86))
                     .cursor_pointer()
             })
-            .when(!ready || busy, |d| d.bg(theme::sunken()).text_color(theme::faint()))
-            .child(action)
+            .when(!ready || busy, |d| {
+                d.border_1().border_color(theme::border()).text_color(theme::faint())
+            })
+            .when(!empty, |d| d.child(div().text_size(px(11.)).child(action)))
+            .child("↵")
             .on_click(cx.listener(|this, _, _, cx| this.submit(cx)));
+        // A name search says so on its button; the chip would only repeat it.
+        let chip = (!empty && !(matches!(detected, Input::Query(_)) && !folding)).then(|| {
+            div()
+                .flex_none()
+                .px(px(7.))
+                .py(px(2.))
+                .rounded(px(4.))
+                .bg(theme::sunken())
+                .text_size(px(10.5))
+                .text_color(if ready { theme::text() } else { theme::muted() })
+                .child(kind)
+        });
 
+        let hint = |text: String| {
+            div()
+                .min_w_0()
+                .truncate()
+                .text_size(px(10.5))
+                .text_color(theme::faint())
+                .child(text)
+                .into_any_element()
+        };
+        let choosing = self.dropdown && !self.hits.is_empty();
         let status = match &detected {
-            Input::Empty => None,
-            Input::Unknown => Some(
-                div()
-                    .text_size(px(10.5))
-                    .text_color(theme::faint())
-                    .child(detected.detail())
-                    .into_any_element(),
-            ),
-            Input::Query(_) if folding => Some(
-                div()
-                    .text_size(px(10.5))
-                    .text_color(theme::faint())
-                    .child("not a sequence, PDB ID or accession")
-                    .into_any_element(),
-            ),
-            other => Some(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .min_w_0()
-                    .child(
+            Input::Empty if folding => Some(hint("A sequence, PDB ID or UniProt accession".into())),
+            Input::Empty => Some(hint("Names, genes, PDB and UniProt IDs, CIDs, sequences or files".into())),
+            Input::Query(_) if folding => Some(hint("Not a sequence, PDB ID or accession".into())),
+            Input::Query(_) if choosing => Some(hint("↑↓ to choose · ↵ to open · esc to close".into())),
+            Input::Query(_) => Some(hint("Searches the PDB, AlphaFold DB and PubChem".into())),
+            Input::Sequence(_) if !folding => Some(hint("Looked up in the PDB by sequence".into())),
+            Input::Unknown | Input::Missing(_) | Input::File(_) => Some(hint(detected.detail())),
+            _ if comparable => Some(hint("Fold it, or fold and compare with the deposit".into())),
+            _ => None,
+        }
+        .map(|h| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .min_w_0()
+                .child(h)
+                .when(self.searching.is_some(), |d| {
+                    d.child(
                         div()
                             .flex_none()
-                            .text_size(px(9.))
-                            .text_color(theme::muted())
-                            .child(match other {
-                                Input::Sequence(_) if !folding => "SEQUENCE SEARCH",
-                                _ => other.kind(),
-                            }),
+                            .text_size(px(10.))
+                            .text_color(theme::faint())
+                            .child("searching…"),
                     )
-                    .child(
-                        div()
-                            .font_family(theme::MONO)
-                            .text_size(px(11.))
-                            .text_color(theme::text())
-                            .truncate()
-                            .child(match other {
-                                Input::Sequence(s) if !folding => format!("{} aa in the PDB", s.len()),
-                                _ => other.detail(),
-                            }),
-                    )
-                    .when(self.searching.is_some(), |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .text_size(px(10.))
-                                .text_color(theme::faint())
-                                .child("searching…"),
-                        )
-                    })
-                    .into_any_element(),
-            ),
-        };
+                })
+        });
 
         div()
             .relative()
@@ -4400,9 +4410,11 @@ impl Viewer {
                             .min_w_0()
                             .flex()
                             .items_center()
-                            .h(px(38.))
-                            .px(px(11.))
-                            .rounded(px(8.))
+                            .gap(px(6.))
+                            .h(px(40.))
+                            .pl(px(12.))
+                            .pr(px(7.))
+                            .rounded(px(9.))
                             .bg(if focused { theme::surface() } else { theme::sunken() })
                             .border_1()
                             .border_color(if focused {
@@ -4412,7 +4424,6 @@ impl Viewer {
                             })
                             .text_size(px(12.5))
                             .text_color(theme::text())
-                            .font_family(theme::MONO)
                             // Back into the field, the list comes back with it.
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -4425,9 +4436,18 @@ impl Viewer {
                                     }
                                 }),
                             )
-                            .child(self.input.clone()),
-                    )
-                    .child(run),
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    // Typed text is set in mono, for sequences and
+                                    // IDs; the placeholder reads as prose.
+                                    .when(!empty, |d| d.font_family(theme::MONO))
+                                    .child(self.input.clone()),
+                            )
+                            .when_some(chip, |d, c| d.child(c))
+                            .child(run),
+                    ),
             )
             // While the next entry is to be laid over this one, say so.
             .when(self.overlay_next && !busy, |d| {
