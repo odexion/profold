@@ -833,8 +833,8 @@ impl Scene {
         style: Style,
         faint: bool,
     ) {
-        let gold = highlight_color(style);
-        let paint = |c: [f32; 3]| if faint { mix(c, gold, 0.7) } else { gold };
+        let white = highlight_color(style);
+        let paint = |c: [f32; 3]| if faint { mix(c, white, 0.7) } else { white };
         for i in tris {
             if self.tri_residue.get(i) == Some(&residue) {
                 self.tris[i].c = paint(self.tris[i].c);
@@ -1470,7 +1470,7 @@ fn capsule_depth(a: [f32; 3], b: [f32; 3], r: f32, p: [f32; 2]) -> Option<f32> {
 }
 
 /// The colour a picked atom or residue glows with.
-const HIGHLIGHT: [f32; 3] = [1.0, 0.78, 0.18];
+const HIGHLIGHT: [f32; 3] = [1.0, 1.0, 1.0];
 
 /// The highlight's colour as a scene in `style` shows it.
 fn highlight_color(style: Style) -> [f32; 3] {
@@ -3144,7 +3144,7 @@ mod tests {
             assert_eq!(base.capsule_residue.len(), base.capsules.len());
             let mut painted = base.clone();
             painted.paint_residue(0..base.tris.len(), 0..base.capsules.len(), 20, Style::Soft, false);
-            let gold = highlight_color(Style::Soft);
+            let white = highlight_color(Style::Soft);
             let changed: Vec<u32> = (0..base.tris.len())
                 .filter(|&i| painted.tris[i].c != base.tris[i].c)
                 .map(|i| base.tri_residue[i])
@@ -3156,12 +3156,12 @@ mod tests {
                 .collect();
             assert!(!changed.is_empty(), "{repr:?}: nothing painted");
             assert!(changed.iter().all(|&r| r == 20), "{repr:?}: another residue painted");
-            assert!(painted.tris.iter().filter(|t| t.c == gold).count() + painted.capsules.iter().filter(|c| c.ca == gold).count() > 0);
+            assert!(painted.tris.iter().filter(|t| t.c == white).count() + painted.capsules.iter().filter(|c| c.ca == white).count() > 0);
             // Most of the way is neither the ribbon's colour nor the highlight's.
             let mut faint = base.clone();
             faint.paint_residue(0..base.tris.len(), 0..base.capsules.len(), 20, Style::Soft, true);
-            assert!(faint.tris.iter().all(|t| t.c != gold));
-            assert!(faint.capsules.iter().all(|c| c.ca != gold));
+            assert!(faint.tris.iter().all(|t| t.c != white));
+            assert!(faint.capsules.iter().all(|c| c.ca != white));
         }
         // Merged with atoms beside it, the lists still line up.
         let mut both = scene(&s, Repr::BallAndStick, Coloring::Chain, false);
