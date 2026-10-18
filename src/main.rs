@@ -6,6 +6,7 @@
 
 mod align;
 mod bonds;
+mod contacts;
 mod dssp;
 mod elements;
 mod fetch;

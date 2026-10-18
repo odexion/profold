@@ -24,6 +24,7 @@ use crate::align;
 use crate::fetch::{self, Input, Retrieval};
 use crate::formats;
 use crate::job::{self, Event, Outcome};
+use crate::contacts;
 use crate::measure::{self, Measurement};
 use crate::protein::{LigandPaint, Source, Structure};
 use crate::render::{
@@ -155,6 +156,10 @@ struct Target {
 struct Site {
     ligand: usize,
     residues: Vec<usize>,
+    /// What holds the ligand there, and what bumps into it.
+    contacts: Vec<contacts::Contact>,
+    /// Kinds of contact whose lines are not drawn.
+    hidden: Vec<contacts::Kind>,
 }
 
 /// How close a residue comes to a ligand to count as its binding site, in
@@ -920,7 +925,8 @@ impl Viewer {
         let mut points: Vec<[f32; 3]> = s.residue_atoms(ligand).iter().map(|&i| s.atoms[i].pos).collect();
         let (centre, _) = spread(points.iter().copied());
         points.extend(residues.iter().filter_map(|&r| s.side_chain_centre(r)));
-        self.site = Some(Site { ligand, residues });
+        let found = contacts::between(&s, ligand, &residues);
+        self.site = Some(Site { ligand, residues, contacts: found, hidden: Vec::new() });
         self.compose(cx);
         // Round the ligand, so that it and its neighbours are all in view.
         let reach = points
@@ -5097,7 +5103,11 @@ impl Viewer {
     /// through the middle of a protein is not lost inside it: dashes, dark
     /// under yellow, to stand out on either page.
     fn measure_lines(&self) -> Option<gpui::AnyElement> {
-        let segments = self.measure_segments();
+        // Measurements in yellow, and the binding site's contacts each in
+        // their kind's colour.
+        let mut segments: Vec<(Point<Pixels>, Point<Pixels>, u32)> =
+            self.measure_segments().into_iter().map(|(a, b)| (a, b, 0xffd23f)).collect();
+        segments.extend(self.contact_segments());
         if segments.is_empty() {
             return None;
         }
@@ -5106,18 +5116,26 @@ impl Viewer {
                 |_, _, _| {},
                 move |bounds, _, window, _| {
                     let dash = [px(5.), px(4.)];
-                    for (width, color) in [
-                        (3.5, gpui::Hsla::from(gpui::rgba(0x1a1a1acc))),
-                        (1.75, gpui::Hsla::from(gpui::rgb(0xffd23f))),
-                    ] {
+                    let mut colors: Vec<u32> = segments.iter().map(|s| s.2).collect();
+                    colors.sort_unstable();
+                    colors.dedup();
+                    // All the dark undersides first, so no colour is
+                    // crossed out by another line's.
+                    let stroke = |width: f32, color: gpui::Hsla, only: Option<u32>, window: &mut Window| {
                         let mut path = gpui::PathBuilder::stroke(px(width)).dash_array(&dash);
-                        for &(a, b) in &segments {
-                            path.move_to(bounds.origin + a);
-                            path.line_to(bounds.origin + b);
+                        for &(a, b, c) in &segments {
+                            if only.is_none_or(|o| o == c) {
+                                path.move_to(bounds.origin + a);
+                                path.line_to(bounds.origin + b);
+                            }
                         }
                         if let Ok(path) = path.build() {
                             window.paint_path(path, color);
                         }
+                    };
+                    stroke(3.5, gpui::Hsla::from(gpui::rgba(0x1a1a1acc)), None, window);
+                    for c in colors {
+                        stroke(1.75, gpui::Hsla::from(gpui::rgb(c)), Some(c), window);
                     }
                 },
             )
@@ -5125,6 +5143,35 @@ impl Viewer {
             .inset_0()
             .into_any_element(),
         )
+    }
+
+    /// The binding site's contacts, as drawn in the viewport, with their
+    /// colours; the kinds hidden from its card are left out.
+    fn contact_segments(&self) -> Vec<(Point<Pixels>, Point<Pixels>, u32)> {
+        let (Some(site), Some(s)) = (&self.site, self.shown(0)) else {
+            return Vec::new();
+        };
+        site.contacts
+            .iter()
+            .filter(|c| !site.hidden.contains(&c.kind))
+            .filter_map(|c| {
+                let a = self.project(s.atoms[c.a].pos)?;
+                let b = self.project(s.atoms[c.b].pos)?;
+                Some((a, b, c.kind.color()))
+            })
+            .collect()
+    }
+
+    fn toggle_contacts(&mut self, kind: contacts::Kind, cx: &mut Context<Self>) {
+        if let Some(site) = &mut self.site {
+            match site.hidden.iter().position(|k| *k == kind) {
+                Some(i) => {
+                    site.hidden.remove(i);
+                }
+                None => site.hidden.push(kind),
+            }
+            cx.notify();
+        }
     }
 
     /// Each measurement's figure, written beside it in the viewport.
@@ -5383,6 +5430,41 @@ impl Viewer {
                             "{} residues within {SITE_CUTOFF:.0} Å",
                             site.residues.len()
                         )),
+                )
+                .child(
+                    div().flex().flex_wrap().gap_x(px(10.)).gap_y(px(2.)).children(
+                        contacts::Kind::ALL.iter().filter_map(|&kind| {
+                            let n = site.contacts.iter().filter(|c| c.kind == kind).count();
+                            if n == 0 {
+                                return None;
+                            }
+                            let shown = !site.hidden.contains(&kind);
+                            Some(
+                                div()
+                                    .id(("contact-kind", kind as usize))
+                                    .debug_selector(move || format!("contacts-{kind:?}"))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(5.))
+                                    .cursor_pointer()
+                                    .text_size(px(10.))
+                                    .text_color(if shown { theme::text() } else { theme::faint() })
+                                    .child(
+                                        div()
+                                            .w(px(12.))
+                                            .h(px(3.))
+                                            .rounded(px(1.5))
+                                            .when(shown, |d| d.bg(gpui::rgb(kind.color())))
+                                            .when(!shown, |d| d.border_1().border_color(theme::faint())),
+                                    )
+                                    .child(format!("{n} {}", kind.label(n)))
+                                    .tooltip(move |_, cx| {
+                                        cx.new(|_| Tip(if shown { "Hide these" } else { "Show these" }.into())).into()
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_contacts(kind, cx))),
+                            )
+                        }),
+                    ),
                 )
                 .into_any_element(),
         )
@@ -5887,6 +5969,20 @@ mod ui_tests {
             spread(s.residue_atoms(first.ligand).iter().map(|&i| s.atoms[i].pos)).0
         });
         assert!((0..3).all(|k| (centre[k] - haem[k]).abs() < 1e-3));
+
+        // What holds it: the iron on its histidine among them, drawn, and
+        // hidden from the card.
+        let (kinds, lines) = view.update(cx, |this, _| {
+            let site = this.site.as_ref().unwrap();
+            (site.contacts.iter().map(|c| c.kind).collect::<Vec<_>>(), this.contact_segments().len())
+        });
+        assert!(kinds.contains(&contacts::Kind::Metal), "{kinds:?}");
+        assert_eq!(lines, kinds.len());
+        click(cx, "contacts-Metal");
+        let metals = kinds.iter().filter(|k| **k == contacts::Kind::Metal).count();
+        assert_eq!(view.update(cx, |this, _| this.contact_segments().len()), lines - metals);
+        click(cx, "contacts-Metal");
+        assert_eq!(view.update(cx, |this, _| this.contact_segments().len()), lines);
 
         // On to the next haem, and back out.
         click(cx, "next-site");
