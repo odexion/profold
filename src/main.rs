@@ -88,7 +88,16 @@ fn main() {
                 // the SimpleFold plugin, `--fold` predicts an entry in a fold
                 // tab instead of fetching it, and `--compare` does both and
                 // lays one over the other.
-                let args: Vec<String> = std::env::args().skip(1).collect();
+                let mut args: Vec<String> = std::env::args().skip(1).collect();
+                // `--run script.txt` runs a script of console commands in the
+                // first tab, once what it opens has opened.
+                let script = args.iter().position(|a| a == "--run").map(|i| {
+                    let file = args.get(i + 1).cloned().unwrap_or_default();
+                    args.drain(i..(i + 2).min(args.len()));
+                    std::fs::read_to_string(&file)
+                        .map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
+                        .unwrap_or_else(|e| vec![format!("# could not read {file}: {e}")])
+                });
                 let verb = args.first().filter(|a| a.starts_with("--")).cloned();
                 let targets = &args[usize::from(verb.is_some())..];
                 view.update(cx, |this, cx| {
@@ -131,6 +140,9 @@ fn main() {
                                 });
                             }
                         }
+                    }
+                    if let Some(lines) = script {
+                        this.active().update(cx, |tab, cx| tab.queue_script(lines, cx));
                     }
                     // `PROFOLD_TYPE=caffeine` types into the field without
                     // pressing Return, for looking at the search results.

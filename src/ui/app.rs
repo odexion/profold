@@ -30,6 +30,8 @@ use crate::formats::write;
 
 #[path = "session.rs"]
 mod session;
+#[path = "console.rs"]
+mod console;
 use crate::measure::{self, Measurement};
 use crate::protein::{LigandPaint, Source, Structure};
 use crate::render::{
@@ -433,6 +435,14 @@ pub struct Viewer {
     select_error: Option<SharedString>,
     /// Viewpoints saved to come back to, in the order saved.
     views: Vec<Camera>,
+    /// The console: whether it is open, where commands are typed, what came
+    /// of them, the commands typed before, and a script's lines yet to run.
+    console_open: bool,
+    console_input: Entity<TextInput>,
+    console_log: Vec<(bool, String)>,
+    console_history: Vec<String>,
+    console_back: usize,
+    script: Vec<String>,
     /// What can be undone, the present last, and what was undone, to redo.
     history: Vec<ShownAs>,
     undone: Vec<ShownAs>,
@@ -511,6 +521,38 @@ impl Viewer {
             }
             InputEvent::Up => this.step_highlight(-1, cx),
             InputEvent::Down => this.step_highlight(1, cx),
+        })
+        .detach();
+
+        let console_input = cx.new(|cx| TextInput::new("a command, or help", cx));
+        cx.subscribe_in(&console_input, window, |this, input, event, window, cx| match event {
+            InputEvent::Submit => {
+                let line = input.read(cx).text().to_string();
+                input.update(cx, |i, cx| i.set_text("", cx));
+                if !line.trim().is_empty() {
+                    this.console_history.push(line.clone());
+                }
+                this.console_back = 0;
+                let result = this.run_command(&line, cx);
+                this.say(&line, result);
+                cx.notify();
+            }
+            InputEvent::Up | InputEvent::Down => {
+                // Back through what was typed, and forward again.
+                let n = this.console_history.len();
+                this.console_back = match event {
+                    InputEvent::Up => (this.console_back + 1).min(n),
+                    _ => this.console_back.saturating_sub(1),
+                };
+                let text = if this.console_back == 0 { String::new() } else { this.console_history[n - this.console_back].clone() };
+                input.update(cx, |i, cx| i.set_text(text, cx));
+            }
+            InputEvent::Cancel => {
+                this.console_open = false;
+                window.focus(&this.focus);
+                cx.notify();
+            }
+            InputEvent::Changed => {}
         })
         .detach();
 
@@ -624,6 +666,12 @@ impl Viewer {
             select_input,
             select_error: None,
             views: Vec::new(),
+            console_open: false,
+            console_input,
+            console_log: Vec::new(),
+            console_history: Vec::new(),
+            console_back: 0,
+            script: Vec::new(),
             history: Vec::new(),
             undone: Vec::new(),
             last_change: std::time::Instant::now(),
@@ -1504,10 +1552,15 @@ impl Viewer {
                     }
                 ));
                 self.show(s, cx);
+                let rest = std::mem::take(&mut self.script);
+                if !rest.is_empty() {
+                    self.run_script(rest, cx);
+                }
             }
             Err(e) => {
                 self.opening = None;
                 self.overlay_next = false;
+                self.script.clear();
                 self.error = Some(format!("{e:#}").into());
                 cx.notify();
             }
@@ -2580,6 +2633,75 @@ impl Viewer {
         cx.notify();
     }
 
+    /// Open the console, or close it, putting the cursor in it.
+    pub fn toggle_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.console_open = !self.console_open;
+        if self.console_open {
+            window.focus(&self.console_input.read(cx).focus_handle(cx));
+        } else {
+            window.focus(&self.focus);
+        }
+        cx.notify();
+    }
+
+    /// Lines to run once what is being opened has opened, or at once if
+    /// nothing is, as `--run` gives them.
+    pub fn queue_script(&mut self, lines: Vec<String>, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            self.script = lines;
+        } else {
+            self.run_script(lines, cx);
+        }
+    }
+
+    /// The console, at the foot of the viewport: the last few commands and
+    /// what came of them, over the line to type the next in.
+    fn console_view(&self) -> Option<gpui::AnyElement> {
+        if !self.console_open {
+            return None;
+        }
+        let bottom = if self.frame_count() > 1 { 104. } else { 62. };
+        let start = self.console_log.len().saturating_sub(5);
+        Some(
+            div()
+                .id("console")
+                .debug_selector(|| "console".into())
+                .absolute()
+                .left(px(20.))
+                .right(px(20.))
+                .bottom(px(bottom))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .p(px(8.))
+                .rounded(px(8.))
+                .bg(theme::surface())
+                .border_1()
+                .border_color(theme::border())
+                .shadow_sm()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .children(self.console_log[start..].iter().map(|(ok, text)| {
+                    div()
+                        .font_family(theme::MONO)
+                        .text_size(px(10.5))
+                        .text_color(if *ok { theme::muted() } else { theme::ink() })
+                        .child(clip(text, 140))
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .font_family(theme::MONO)
+                        .text_size(px(11.5))
+                        .text_color(theme::text())
+                        .child(div().text_color(theme::faint()).child("›"))
+                        .child(div().flex_1().child(self.console_input.clone())),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// Show the keyboard shortcuts, or put them away.
     pub fn toggle_shortcuts(&mut self, cx: &mut Context<Self>) {
         self.shortcuts = !self.shortcuts;
@@ -2655,6 +2777,8 @@ impl Viewer {
                     ("⌃⌘1 – ⌃⌘4", "Illustrative … Studio"),
                     ("⌘0", "Reset the view"),
                     ("⇧⌘D", "Light or dark"),
+                    ("⌘K", "The console"),
+                    ("⌘Z  ⇧⌘Z", "Undo, redo"),
                     ("⌘/", "These shortcuts"),
                 ],
             ),
@@ -6658,6 +6782,7 @@ impl Viewer {
                         )),
                 )
             })
+            .children(self.console_view())
             .children(self.shortcut_sheet(cx))
     }
 }
