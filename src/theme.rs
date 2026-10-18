@@ -10,14 +10,34 @@ use gpui::Hsla;
 /// Whether the window is drawn dark. One switch for the whole app, read by
 /// every colour below and by the rasterizer's page. Light unless asked,
 /// whatever the system is set to.
+#[cfg(not(test))]
 static DARK: AtomicBool = AtomicBool::new(false);
 
+// Tests run side by side, and one that turns the window dark must not tint
+// another's render halfway through: each test thread keeps its own switch.
+#[cfg(test)]
+thread_local! {
+    static DARK: AtomicBool = const { AtomicBool::new(false) };
+}
+
+#[cfg(not(test))]
 pub fn dark() -> bool {
     DARK.load(Ordering::Relaxed)
 }
 
+#[cfg(not(test))]
 pub fn set_dark(dark: bool) {
     DARK.store(dark, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub fn dark() -> bool {
+    DARK.with(|d| d.load(Ordering::Relaxed))
+}
+
+#[cfg(test)]
+pub fn set_dark(dark: bool) {
+    DARK.with(|d| d.store(dark, Ordering::Relaxed));
 }
 
 const fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
