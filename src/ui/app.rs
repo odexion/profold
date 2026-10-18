@@ -6856,7 +6856,8 @@ impl Viewer {
         let whose = (self.compare.is_some() && self.visible().len() > 1)
             .then(|| {
                 let s = if t.which == 0 { self.structure.as_ref() } else { self.compare.as_ref() };
-                s.map(|s| s.id.to_uppercase()).unwrap_or_default()
+                let tint = if t.which == 0 { align::REFERENCE_TINT } else { align::PREDICTION_TINT };
+                (s.map(|s| s.id.to_uppercase()).unwrap_or_default(), tint)
             });
         let on_ink = theme::on_ink();
         let soft = |a: f32| gpui::Hsla { a, ..on_ink };
@@ -6880,9 +6881,15 @@ impl Viewer {
             (_, None, Some((k, name))) => {
                 (name.clone(), species_color(&Species::Kind(name.clone()), self.palette.chain(*k)), true)
             }
+            // A ligand has no letter; its code stands in.
+            (Some(('X', _, c)), None, None) => {
+                (card.tag.split(' ').next().unwrap_or("").to_string(), c, false)
+            }
             (Some((code, _, c)), None, None) => (code.to_string(), c, false),
             (None, None, None) => ("·".to_string(), [0.55, 0.55, 0.58], true),
         };
+        // Three letters is all that fits.
+        let badge: String = badge.chars().take(3).collect();
         let light = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2] > 0.62;
         let badge = div()
             .flex_none()
@@ -6893,7 +6900,14 @@ impl Viewer {
             .when(round, |d| d.rounded_full())
             .when(!round, |d| d.rounded(px(6.)))
             .bg(swatch(color))
-            .text_size(px(if badge.chars().count() > 1 { 11. } else { 13. }))
+            // A pale badge, hydrogen's, would melt into a pale card.
+            .border_1()
+            .border_color(gpui::Hsla { a: 0.12, ..gpui::black() })
+            .text_size(px(match badge.chars().count() {
+                0 | 1 => 13.,
+                2 => 11.,
+                _ => 9.5,
+            }))
             .font_weight(gpui::FontWeight::BOLD)
             .text_color(if light { gpui::rgb(0x1d1d22) } else { gpui::rgb(0xffffff) })
             .child(badge);
@@ -6933,7 +6947,7 @@ impl Viewer {
                 .gap(px(8.))
                 .child(
                     div()
-                        .w(px(54.))
+                        .w(px(64.))
                         .flex_none()
                         .text_size(px(9.))
                         .text_color(soft(0.5))
@@ -7024,8 +7038,14 @@ impl Viewer {
                 .text_color(on_ink)
                 .shadow_lg()
                 .whitespace_nowrap()
-                .children(whose.map(|w| {
-                    div().text_size(px(9.)).text_color(soft(0.55)).child(spaced(&w))
+                // Which of the pair, in its colour from the pills above.
+                .children(whose.map(|(w, tint)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .child(div().size(px(6.)).rounded_full().bg(swatch(tint)))
+                        .child(div().text_size(px(9.)).text_color(soft(0.6)).child(spaced(&w)))
                 }))
                 .child(header)
                 .when(!rows.is_empty(), |d| {

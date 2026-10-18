@@ -529,3 +529,46 @@ fn force_field_names_are_amino_acids() {
         assert_eq!(crate::protein::three_to_one(name), code, "{name}");
     }
 }
+
+#[test]
+fn cards_name_what_lies_beside_a_polymer() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/4hhb.pdb.gz");
+    let s = load_bytes("4hhb.pdb.gz", std::fs::read(path).unwrap()).unwrap();
+    let first = |name: &str| s.atoms.iter().position(|a| s.residues[a.residue as usize].name == name).unwrap();
+    let haem = s.card(first("HEM"), false).unwrap();
+    assert_eq!((haem.title.as_str(), haem.class.map(|c| c.1)), ("Heme", Some("ligand")));
+    assert!(haem.ss.is_none());
+    let water = s.card(first("HOH"), false).unwrap();
+    assert_eq!((water.title.as_str(), water.class.map(|c| c.1)), ("Water", Some("solvent")));
+}
+
+#[test]
+fn cards_for_nucleic_acids_and_ions() {
+    // 1BNA's first three nucleotides, the last made a methylcytidine,
+    // and an ion.
+    let pdb = format!(
+        "{}HETATM   58 MG    MG A 101      10.000  10.000  10.000  1.00 20.00          MG\n",
+        CGC.replace(" DC A   3", "5MC A   3")
+    );
+    let s = read(&pdb, Format::Pdb);
+    let g = s.card(16, false).unwrap();
+    assert_eq!((g.title.as_str(), g.class.map(|c| c.1)), ("Deoxyguanosine", Some("purine")));
+    // A nucleic acid's strand has no helix or strand of a protein's kind.
+    assert!(g.ss.is_none());
+    let m = s.card(38, false).unwrap();
+    assert_eq!(m.title, "Modified cytidine");
+    let mg = s.card(57, false).unwrap();
+    assert_eq!((mg.title.as_str(), mg.class.map(|c| c.1)), ("Magnesium", Some("ion")));
+    // The ion's one atom is not named twice.
+    assert!(mg.atom.is_none());
+}
+
+#[test]
+fn a_simulation_names_its_atoms_by_type() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/lj-melt.lammpstrj.gz");
+    let s = load_bytes("lj-melt.lammpstrj.gz", std::fs::read(path).unwrap()).unwrap();
+    let card = s.card(0, false).unwrap();
+    assert_eq!(card.title, "Type 1");
+    assert_eq!(card.kind, Some((0, "1".to_string())));
+    assert!(card.element.is_none());
+}

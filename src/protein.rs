@@ -646,17 +646,17 @@ impl Structure {
             pos: (!residue).then_some(a.pos),
         };
         if named {
-            let class = residue_class(r);
-            card.title = class.map_or(r.name.trim(), |c| c.1).to_string();
+            let (kind, title, color) = residue_class(r, a.element);
+            card.title = title;
             card.tag = format!("{} {}", r.name.trim(), r.seq);
-            card.class = class.map(|c| (residue_code(r), c.0, c.2)).or_else(|| {
-                let kind = if is_solvent(r.name.trim()) { "solvent" } else { "ligand" };
-                r.outside_polymer().then(|| (r.code, kind, [0.55, 0.55, 0.58]))
-            });
-            if !r.outside_polymer() {
+            card.class = Some((residue_code(r), kind, color));
+            // Helix, strand and coil are a protein's; a nucleic acid's
+            // strand is always "coil".
+            if r.ca.is_some() {
                 card.ss = Some(r.ss);
             }
-            if !residue && !a.name().is_empty() {
+            // An ion's one atom goes by the ion's name.
+            if !residue && !a.name().is_empty() && a.name() != r.name.trim() {
                 card.atom = Some(a.name().to_string());
             }
         } else {
@@ -1168,49 +1168,150 @@ pub fn residue_code(r: &Residue) -> char {
 }
 
 /// The kind of residue, its full name, and the kind's colour: amino acids
-/// by their side chains, as a biochemist sorts them.
-fn residue_class(r: &Residue) -> Option<(&'static str, &'static str, [f32; 3])> {
+/// by their side chains, as a biochemist sorts them, bases as purines and
+/// pyrimidines, and what lies beside a polymer by the common names of the
+/// usual ligands and ions. `element` is the atom pointed at's, which names
+/// an ion that has no name of its own here.
+fn residue_class(r: &Residue, element: Element) -> (&'static str, String, [f32; 3]) {
     const HYDROPHOBIC: [f32; 3] = [0.85, 0.60, 0.22];
     const POLAR: [f32; 3] = [0.18, 0.62, 0.56];
     const POSITIVE: [f32; 3] = [0.27, 0.45, 0.86];
     const NEGATIVE: [f32; 3] = [0.86, 0.30, 0.32];
     const SPECIAL: [f32; 3] = [0.58, 0.50, 0.74];
-    const NUCLEIC: [f32; 3] = [0.40, 0.62, 0.30];
-    let out = match r.name.trim() {
-        "ALA" => ("hydrophobic", "Alanine", HYDROPHOBIC),
-        "VAL" => ("hydrophobic", "Valine", HYDROPHOBIC),
-        "LEU" => ("hydrophobic", "Leucine", HYDROPHOBIC),
-        "ILE" => ("hydrophobic", "Isoleucine", HYDROPHOBIC),
-        "MET" => ("hydrophobic", "Methionine", HYDROPHOBIC),
-        "MSE" => ("hydrophobic", "Selenomethionine", HYDROPHOBIC),
-        "PHE" => ("aromatic", "Phenylalanine", HYDROPHOBIC),
-        "TRP" => ("aromatic", "Tryptophan", HYDROPHOBIC),
-        "TYR" => ("aromatic, polar", "Tyrosine", POLAR),
-        "SER" => ("polar", "Serine", POLAR),
-        "THR" => ("polar", "Threonine", POLAR),
-        "ASN" => ("polar", "Asparagine", POLAR),
-        "GLN" => ("polar", "Glutamine", POLAR),
-        "CYS" => ("polar, thiol", "Cysteine", POLAR),
-        "LYS" => ("positive", "Lysine", POSITIVE),
-        "ARG" => ("positive", "Arginine", POSITIVE),
-        "HIS" | "HID" | "HIE" | "HIP" | "HSD" | "HSE" | "HSP" => ("positive", "Histidine", POSITIVE),
-        "ASP" => ("negative", "Aspartate", NEGATIVE),
-        "GLU" => ("negative", "Glutamate", NEGATIVE),
-        "GLY" => ("flexible", "Glycine", SPECIAL),
-        "PRO" => ("rigid", "Proline", SPECIAL),
-        "A" => ("nucleotide", "Adenosine", NUCLEIC),
-        "G" => ("nucleotide", "Guanosine", NUCLEIC),
-        "C" => ("nucleotide", "Cytidine", NUCLEIC),
-        "U" => ("nucleotide", "Uridine", NUCLEIC),
-        "DA" => ("nucleotide", "Deoxyadenosine", NUCLEIC),
-        "DG" => ("nucleotide", "Deoxyguanosine", NUCLEIC),
-        "DC" => ("nucleotide", "Deoxycytidine", NUCLEIC),
-        "DT" => ("nucleotide", "Thymidine", NUCLEIC),
-        _ if r.nucleic.is_some() => ("nucleotide", "Nucleotide", NUCLEIC),
-        _ if !r.outside_polymer() => ("residue", "Residue", SPECIAL),
-        _ => return None,
+    const LIGAND: [f32; 3] = [0.55, 0.55, 0.58];
+    const WATER: [f32; 3] = [0.42, 0.66, 0.90];
+    let name = r.name.trim();
+    let amino = match name {
+        "ALA" => Some(("hydrophobic", "Alanine", HYDROPHOBIC)),
+        "VAL" => Some(("hydrophobic", "Valine", HYDROPHOBIC)),
+        "LEU" => Some(("hydrophobic", "Leucine", HYDROPHOBIC)),
+        "ILE" => Some(("hydrophobic", "Isoleucine", HYDROPHOBIC)),
+        "MET" => Some(("hydrophobic", "Methionine", HYDROPHOBIC)),
+        "MSE" => Some(("hydrophobic", "Selenomethionine", HYDROPHOBIC)),
+        "PHE" => Some(("aromatic", "Phenylalanine", HYDROPHOBIC)),
+        "TRP" => Some(("aromatic", "Tryptophan", HYDROPHOBIC)),
+        "TYR" => Some(("aromatic, polar", "Tyrosine", POLAR)),
+        "SER" => Some(("polar", "Serine", POLAR)),
+        "THR" => Some(("polar", "Threonine", POLAR)),
+        "ASN" => Some(("polar", "Asparagine", POLAR)),
+        "GLN" => Some(("polar", "Glutamine", POLAR)),
+        "CYS" | "CYX" => Some(("polar, thiol", "Cysteine", POLAR)),
+        "LYS" => Some(("positive", "Lysine", POSITIVE)),
+        "ARG" => Some(("positive", "Arginine", POSITIVE)),
+        "HIS" | "HID" | "HIE" | "HIP" | "HSD" | "HSE" | "HSP" => Some(("positive", "Histidine", POSITIVE)),
+        "ASP" => Some(("negative", "Aspartate", NEGATIVE)),
+        "GLU" => Some(("negative", "Glutamate", NEGATIVE)),
+        "GLY" => Some(("flexible", "Glycine", SPECIAL)),
+        "PRO" => Some(("rigid", "Proline", SPECIAL)),
+        "SEP" => Some(("phosphorylated", "Phosphoserine", NEGATIVE)),
+        "TPO" => Some(("phosphorylated", "Phosphothreonine", NEGATIVE)),
+        "PTR" => Some(("phosphorylated", "Phosphotyrosine", NEGATIVE)),
+        _ => None,
     };
-    Some(out)
+    if let Some((kind, title, color)) = amino {
+        return (kind, title.to_string(), color);
+    }
+    let nucleoside = match name {
+        "A" => Some("Adenosine"),
+        "G" => Some("Guanosine"),
+        "C" => Some("Cytidine"),
+        "U" => Some("Uridine"),
+        "DA" => Some("Deoxyadenosine"),
+        "DG" => Some("Deoxyguanosine"),
+        "DC" => Some("Deoxycytidine"),
+        "DT" => Some("Thymidine"),
+        "PSU" => Some("Pseudouridine"),
+        "I" | "DI" => Some("Inosine"),
+        _ => None,
+    };
+    if r.nucleic.is_some() || nucleoside.is_some() {
+        // The base's colour, as nucleic acid diagrams usually draw them.
+        let code = residue_code(r);
+        let (kind, color) = match code {
+            'A' => ("purine", [0.30, 0.66, 0.36]),
+            'G' => ("purine", [0.90, 0.66, 0.20]),
+            'C' => ("pyrimidine", [0.30, 0.50, 0.86]),
+            'T' | 'U' => ("pyrimidine", [0.86, 0.33, 0.33]),
+            _ => ("nucleotide", SPECIAL),
+        };
+        let base = match code {
+            'A' => "adenosine",
+            'G' => "guanosine",
+            'C' => "cytidine",
+            'U' => "uridine",
+            'T' => "thymidine",
+            _ => "nucleotide",
+        };
+        return match nucleoside {
+            Some(title) => (kind, title.to_string(), color),
+            None => (kind, format!("Modified {base}"), color),
+        };
+    }
+    if !r.outside_polymer() {
+        return ("non-standard", "Modified residue".to_string(), SPECIAL);
+    }
+    if is_solvent(name) {
+        return ("solvent", "Water".to_string(), WATER);
+    }
+    let ion = match name {
+        "NA" | "SOD" | "NA+" => Some("Sodium"),
+        "K" | "POT" | "K+" => Some("Potassium"),
+        "MG" => Some("Magnesium"),
+        "CA" | "CAL" => Some("Calcium"),
+        "ZN" => Some("Zinc"),
+        "MN" => Some("Manganese"),
+        "FE" | "FE2" => Some("Iron"),
+        "CU" | "CU1" => Some("Copper"),
+        "NI" => Some("Nickel"),
+        "CO" => Some("Cobalt"),
+        "CD" => Some("Cadmium"),
+        "HG" => Some("Mercury"),
+        "CL" | "CL-" => Some("Chloride"),
+        // CHARMM's chloride, and the PDB's chlorophyll.
+        "CLA" if element.symbol() == "Cl" => Some("Chloride"),
+        "BR" => Some("Bromide"),
+        "IOD" => Some("Iodide"),
+        _ => None,
+    };
+    if let Some(title) = ion {
+        return ("ion", title.to_string(), element.color());
+    }
+    // A residue named for the element of its one atom is an ion too.
+    if element.is_known() && name.eq_ignore_ascii_case(element.symbol()) {
+        return ("ion", name.to_string(), element.color());
+    }
+    let ligand = match name {
+        "HEM" | "HEC" => "Heme",
+        "PO4" => "Phosphate",
+        "SO4" => "Sulfate",
+        "GOL" => "Glycerol",
+        "EDO" => "Ethylene glycol",
+        "PEG" | "PGE" | "1PE" => "Polyethylene glycol",
+        "ACT" | "ACE" => "Acetate",
+        "FMT" => "Formate",
+        "NAG" => "N-Acetylglucosamine",
+        "MAN" => "Mannose",
+        "GLC" | "BGC" => "Glucose",
+        "ATP" => "ATP",
+        "ADP" => "ADP",
+        "AMP" => "AMP",
+        "GTP" => "GTP",
+        "GDP" => "GDP",
+        "NAD" => "NAD",
+        "NAP" => "NADP",
+        "FAD" => "FAD",
+        "FMN" => "FMN",
+        "SAM" => "S-Adenosylmethionine",
+        "COA" => "Coenzyme A",
+        "CLA" => "Chlorophyll a",
+        "CRO" => "GFP chromophore",
+        "DMS" => "DMSO",
+        "TRS" => "Tris",
+        "EPE" => "HEPES",
+        "MES" => "MES",
+        _ => name,
+    };
+    ("ligand", ligand.to_string(), LIGAND)
 }
 
 pub fn is_solvent(name: &str) -> bool {
