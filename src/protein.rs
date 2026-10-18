@@ -319,6 +319,70 @@ impl Structure {
         self.residues.iter().filter(|r| r.ca.is_some()).take(3).count() >= 3
     }
 
+    /// Each copy of a ligand, by residue name: its residues, in file order.
+    pub fn copies(&self, name: &str) -> Vec<usize> {
+        (0..self.residues.len())
+            .filter(|&r| self.residues[r].name == name && self.residues[r].outside_polymer())
+            .collect()
+    }
+
+    /// The atoms of a residue.
+    pub fn residue_atoms(&self, residue: usize) -> Vec<usize> {
+        (0..self.atoms.len()).filter(|&i| self.atoms[i].residue as usize == residue).collect()
+    }
+
+    /// The binding site of residue `of`: the polymer residues with an atom
+    /// within `cutoff` ångström of one of its atoms, in file order.
+    pub fn site(&self, of: usize, cutoff: f32) -> Vec<usize> {
+        let own: Vec<[f32; 3]> = self.residue_atoms(of).iter().map(|&i| self.atoms[i].pos).collect();
+        if own.is_empty() {
+            return Vec::new();
+        }
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for p in &own {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k] - cutoff);
+                hi[k] = hi[k].max(p[k] + cutoff);
+            }
+        }
+        let near = |q: [f32; 3]| {
+            (0..3).all(|k| q[k] >= lo[k] && q[k] <= hi[k])
+                && own.iter().any(|p| {
+                    let d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                    d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= cutoff * cutoff
+                })
+        };
+        let mut hit = vec![false; self.residues.len()];
+        for a in &self.atoms {
+            let r = a.residue as usize;
+            if r != of && !hit[r] && !self.residues[r].outside_polymer() && near(a.pos) {
+                hit[r] = true;
+            }
+        }
+        (0..self.residues.len()).filter(|&r| hit[r]).collect()
+    }
+
+    /// Where a residue's side chain is, for writing its name beside it: the
+    /// middle of the atoms past its backbone, or its alpha carbon for a
+    /// glycine.
+    pub fn side_chain_centre(&self, residue: usize) -> Option<[f32; 3]> {
+        let r = self.residues.get(residue)?;
+        let backbone = [r.n, r.c, r.o, r.ca];
+        let side: Vec<[f32; 3]> = self
+            .residue_atoms(residue)
+            .into_iter()
+            .filter(|&i| !backbone.contains(&Some(i as u32)))
+            .map(|i| self.atoms[i].pos)
+            .collect();
+        if side.is_empty() {
+            return r.ca.map(|ca| self.atoms[ca as usize].pos);
+        }
+        let n = side.len() as f32;
+        let sum = side.iter().fold([0.0; 3], |s, p| [s[0] + p[0], s[1] + p[1], s[2] + p[2]]);
+        Some([sum[0] / n, sum[1] / n, sum[2] / n])
+    }
+
     /// A short name for an atom, as a measurement lists it: `SER42 OG`
     /// in a polymer or beside one, else its name or element and number.
     pub fn atom_tag(&self, atom: usize) -> String {

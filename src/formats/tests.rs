@@ -373,3 +373,18 @@ fn long_names_are_cut_at_four_bytes() {
     assert_eq!(&crate::protein::atom_name("HD21X"), b"HD21");
     assert_eq!(&crate::protein::atom_name(" C1'"), b"C1'\0");
 }
+
+#[test]
+fn a_haem_pocket_holds_its_histidines() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/4hhb.pdb.gz");
+    let s = load_bytes("4hhb.pdb.gz", std::fs::read(path).unwrap()).unwrap();
+    let haems = s.copies("HEM");
+    assert_eq!(haems.len(), 4);
+    let site = s.site(haems[0], 5.0);
+    let names: Vec<String> = site.iter().map(|&r| format!("{}{}", s.residues[r].name, s.residues[r].seq)).collect();
+    // The alpha chain's proximal and distal histidines hold the haem.
+    assert!(names.contains(&"HIS87".to_string()), "{names:?}");
+    assert!(names.contains(&"HIS58".to_string()), "{names:?}");
+    assert!(site.iter().all(|&r| !s.residues[r].outside_polymer()));
+    assert!(s.side_chain_centre(site[0]).is_some());
+}

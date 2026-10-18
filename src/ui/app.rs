@@ -149,6 +149,21 @@ struct Target {
     picked: Picked,
 }
 
+/// A ligand's binding site: the ligand, by residue, and the residues of
+/// the polymer around it.
+#[derive(Clone, PartialEq, Debug)]
+struct Site {
+    ligand: usize,
+    residues: Vec<usize>,
+}
+
+/// How close a residue comes to a ligand to count as its binding site, in
+/// ångström: a contact, or a water's width from one.
+const SITE_CUTOFF: f32 = 5.0;
+
+/// Frames the camera takes to fly to something, at about sixty a second.
+const FLY_FRAMES: u32 = 20;
+
 /// Pointers that move further than this between press and release, in
 /// pixels, were dragging the view rather than clicking on it.
 const CLICK_SLOP: f32 = 3.0;
@@ -246,6 +261,10 @@ pub struct Viewer {
     pending: Vec<usize>,
     pending_which: usize,
     measurements: Vec<Measurement>,
+    /// The binding site being looked at, of a ligand in the loaded structure.
+    site: Option<Site>,
+    /// The camera on its way to something, while it is.
+    fly_task: Option<Task<()>>,
     /// The triangles and capsules of `base` each structure was built into,
     /// by `Target::which`, for painting one of its residues.
     parts: [(std::ops::Range<usize>, std::ops::Range<usize>); 2],
@@ -394,6 +413,8 @@ impl Viewer {
             pending: Vec::new(),
             pending_which: 0,
             measurements: Vec::new(),
+            site: None,
+            fly_task: None,
             parts: [(0..0, 0..0), (0..0, 0..0)],
             open: None,
             export: None,
@@ -597,6 +618,7 @@ impl Viewer {
         self.hover = None;
         self.pending.clear();
         self.measurements.clear();
+        self.site = None;
         self.rebuild(cx);
     }
 
@@ -625,6 +647,7 @@ impl Viewer {
         self.hover = None;
         self.pending.clear();
         self.measurements.clear();
+        self.site = None;
         self.rebuild(cx);
     }
 
@@ -823,6 +846,17 @@ impl Viewer {
                 scene.merge(render::build_highlight(s, t.picked, self.repr, self.style, &self.appearance));
             }
         }
+        if let (Some(site), Some(s)) = (&self.site, self.shown(0)) {
+            scene.merge(render::build_site(
+                s,
+                &site.residues,
+                self.repr,
+                self.style,
+                self.palette,
+                self.standard_colors,
+                &self.appearance,
+            ));
+        }
         // The atoms picked towards a measurement glow; its lines are drawn
         // over the viewport, by `measure_lines`.
         if let Some(s) = self.shown(self.pending_which) {
@@ -833,6 +867,94 @@ impl Viewer {
         }
         self.scene = Arc::new(scene.stamp());
         cx.notify();
+    }
+
+    /// Turn the camera's attention to a point: it slides across and zooms
+    /// until a ball `extent` ångström across fills the view, and with `face`,
+    /// turns too, until that direction in the structure points at the viewer.
+    fn fly_to(&mut self, centre: [f32; 3], extent: f32, face: Option<[f32; 3]>, cx: &mut Context<Self>) {
+        self.halt();
+        let start = self.camera;
+        let (from, zoom0, pan0) = (start.center, start.zoom, start.pan);
+        let zoom1 = (start.radius / extent.max(2.0)).clamp(0.12, 24.0);
+        let (axis, angle) = face.map_or(([0.0; 3], 0.0), |d| start.turn_to_face(d));
+        self.fly_task = Some(cx.spawn(async move |this, cx| {
+            for k in 1..=FLY_FRAMES {
+                cx.background_executor().timer(Duration::from_millis(16)).await;
+                let t = k as f32 / FLY_FRAMES as f32;
+                let e = t * t * (3.0 - 2.0 * t);
+                let going = this.update(cx, |this, cx| {
+                    let c = &mut this.camera;
+                    c.orientation = start.turned(axis, angle * e);
+                    c.center = [0, 1, 2].map(|i| from[i] + (centre[i] - from[i]) * e);
+                    // Zoom is a ratio, so it is eased as one.
+                    c.zoom = zoom0 * (zoom1 / zoom0).powf(e);
+                    c.pan = [pan0[0] * (1.0 - e), pan0[1] * (1.0 - e)];
+                    cx.notify();
+                });
+                if going.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+
+    /// Fly to what is picked: an atom up close, a residue whole.
+    fn focus_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self.selected else { return };
+        let Some(s) = self.shown(t.which) else { return };
+        let atoms = if t.picked.residue {
+            s.residue_atoms(s.atoms[t.picked.atom].residue as usize)
+        } else {
+            vec![t.picked.atom]
+        };
+        let (centre, reach) = spread(atoms.iter().map(|&i| s.atoms[i].pos));
+        self.fly_to(centre, reach * 2.0 + 10.0, None, cx);
+    }
+
+    /// Look at a ligand's binding site: its side chains drawn, each named,
+    /// and the camera brought round to it.
+    fn show_site(&mut self, ligand: usize, cx: &mut Context<Self>) {
+        let Some(s) = self.structure.clone() else { return };
+        let residues = s.site(ligand, SITE_CUTOFF);
+        let mut points: Vec<[f32; 3]> = s.residue_atoms(ligand).iter().map(|&i| s.atoms[i].pos).collect();
+        let (centre, _) = spread(points.iter().copied());
+        points.extend(residues.iter().filter_map(|&r| s.side_chain_centre(r)));
+        self.site = Some(Site { ligand, residues });
+        self.compose(cx);
+        // Round the ligand, so that it and its neighbours are all in view.
+        let reach = points
+            .iter()
+            .map(|p| ((p[0] - centre[0]).powi(2) + (p[1] - centre[1]).powi(2) + (p[2] - centre[2]).powi(2)).sqrt())
+            .fold(0.0, f32::max);
+        // Brought round to the near side, out from the middle of the
+        // structure, so the protein it sits in is not in the way.
+        let (middle, _) = spread(s.atoms.iter().map(|a| a.pos));
+        let out = [centre[0] - middle[0], centre[1] - middle[1], centre[2] - middle[2]];
+        let face = (out.iter().map(|v| v * v).sum::<f32>() > 1.0).then_some(out);
+        self.fly_to(centre, reach * 2.0 + 4.0, face, cx);
+    }
+
+    /// The binding site of the next copy of a ligand, by name, from the one
+    /// being looked at; the first, if it is another ligand's.
+    fn next_site(&mut self, name: &str, cx: &mut Context<Self>) {
+        let Some(s) = self.structure.as_ref() else { return };
+        let copies = s.copies(name);
+        if copies.is_empty() {
+            return;
+        }
+        let at = self
+            .site
+            .as_ref()
+            .and_then(|site| copies.iter().position(|&r| r == site.ligand))
+            .map_or(0, |i| (i + 1) % copies.len());
+        self.show_site(copies[at], cx);
+    }
+
+    fn close_site(&mut self, cx: &mut Context<Self>) {
+        if self.site.take().is_some() {
+            self.compose(cx);
+        }
     }
 
     /// Start measuring, or stop. What was being picked is let go of either way.
@@ -1727,6 +1849,7 @@ impl Viewer {
     fn halt(&mut self) {
         self.spin = None;
         self.spin_task = None;
+        self.fly_task = None;
         self.last_step = [0.0; 2];
     }
 
@@ -2074,6 +2197,21 @@ fn swatch_strip(p: Palette) -> impl IntoElement {
         }))
 }
 
+
+/// The middle of some points, and how far the furthest is from it.
+fn spread(points: impl Iterator<Item = [f32; 3]> + Clone) -> ([f32; 3], f32) {
+    let (sum, n) = points.clone().fold(([0.0f32; 3], 0usize), |(s, n), p| {
+        ([s[0] + p[0], s[1] + p[1], s[2] + p[2]], n + 1)
+    });
+    if n == 0 {
+        return ([0.0; 3], 0.0);
+    }
+    let c = sum.map(|v| v / n as f32);
+    let reach = points
+        .map(|p| ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2)).sqrt())
+        .fold(0.0, f32::max);
+    (c, reach)
+}
 
 /// A whole residue picked: by its alpha carbon, or else its first atom.
 fn residue_pick(s: &Structure, residue: usize) -> Option<Picked> {
@@ -3788,6 +3926,24 @@ impl Viewer {
                                         .text_color(theme::faint())
                                         .child(format!("×{n}")),
                                 )
+                            })
+                            .child({
+                                let name = name.clone();
+                                div()
+                                    .id(("ligand-site", i))
+                                    .debug_selector({
+                                        let name = name.clone();
+                                        move || format!("ligand-site-{name}")
+                                    })
+                                    .px(px(5.))
+                                    .rounded(px(4.))
+                                    .text_size(px(10.))
+                                    .text_color(theme::faint())
+                                    .cursor_pointer()
+                                    .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
+                                    .child("Site")
+                                    .tooltip(|_, cx| cx.new(|_| Tip("Its binding site".into())).into())
+                                    .on_click(cx.listener(move |this, _, _, cx| this.next_site(&name, cx)))
                             }),
                     )
                     .child(
@@ -4700,10 +4856,32 @@ impl Viewer {
             ))
             .children(self.comparison(cx))
             .when(self.busy.is_none(), |d| {
-                d.children(self.measure_lines())
+                let cards: Vec<gpui::AnyElement> = [
+                    self.measure_card(cx),
+                    self.site_card(cx),
+                    self.selected_card(cx),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                d.children(self.site_labels())
+                    .children(self.measure_lines())
                     .children(self.measure_labels())
-                    .children(self.measure_card(cx))
-                    .children(self.selected_card())
+                    .when(!cards.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(56.))
+                                .right(px(20.))
+                                .flex()
+                                .flex_col()
+                                .items_end()
+                                .gap(px(8.))
+                                // Clicks on the cards are theirs, not the viewport's.
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .children(cards),
+                        )
+                    })
                     .children(self.hover_tip())
             })
             .when(!has_structure && self.busy.is_none(), |d| {
@@ -4967,9 +5145,6 @@ impl Viewer {
         });
         Some(
             div()
-                .absolute()
-                .top(px(56.))
-                .right(px(20.))
                 .w(px(300.))
                 .flex()
                 .flex_col()
@@ -5006,16 +5181,34 @@ impl Viewer {
     }
 
     /// What was clicked on, named in the corner until it is let go of.
-    fn selected_card(&self) -> Option<gpui::AnyElement> {
+    fn selected_card(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if self.measuring {
             return None;
         }
-        let card = self.atom_card(self.selected?)?;
+        let t = self.selected?;
+        let card = self.atom_card(t)?;
+        let s = self.shown(t.which)?;
+        let residue = s.atoms[t.picked.atom].residue as usize;
+        // A ligand's own atom offers its binding site.
+        let ligand = t.which == 0
+            && s.has_polymer()
+            && s.residues[residue].outside_polymer()
+            && !crate::protein::is_solvent(&s.residues[residue].name);
+        let action = |id: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px(px(7.))
+                .py(px(2.))
+                .rounded(px(4.))
+                .text_size(px(10.))
+                .text_color(theme::muted())
+                .cursor_pointer()
+                .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
+                .child(label)
+        };
         Some(
             div()
-                .absolute()
-                .top(px(56.))
-                .right(px(20.))
                 .flex()
                 .flex_col()
                 .items_end()
@@ -5023,12 +5216,129 @@ impl Viewer {
                 .child(card)
                 .child(
                     div()
-                        .text_size(px(9.5))
-                        .text_color(theme::faint())
-                        .child("click it again to let go"),
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .pr(px(4.))
+                                .text_size(px(9.5))
+                                .text_color(theme::faint())
+                                .child("click it again to let go"),
+                        )
+                        .child(
+                            action("focus-selected", "Focus")
+                                .on_click(cx.listener(|this, _, _, cx| this.focus_selected(cx))),
+                        )
+                        .when(ligand, |d| {
+                            d.child(action("site-selected", "Binding site").on_click(cx.listener(
+                                move |this, _, _, cx| this.show_site(residue, cx),
+                            )))
+                        }),
                 )
                 .into_any_element(),
         )
+    }
+
+    /// The binding site looked at: which ligand, how many residues around
+    /// it, a way on to the next copy, and a way out.
+    fn site_card(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let site = self.site.as_ref()?;
+        let s = self.shown(0)?;
+        let r = &s.residues[site.ligand];
+        let chain = s.chains.get(r.chain as usize).map(|c| c.id.trim().to_string()).unwrap_or_default();
+        let copies = s.copies(&r.name);
+        let at = copies.iter().position(|&c| c == site.ligand).unwrap_or(0);
+        let name = r.name.clone();
+        let link = |id: &'static str, label: String| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px(px(6.))
+                .py(px(1.))
+                .rounded(px(4.))
+                .text_size(px(10.))
+                .text_color(theme::muted())
+                .cursor_pointer()
+                .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
+                .child(label)
+        };
+        Some(
+            div()
+                .w(px(300.))
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .p(px(8.))
+                .rounded(px(8.))
+                .bg(theme::surface())
+                .border_1()
+                .border_color(theme::border())
+                .shadow_sm()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(11.5))
+                                .text_color(theme::ink())
+                                .child(if chain.is_empty() {
+                                    format!("{} {}", r.name, r.seq)
+                                } else {
+                                    format!("{} {} · chain {chain}", r.name, r.seq)
+                                }),
+                        )
+                        .when(copies.len() > 1, |d| {
+                            d.child(
+                                link("next-site", format!("{} of {} →", at + 1, copies.len()))
+                                    .on_click(cx.listener(move |this, _, _, cx| this.next_site(&name, cx))),
+                            )
+                        })
+                        .child(link("close-site", "×".into()).on_click(cx.listener(|this, _, _, cx| this.close_site(cx)))),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(theme::faint())
+                        .child(format!(
+                            "{} residues within {SITE_CUTOFF:.0} Å",
+                            site.residues.len()
+                        )),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The binding site's residues, each named beside its side chain.
+    fn site_labels(&self) -> Vec<gpui::AnyElement> {
+        let (Some(site), Some(s)) = (&self.site, self.shown(0)) else {
+            return Vec::new();
+        };
+        site.residues
+            .iter()
+            .filter_map(|&r| {
+                let at = self.project(s.side_chain_centre(r)?)?;
+                let res = &s.residues[r];
+                Some(
+                    div()
+                        .absolute()
+                        .left(at.x + px(4.))
+                        .top(at.y - px(7.))
+                        .px(px(4.))
+                        .rounded(px(3.))
+                        .bg(theme::surface())
+                        .opacity(0.9)
+                        .text_color(theme::ink())
+                        .text_size(px(9.5))
+                        .whitespace_nowrap()
+                        .child(format!("{}{}", res.name, res.seq))
+                        .into_any_element(),
+                )
+            })
+            .collect()
     }
 
     /// What an empty viewport says.
@@ -5470,6 +5780,45 @@ mod ui_tests {
         cx.simulate_click(first, Modifiers::none());
         cx.run_until_parked();
         assert!(view.update(cx, |this, _| this.selected.is_some()));
+    }
+
+    #[gpui::test]
+    fn a_ligand_shows_its_binding_site(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(SAMPLES[5].file, SAMPLES[5].bytes.to_vec()).unwrap();
+            this.show(s, cx);
+        });
+        cx.run_until_parked();
+        let zoom = view.update(cx, |this, _| this.camera.zoom);
+        let extra = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.scene.capsules.len() - this.base.capsules.len())
+        };
+
+        click(cx, "ligand-site-HEM");
+        let (first, labels) = view.update(cx, |this, _| (this.site.clone(), this.site_labels().len()));
+        let first = first.expect("no binding site shown");
+        assert!(!first.residues.is_empty());
+        assert_eq!(labels, first.residues.len());
+        assert!(extra(&view, cx) > 0, "its side chains are not drawn");
+        // The camera has come in on it, once it has flown there.
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        let (zoom_now, centre) = view.update(cx, |this, _| (this.camera.zoom, this.camera.center));
+        assert!(zoom_now > zoom, "the camera did not come closer");
+        let haem = view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            spread(s.residue_atoms(first.ligand).iter().map(|&i| s.atoms[i].pos)).0
+        });
+        assert!((0..3).all(|k| (centre[k] - haem[k]).abs() < 1e-3));
+
+        // On to the next haem, and back out.
+        click(cx, "next-site");
+        let second = view.update(cx, |this, _| this.site.clone()).unwrap();
+        assert_ne!(second.ligand, first.ligand);
+        click(cx, "close-site");
+        assert!(view.update(cx, |this, _| this.site.is_none()));
+        assert_eq!(extra(&view, cx), 0);
     }
 
     #[gpui::test]

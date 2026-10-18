@@ -711,6 +711,33 @@ impl Camera {
         }
     }
 
+    /// The view turned by `angle` radians about `axis`, an axis of the
+    /// view itself rather than of the structure.
+    pub fn turned(&self, axis: [f32; 3], angle: f32) -> [[f32; 3]; 3] {
+        let a = unit(axis);
+        if dot(a, a) < 0.5 || angle == 0.0 {
+            return self.orientation;
+        }
+        // Rodrigues' rotation, as rows.
+        let (s, c) = angle.sin_cos();
+        let t = 1.0 - c;
+        let r = [
+            [t * a[0] * a[0] + c, t * a[0] * a[1] - s * a[2], t * a[0] * a[2] + s * a[1]],
+            [t * a[0] * a[1] + s * a[2], t * a[1] * a[1] + c, t * a[1] * a[2] - s * a[0]],
+            [t * a[0] * a[2] - s * a[1], t * a[1] * a[2] + s * a[0], t * a[2] * a[2] + c],
+        ];
+        orthonormal(mul(r, self.orientation))
+    }
+
+    /// The turn that brings world direction `d` round to point at the
+    /// viewer: its axis in view space, and its angle.
+    pub fn turn_to_face(&self, d: [f32; 3]) -> ([f32; 3], f32) {
+        let m = self.orientation;
+        let v = unit([dot(m[0], d), dot(m[1], d), dot(m[2], d)]);
+        let toward = [0.0, 0.0, 1.0];
+        (cross(v, toward), dot(v, toward).clamp(-1.0, 1.0).acos())
+    }
+
     pub(crate) fn basis(&self) -> [[f32; 3]; 3] {
         self.orientation
     }
@@ -1542,6 +1569,45 @@ pub fn build_highlight(
     scene
 }
 
+
+/// A binding site's side chains, as sticks in their elements' colours, from
+/// the alpha carbon out. Only a backbone style needs them: the atomistic
+/// styles draw every atom already.
+#[allow(clippy::too_many_arguments)]
+pub fn build_site(
+    s: &Structure,
+    residues: &[usize],
+    repr: Repr,
+    style: Style,
+    palette: Palette,
+    standard_colors: bool,
+    appearance: &Appearance,
+) -> Scene {
+    if !matches!(repr, Repr::Tube | Repr::Cartoon) {
+        return Scene::default();
+    }
+    let mut keep = vec![false; s.atoms.len()];
+    for &r in residues {
+        let Some(res) = s.residues.get(r) else { continue };
+        let backbone = [res.n, res.c, res.o];
+        for i in s.residue_atoms(r) {
+            keep[i] = !backbone.contains(&Some(i as u32));
+        }
+    }
+    let paint = Paint {
+        s,
+        elements: element_colors(s, palette, standard_colors),
+        coloring: Coloring::Element,
+        palette,
+        polymer: s.has_polymer(),
+        looks: appearance.resolve(s),
+        own: s.atoms.len(),
+        images: Vec::new(),
+    };
+    let mut scene = build_sticks(&paint, &keep, false);
+    settle(&mut scene, style);
+    scene
+}
 
 /// The edges of the simulation cell, as fine dark rods sized to the box.
 /// A crystal with the periodic copies of its atoms that fall on the cell's far
@@ -3168,6 +3234,21 @@ mod tests {
         both.merge(scene(&s, Repr::Tube, Coloring::Chain, false));
         assert_eq!(both.capsule_residue.len(), both.capsules.len());
         assert_eq!(both.capsule_residue.iter().filter(|&&r| r != NO_RESIDUE).count(), scene(&s, Repr::Tube, Coloring::Chain, false).capsules.len());
+    }
+
+    #[test]
+    fn a_turn_brings_a_direction_to_face_the_viewer() {
+        let cam = Camera { orientation: Camera::home(), zoom: 1.0, pan: [0.0; 2], center: [0.0; 3], radius: 10.0 };
+        for d in [[1.0, 0.0, 0.0], [0.3, -0.8, 0.2], [0.0, 0.0, -1.0], [-0.5, 0.5, 0.7]] {
+            let (axis, angle) = cam.turn_to_face(d);
+            let m = Camera { orientation: cam.turned(axis, angle), ..cam }.basis();
+            let n = unit(d);
+            let z = dot(m[2], n);
+            // Straight behind has no one axis to turn about; anything else faces.
+            if dot(axis, axis) > 1e-6 {
+                assert!(z > 0.999, "{d:?} ends {z}");
+            }
+        }
     }
 
     #[test]
