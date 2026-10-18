@@ -2867,7 +2867,7 @@ fn spread(points: impl Iterator<Item = [f32; 3]> + Clone) -> ([f32; 3], f32) {
 /// A whole residue picked: by its alpha carbon, or else its first atom.
 fn residue_pick(s: &Structure, residue: usize) -> Option<Picked> {
     let r = s.residues.get(residue)?;
-    let atom = match r.ca {
+    let atom = match r.ca.or(r.nucleic) {
         Some(ca) => ca as usize,
         None => s.atoms.iter().position(|a| a.residue as usize == residue)?,
     };
@@ -4763,16 +4763,16 @@ impl Viewer {
                                     .font_family(theme::MONO)
                                     .text_size(px(10.))
                                     .text_color(theme::faint())
-                                    .child(format!(
-                                        "{} aa",
-                                        chain
+                                    .child({
+                                        let own = chain
                                             .residues
                                             .iter()
-                                            .filter(|r| {
-                                                !structure.residues[**r as usize].outside_polymer()
-                                            })
-                                            .count()
-                                    )),
+                                            .map(|r| &structure.residues[*r as usize])
+                                            .filter(|r| !r.outside_polymer());
+                                        let (n, nucleic) = own.fold((0, 0), |(n, k), r| (n + 1, k + r.nucleic.is_some() as usize));
+                                        // Nucleotides, where most of the chain is them.
+                                        format!("{n} {}", if nucleic * 2 > n { "nt" } else { "aa" })
+                                    }),
                             )
                             .when(chain.color.is_some(), |d| d.child(self.unpick(i, Pick::Chain(i), cx)))
                             .when(picking, |d| {

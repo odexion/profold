@@ -133,6 +133,9 @@ pub struct Residue {
     pub b: f32,
     pub code: char,
     pub ss: Ss,
+    /// The atom a nucleic acid strand is traced through, its phosphorus or
+    /// else its C4', when it is linked into one: set once the file is read.
+    pub nucleic: Option<u32>,
 }
 
 impl Residue {
@@ -143,6 +146,7 @@ impl Residue {
     /// Neither an amino acid nor a nucleotide: a ligand, an ion or solvent.
     pub fn outside_polymer(&self) -> bool {
         self.ca.is_none()
+            && self.nucleic.is_none()
             && !matches!(
                 self.name.as_str(),
                 "A" | "C" | "G" | "U" | "T" | "I" | "DA" | "DC" | "DG" | "DT" | "DU" | "DI"
@@ -267,6 +271,8 @@ pub struct Structure {
     pub assemblies: Vec<crate::assembly::Assembly>,
     /// The span of B-factors colouring runs over, worked out when first asked.
     b_span: std::sync::OnceLock<Option<(f32, f32)>>,
+    /// Each residue's place among the polymer's, for the rainbow.
+    rank: std::sync::OnceLock<(Vec<u32>, u32)>,
 }
 
 impl Structure {
@@ -291,7 +297,31 @@ impl Structure {
             unknown_radius: Element::UNKNOWN.vdw(),
             assemblies: Vec::new(),
             b_span: std::sync::OnceLock::new(),
+            rank: std::sync::OnceLock::new(),
         }
+    }
+
+    /// How far along the polymer a residue is, from 0 at its first residue to
+    /// 1 at its last: water and ligands, which do not count, take the place
+    /// of the residue before them.
+    pub fn along(&self, residue: usize) -> f32 {
+        let (rank, total) = self.rank.get_or_init(|| {
+            let mut n = 0u32;
+            let rank = self
+                .residues
+                .iter()
+                .map(|r| {
+                    if r.outside_polymer() {
+                        n.saturating_sub(1)
+                    } else {
+                        n += 1;
+                        n - 1
+                    }
+                })
+                .collect();
+            (rank, n)
+        });
+        rank.get(residue).map_or(0.0, |&k| k as f32 / (total.max(&2) - 1) as f32)
     }
 
     /// The B-factors of the polymer's residues, from the 5th to the 95th
@@ -349,7 +379,46 @@ impl Structure {
     }
 
     pub fn has_polymer(&self) -> bool {
-        self.residues.iter().filter(|r| r.ca.is_some()).take(3).count() >= 3
+        self.residues.iter().filter(|r| r.ca.is_some() || r.nucleic.is_some()).take(3).count() >= 3
+    }
+
+    /// Find the nucleic acid strands: residues joined O3' to the next one's
+    /// phosphorus, as only a strand's are. Modified bases, which no list of
+    /// names keeps up with, are found as well; a free nucleotide, ATP say,
+    /// is linked to nothing and stays a ligand.
+    pub fn mark_nucleic(&mut self) {
+        let mut named: Vec<[Option<u32>; 3]> = vec![[None; 3]; self.residues.len()];
+        for (i, a) in self.atoms.iter().enumerate() {
+            let slot = match a.name() {
+                "P" => 0,
+                "C4'" | "C4*" => 1,
+                "O3'" | "O3*" => 2,
+                _ => continue,
+            };
+            named[a.residue as usize][slot].get_or_insert(i as u32);
+        }
+        let near = |a: u32, b: u32, d: f32| {
+            let (p, q) = (self.atoms[a as usize].pos, self.atoms[b as usize].pos);
+            (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2) <= d * d
+        };
+        let mut linked = vec![false; self.residues.len()];
+        for chain in &self.chains {
+            for pair in chain.residues.windows(2) {
+                let (a, b) = (pair[0] as usize, pair[1] as usize);
+                if self.residues[a].ca.is_some() || self.residues[b].ca.is_some() {
+                    continue;
+                }
+                if let (Some(o3), Some(p)) = (named[a][2], named[b][0]) {
+                    if near(o3, p, 2.0) && named[a][1].is_some() && named[b][1].is_some() {
+                        linked[a] = true;
+                        linked[b] = true;
+                    }
+                }
+            }
+        }
+        for (r, res) in self.residues.iter_mut().enumerate() {
+            res.nucleic = if linked[r] { named[r][0].or(named[r][1]) } else { None };
+        }
     }
 
     /// Each copy of a ligand, by residue name: its residues, in file order.
@@ -837,6 +906,7 @@ impl Builder {
                 b: r.b,
                 code: three_to_one(r.res_name),
                 ss: Ss::Coil,
+                nucleic: None,
             });
         }
 
@@ -912,6 +982,7 @@ impl Builder {
         structure.atoms = self.atoms;
         structure.residues = self.residues;
         structure.chains = self.chains;
+        structure.mark_nucleic();
         if structure.has_polymer() {
             crate::dssp::assign(&mut structure);
         }

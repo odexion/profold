@@ -1088,7 +1088,7 @@ fn residue_color(
             _ => [0.74, 0.73, 0.71],
         },
         Coloring::Chain => s.chain_color(r.chain as usize, palette),
-        Coloring::Rainbow => palette.ramp(residue as f32 / (s.residues.len().max(2) - 1) as f32),
+        Coloring::Rainbow => palette.ramp(s.along(residue)),
         // pLDDT keeps AlphaFold's own bands: they are a published convention
         // and a reader knows them by sight.
         Coloring::Confidence => {
@@ -1352,13 +1352,20 @@ fn build_primitives(paint: &Paint, repr: Repr, quality: f32) -> Scene {
             } else {
                 (scene.tris, scene.tri_residue) = build_cartoon(s, coloring, quality, palette, paint.hidden);
             }
+            let (capsules, owners) = build_nucleic(s, coloring, quality, palette, paint.hidden);
+            scene.capsule_residue.resize(scene.capsules.len(), NO_RESIDUE);
+            scene.capsules.extend(capsules);
+            scene.capsule_residue.extend(owners);
             // Ligands, ions and nucleic acids have no alpha carbons to draw a
             // backbone through, and would vanish; they are drawn as atoms.
             // So is water, when it is shown at all.
             let ligand: Vec<bool> = s
                 .atoms
                 .iter()
-                .map(|a| s.residues[a.residue as usize].ca.is_none())
+                .map(|a| {
+                    let r = &s.residues[a.residue as usize];
+                    r.ca.is_none() && r.nucleic.is_none()
+                })
                 .collect();
             if ligand.iter().any(|l| *l) {
                 scene.merge(build_sticks(paint, &ligand, false));
@@ -1591,7 +1598,7 @@ pub fn pick(
         let r = &s.residues[s.atoms[i].residue as usize];
         !paint.looks[i].hidden()
             && if backbone {
-                r.ca.is_none()
+                r.ca.is_none() && r.nucleic.is_none()
             } else if surface {
                 !under_skin(s, polymer, i)
             } else {
@@ -1633,6 +1640,22 @@ pub fn pick(
     }
     if backbone {
         for chain in &s.chains {
+            // A strand is picked by its tube and its rungs.
+            for run in nucleic_runs(s, chain, appearance.mask(s)) {
+                for &ri in &run {
+                    let at = s.residues[ri].nucleic.unwrap() as usize;
+                    offer(ball(s.atoms[at].pos, NUCLEIC_RADIUS + 0.3), at, true);
+                    if let Some(tip) = base_tip(s, ri) {
+                        offer(rod(s.atoms[at].pos, s.atoms[tip].pos, RUNG_RADIUS + 0.3), at, true);
+                    }
+                }
+                for w in run.windows(2) {
+                    let (a, b) = (s.residues[w[0]].nucleic.unwrap() as usize, s.residues[w[1]].nucleic.unwrap() as usize);
+                    let mid = mix(s.atoms[a].pos, s.atoms[b].pos, 0.5);
+                    offer(rod(s.atoms[a].pos, mid, NUCLEIC_RADIUS + 0.3), a, true);
+                    offer(rod(mid, s.atoms[b].pos, NUCLEIC_RADIUS + 0.3), b, true);
+                }
+            }
             for run in ca_runs(s, chain, appearance.mask(s)) {
                 let ca = |k: usize| s.residues[run[k]].ca.unwrap() as usize;
                 for k in 0..run.len() {
@@ -1723,7 +1746,7 @@ pub fn build_highlight(
     let residue = &s.residues[atom.residue as usize];
     let mut scene = Scene::default();
     let skin = repr == Repr::Surface && under_skin(s, paint.polymer, picked.atom);
-    match (picked.residue, backbone, residue.ca) {
+    match (picked.residue, backbone, residue.ca.or(residue.nucleic)) {
         // Painted on the ribbon or the skin instead.
         (true, true, Some(_)) => {}
         (true, _, _) if skin => {}
@@ -2023,67 +2046,139 @@ fn build_tube(
     palette: Palette,
     hidden: Option<&[bool]>,
 ) -> (Vec<Capsule>, Vec<u32>) {
-    let mut out = Vec::new();
-    let mut owners = Vec::new();
-
+    let mut out = (Vec::new(), Vec::new());
     for chain in &s.chains {
-        let runs = ca_runs(s, chain, hidden);
-        for run in runs {
+        for run in ca_runs(s, chain, hidden) {
             let run: Vec<(usize, [f32; 3])> = run
                 .iter()
                 .map(|&ri| (ri, s.atoms[s.residues[ri].ca.unwrap() as usize].pos))
                 .collect();
-            let steps = (14.0 * quality).round().max(2.0) as usize;
-            let at = |i: isize| -> [f32; 3] {
-                run[i.clamp(0, run.len() as isize - 1) as usize].1
-            };
+            spline_tube(s, &run, TUBE_RADIUS, coloring, quality, palette, &mut out);
+        }
+    }
+    out
+}
 
-            // Sample the Catmull-Rom spline through the trace, then join the
-            // samples with capsules.
-            let mut points: Vec<([f32; 3], [f32; 3])> = Vec::with_capacity(run.len() * steps + 1);
-            // Each sample belongs to the nearer of the two residues it lies between.
-            let mut belongs: Vec<u32> = Vec::with_capacity(run.len() * steps + 1);
-            for i in 0..run.len() - 1 {
-                let (p0, p1, p2, p3) = (
-                    at(i as isize - 1),
-                    at(i as isize),
-                    at(i as isize + 1),
-                    at(i as isize + 2),
-                );
-                let c0 = residue_color(s, run[i].0, coloring, palette);
-                let c1 = residue_color(s, run[i + 1].0, coloring, palette);
-                for k in 0..steps {
-                    let t = k as f32 / steps as f32;
-                    belongs.push(run[if t < 0.5 { i } else { i + 1 }].0 as u32);
-                    points.push((
-                        catmull_rom(p0, p1, p2, p3, t),
-                        [
-                            c0[0] + (c1[0] - c0[0]) * t,
-                            c0[1] + (c1[1] - c0[1]) * t,
-                            c0[2] + (c1[2] - c0[2]) * t,
-                        ],
-                    ));
-                }
-            }
-            let last = run[run.len() - 1];
-            points.push((last.1, residue_color(s, last.0, coloring, palette)));
-            belongs.push(last.0 as u32);
+/// A smooth tube through points of a trace, each its residue's, sampled
+/// along a Catmull-Rom spline and joined with capsules, into `out`'s
+/// capsules and the residue each belongs to.
+#[allow(clippy::too_many_arguments)]
+fn spline_tube(
+    s: &Structure,
+    run: &[(usize, [f32; 3])],
+    radius: f32,
+    coloring: Coloring,
+    quality: f32,
+    palette: Palette,
+    out: &mut (Vec<Capsule>, Vec<u32>),
+) {
+    if run.len() < 2 {
+        return;
+    }
+    let steps = (14.0 * quality).round().max(2.0) as usize;
+    let at = |i: isize| -> [f32; 3] { run[i.clamp(0, run.len() as isize - 1) as usize].1 };
+    let mut points: Vec<([f32; 3], [f32; 3])> = Vec::with_capacity(run.len() * steps + 1);
+    // Each sample belongs to the nearer of the two residues it lies between.
+    let mut belongs: Vec<u32> = Vec::with_capacity(run.len() * steps + 1);
+    for i in 0..run.len() - 1 {
+        let (p0, p1, p2, p3) = (at(i as isize - 1), at(i as isize), at(i as isize + 1), at(i as isize + 2));
+        let c0 = residue_color(s, run[i].0, coloring, palette);
+        let c1 = residue_color(s, run[i + 1].0, coloring, palette);
+        for k in 0..steps {
+            let t = k as f32 / steps as f32;
+            belongs.push(run[if t < 0.5 { i } else { i + 1 }].0 as u32);
+            points.push((catmull_rom(p0, p1, p2, p3, t), mix(c0, c1, t)));
+        }
+    }
+    let last = run[run.len() - 1];
+    points.push((last.1, residue_color(s, last.0, coloring, palette)));
+    belongs.push(last.0 as u32);
+    out.1.extend(&belongs[..belongs.len() - 1]);
+    for pair in points.windows(2) {
+        out.0.push(Capsule { a: pair[0].0, b: pair[1].0, r: radius, ca: pair[0].1, cb: pair[1].1, alpha: 1.0 });
+    }
+}
 
-            owners.extend(&belongs[..belongs.len() - 1]);
-            for pair in points.windows(2) {
-                out.push(Capsule {
-                    a: pair[0].0,
-                    b: pair[1].0,
-                    r: TUBE_RADIUS,
-                    ca: pair[0].1,
-                    cb: pair[1].1,
-                    alpha: 1.0,
+/// A nucleic acid strand's backbone is drawn wider than a protein's.
+const NUCLEIC_RADIUS: f32 = 1.0;
+const RUNG_RADIUS: f32 = 0.45;
+
+/// The runs of a chain's nucleic acid, residue by residue, where each is
+/// linked to the next and none is hidden.
+fn nucleic_runs(s: &Structure, chain: &crate::protein::Chain, hidden: Option<&[bool]>) -> Vec<Vec<usize>> {
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    let mut run: Vec<usize> = Vec::new();
+    for &ri in &chain.residues {
+        let ri = ri as usize;
+        let at = s.residues[ri].nucleic.filter(|&a| !hidden.is_some_and(|h| h[a as usize]));
+        match at {
+            Some(a) => {
+                // Neighbouring phosphates sit 6 to 7 Å apart.
+                let far = run.last().is_some_and(|&prev| {
+                    let q = s.atoms[s.residues[prev].nucleic.unwrap() as usize].pos;
+                    let p = s.atoms[a as usize].pos;
+                    dot(sub(p, q), sub(p, q)) > 9.0 * 9.0
                 });
+                if far && run.len() > 1 {
+                    runs.push(std::mem::take(&mut run));
+                } else if far {
+                    run.clear();
+                }
+                run.push(ri);
+            }
+            None => {
+                if run.len() > 1 {
+                    runs.push(std::mem::take(&mut run));
+                }
+                run.clear();
             }
         }
     }
+    if run.len() > 1 {
+        runs.push(run);
+    }
+    runs
+}
 
-    (out, owners)
+/// Where a base's rung ends: N1 of a purine, N3 of a pyrimidine, the atoms
+/// that pair across the helix.
+fn base_tip(s: &Structure, residue: usize) -> Option<usize> {
+    let atoms = s.residue_atoms(residue);
+    let named = |n: &str| atoms.iter().copied().find(|&i| s.atoms[i].name() == n);
+    if named("N9").is_some() {
+        named("N1")
+    } else {
+        named("N3")
+    }
+}
+
+/// Nucleic acids as a tube along the backbone, through each phosphorus,
+/// with a rung out to each base, as the cartoons of DNA and RNA are drawn.
+fn build_nucleic(
+    s: &Structure,
+    coloring: Coloring,
+    quality: f32,
+    palette: Palette,
+    hidden: Option<&[bool]>,
+) -> (Vec<Capsule>, Vec<u32>) {
+    let mut out = (Vec::new(), Vec::new());
+    for chain in &s.chains {
+        for run in nucleic_runs(s, chain, hidden) {
+            let trace: Vec<(usize, [f32; 3])> = run
+                .iter()
+                .map(|&ri| (ri, s.atoms[s.residues[ri].nucleic.unwrap() as usize].pos))
+                .collect();
+            spline_tube(s, &trace, NUCLEIC_RADIUS, coloring, quality, palette, &mut out);
+            for &(ri, p) in &trace {
+                if let Some(tip) = base_tip(s, ri) {
+                    let c = residue_color(s, ri, coloring, palette);
+                    out.0.push(Capsule { a: p, b: s.atoms[tip].pos, r: RUNG_RADIUS, ca: c, cb: c, alpha: 1.0 });
+                    out.1.push(ri as u32);
+                }
+            }
+        }
+    }
+    out
 }
 
 
@@ -3692,6 +3787,17 @@ mod tests {
         assert!(cut.tri_residue.iter().all(|&r| r >= 5));
         let atoms = build_scene(&s, Repr::Spacefill, Coloring::Chain, 1.0, Style::Soft, Palette::Spectrum, false, false, &hidden);
         assert_eq!(atoms.spheres.len(), s.atoms.len() - n);
+    }
+
+    #[test]
+    fn the_rainbow_runs_over_the_polymer_whatever_else_is_there() {
+        // Haemoglobin's waters come after its chains in the file.
+        let s = sample("4hhb.pdb.gz");
+        assert!(s.residues.iter().any(|r| r.name == "HOH"));
+        let polymer: Vec<usize> = (0..s.residues.len()).filter(|&r| !s.residues[r].outside_polymer()).collect();
+        let p = Palette::Viridis;
+        assert_eq!(residue_color(&s, polymer[0], Coloring::Rainbow, p), p.ramp(0.0));
+        assert_eq!(residue_color(&s, *polymer.last().unwrap(), Coloring::Rainbow, p), p.ramp(1.0));
     }
 
     #[test]

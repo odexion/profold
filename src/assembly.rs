@@ -228,6 +228,7 @@ pub fn build(s: &Structure, a: &Assembly) -> Structure {
                     res.n = remap(old.n);
                     res.c = remap(old.c);
                     res.o = remap(old.o);
+                    res.nucleic = remap(old.nucleic);
                     out.residues.push(res);
                     residues.push(new_r);
                 }
@@ -317,6 +318,22 @@ mod real {
                     s.chains.len(), a.id, a.label(&s), built.chains.len(), built.atoms.len(), s.atoms.len(), a.is_deposited(&s)
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod nucleic_real {
+    #[test]
+    #[ignore]
+    fn downloaded_strands() {
+        let Some(dir) = std::env::var_os("PROFOLD_DL") else { return };
+        for name in ["1bna.pdb", "1ehz.cif", "1tsr.pdb"] {
+            let bytes = std::fs::read(std::path::Path::new(&dir).join(name)).unwrap();
+            let s = crate::formats::load_bytes(name, bytes).unwrap();
+            let traced = s.residues.iter().filter(|r| r.nucleic.is_some()).count();
+            let ligands: Vec<String> = s.ligands().into_iter().map(|(n, k)| format!("{n}x{k}")).collect();
+            eprintln!("{name}: {traced} nucleotides traced, polymer {}, ligands {ligands:?}", s.has_polymer());
         }
     }
 }
