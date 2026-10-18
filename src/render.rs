@@ -802,12 +802,51 @@ pub struct Scene {
     pub spheres: Vec<Sphere>,
     pub capsules: Vec<Capsule>,
     pub tris: Vec<Tri>,
+    /// The residue each ribbon triangle and tube capsule is part of, beside
+    /// them rather than in them so the drawing never carries it. `NO_RESIDUE`
+    /// for anything else; shorter than its list when the end has none.
+    pub tri_residue: Vec<u32>,
+    pub capsule_residue: Vec<u32>,
     /// Which build this is, for telling a frame of it from a frame of any
     /// other. Set by `stamp`; zero until then.
     pub version: u64,
 }
 
+/// Marks a triangle or capsule that is no residue's.
+pub const NO_RESIDUE: u32 = u32::MAX;
+
 impl Scene {
+    /// Pad the residue lists out to the primitives they name.
+    fn align(&mut self) {
+        self.tri_residue.resize(self.tris.len(), NO_RESIDUE);
+        self.capsule_residue.resize(self.capsules.len(), NO_RESIDUE);
+    }
+
+    /// Paint residue `residue`'s stretch of ribbon or tube, among triangles
+    /// `tris` and capsules `capsules`, in the highlight's colour, or with
+    /// `faint` most of the way to it.
+    pub fn paint_residue(
+        &mut self,
+        tris: std::ops::Range<usize>,
+        capsules: std::ops::Range<usize>,
+        residue: u32,
+        style: Style,
+        faint: bool,
+    ) {
+        let gold = highlight_color(style);
+        let paint = |c: [f32; 3]| if faint { mix(c, gold, 0.7) } else { gold };
+        for i in tris {
+            if self.tri_residue.get(i) == Some(&residue) {
+                self.tris[i].c = paint(self.tris[i].c);
+            }
+        }
+        for i in capsules {
+            if self.capsule_residue.get(i) == Some(&residue) {
+                let c = &mut self.capsules[i];
+                (c.ca, c.cb) = (paint(c.ca), paint(c.cb));
+            }
+        }
+    }
     /// Give the scene a number no other scene has had, so a viewer caching
     /// frames never mistakes a recoloured scene for the one before it.
     pub fn stamp(mut self) -> Self {
@@ -825,6 +864,10 @@ impl Scene {
     }
 
     pub fn merge(&mut self, mut other: Scene) {
+        self.align();
+        other.align();
+        self.tri_residue.append(&mut other.tri_residue);
+        self.capsule_residue.append(&mut other.capsule_residue);
         self.spheres.append(&mut other.spheres);
         self.capsules.append(&mut other.capsules);
         self.tris.append(&mut other.tris);
@@ -1173,9 +1216,9 @@ fn build_primitives(paint: &Paint, repr: Repr, quality: f32) -> Scene {
         Repr::Tube | Repr::Cartoon => {
             let mut scene = Scene::default();
             if repr == Repr::Tube {
-                scene.capsules = build_tube(s, coloring, quality, palette);
+                (scene.capsules, scene.capsule_residue) = build_tube(s, coloring, quality, palette);
             } else {
-                scene.tris = build_cartoon(s, coloring, quality, palette);
+                (scene.tris, scene.tri_residue) = build_cartoon(s, coloring, quality, palette);
             }
             // Ligands, ions and nucleic acids have no alpha carbons to draw a
             // backbone through, and would vanish; they are drawn as atoms.
@@ -1429,10 +1472,20 @@ fn capsule_depth(a: [f32; 3], b: [f32; 3], r: f32, p: [f32; 2]) -> Option<f32> {
 /// The colour a picked atom or residue glows with.
 const HIGHLIGHT: [f32; 3] = [1.0, 0.78, 0.18];
 
-/// What marks a picked atom: a glow around it. A residue picked in a
-/// backbone style glows as a sleeve over its stretch of the ribbon, halfway
-/// to each neighbour, and in an atomistic style as a glow on each of its
-/// atoms. Nothing is drawn that the style does not draw already.
+/// The highlight's colour as a scene in `style` shows it.
+fn highlight_color(style: Style) -> [f32; 3] {
+    let mut one = Scene {
+        tris: vec![Tri { p: [[0.0; 3]; 3], n: [[0.0; 3]; 3], c: HIGHLIGHT }],
+        ..Scene::default()
+    };
+    settle(&mut one, style);
+    one.tris[0].c
+}
+
+/// What marks a picked atom: a glow around it. A residue picked in an
+/// atomistic style glows on each of its atoms; in a backbone style it is
+/// painted on the ribbon instead, by `Scene::paint_residue`, and nothing is
+/// built for it here. Nothing is drawn that the style does not draw already.
 pub fn build_highlight(
     s: &Structure,
     picked: Picked,
@@ -1469,36 +1522,7 @@ pub fn build_highlight(
     let residue = &s.residues[atom.residue as usize];
     let mut scene = Scene::default();
     match (picked.residue, backbone, residue.ca) {
-        (true, true, Some(ca)) => {
-            let here = s.atoms[ca as usize].pos;
-            // The neighbours along the same unbroken trace.
-            let chain = &s.chains[residue.chain as usize];
-            let mut ends = Vec::new();
-            for run in ca_runs(s, chain) {
-                if let Some(k) = run.iter().position(|&r| r == atom.residue as usize) {
-                    let at = |k: usize| s.atoms[s.residues[run[k]].ca.unwrap() as usize].pos;
-                    if k > 0 {
-                        ends.push(mix(here, at(k - 1), 0.5));
-                    }
-                    if k + 1 < run.len() {
-                        ends.push(mix(here, at(k + 1), 0.5));
-                    }
-                }
-            }
-            // The rods' own ends round off the sleeve; only a residue on
-            // its own needs a ball.
-            if ends.is_empty() {
-                scene.spheres.push(glow(here, SLEEVE_RADIUS));
-            }
-            scene.capsules.extend(ends.into_iter().map(|end| Capsule {
-                a: here,
-                b: end,
-                r: SLEEVE_RADIUS,
-                ca: HIGHLIGHT,
-                cb: HIGHLIGHT,
-                alpha: 0.5,
-            }));
-        }
+        (true, true, Some(_)) => {}
         (true, _, _) => {
             scene.spheres.extend(
                 (0..s.atoms.len())
@@ -1518,9 +1542,6 @@ pub fn build_highlight(
     scene
 }
 
-/// How far the glow on a picked residue reaches out from the trace: past
-/// the ribbon's edges, seen flat.
-const SLEEVE_RADIUS: f32 = 1.9;
 
 /// The edges of the simulation cell, as fine dark rods sized to the box.
 /// A crystal with the periodic copies of its atoms that fall on the cell's far
@@ -1685,8 +1706,9 @@ fn build_tube(
     coloring: Coloring,
     quality: f32,
     palette: Palette,
-) -> Vec<Capsule> {
+) -> (Vec<Capsule>, Vec<u32>) {
     let mut out = Vec::new();
+    let mut owners = Vec::new();
 
     for chain in &s.chains {
         let runs = ca_runs(s, chain);
@@ -1703,6 +1725,8 @@ fn build_tube(
             // Sample the Catmull-Rom spline through the trace, then join the
             // samples with capsules.
             let mut points: Vec<([f32; 3], [f32; 3])> = Vec::with_capacity(run.len() * steps + 1);
+            // Each sample belongs to the nearer of the two residues it lies between.
+            let mut belongs: Vec<u32> = Vec::with_capacity(run.len() * steps + 1);
             for i in 0..run.len() - 1 {
                 let (p0, p1, p2, p3) = (
                     at(i as isize - 1),
@@ -1714,6 +1738,7 @@ fn build_tube(
                 let c1 = residue_color(s, run[i + 1].0, coloring, palette);
                 for k in 0..steps {
                     let t = k as f32 / steps as f32;
+                    belongs.push(run[if t < 0.5 { i } else { i + 1 }].0 as u32);
                     points.push((
                         catmull_rom(p0, p1, p2, p3, t),
                         [
@@ -1726,7 +1751,9 @@ fn build_tube(
             }
             let last = run[run.len() - 1];
             points.push((last.1, residue_color(s, last.0, coloring, palette)));
+            belongs.push(last.0 as u32);
 
+            owners.extend(&belongs[..belongs.len() - 1]);
             for pair in points.windows(2) {
                 out.push(Capsule {
                     a: pair[0].0,
@@ -1740,7 +1767,7 @@ fn build_tube(
         }
     }
 
-    out
+    (out, owners)
 }
 
 
@@ -1780,8 +1807,9 @@ fn build_cartoon(
     coloring: Coloring,
     quality: f32,
     palette: Palette,
-) -> Vec<Tri> {
+) -> (Vec<Tri>, Vec<u32>) {
     let mut tris = Vec::new();
+    let mut owners = Vec::new();
     let steps = (8.0 * quality).round().max(2.0) as usize;
 
     for chain in &s.chains {
@@ -1845,6 +1873,8 @@ fn build_cartoon(
                 hw: f32,
                 ht: f32,
                 color: [f32; 3],
+                /// The nearer residue of the two the sample lies between.
+                residue: u32,
             }
             let at = |i: isize| p[i.clamp(0, n as isize - 1) as usize];
             let mut samples: Vec<Sample> = Vec::with_capacity(n * steps + 1);
@@ -1876,6 +1906,7 @@ fn build_cartoon(
                         hw,
                         ht,
                         color: mix(c0, c1, f),
+                        residue: run[if f < 0.5 { k } else { k + 1 }] as u32,
                     });
                 }
             }
@@ -1886,6 +1917,7 @@ fn build_cartoon(
                 hw: if arrow(n - 1) { 0.12 } else { hw },
                 ht,
                 color: residue_color(s, run[n - 1], coloring, palette),
+                residue: run[n - 1] as u32,
             });
             if samples.len() < 2 {
                 continue;
@@ -1932,6 +1964,7 @@ fn build_cartoon(
             for i in 0..count - 1 {
                 let (a, b) = (&rings[i], &rings[i + 1]);
                 let color = samples[i].color;
+                owners.extend([samples[i].residue; 2 * SIDES]);
                 for j in 0..SIDES {
                     let k = (j + 1) % SIDES;
                     tris.push(Tri {
@@ -1948,10 +1981,11 @@ fn build_cartoon(
             }
 
             // Close both ends so the ribbon is not hollow.
-            for (ring, color) in [
-                (&rings[0], samples[0].color),
-                (&rings[count - 1], samples[count - 1].color),
+            for (ring, color, residue) in [
+                (&rings[0], samples[0].color, samples[0].residue),
+                (&rings[count - 1], samples[count - 1].color, samples[count - 1].residue),
             ] {
+                owners.extend(std::iter::repeat_n(residue, SIDES - 2));
                 let nrm = unit(cross(
                     sub(ring[1].0, ring[0].0),
                     sub(ring[2].0, ring[0].0),
@@ -1967,7 +2001,7 @@ fn build_cartoon(
         }
     }
 
-    tris
+    (tris, owners)
 }
 
 // ---------------------------------------------------------------------------
@@ -3088,12 +3122,9 @@ mod tests {
         let ca = s.residues[20].ca.unwrap() as usize;
         let picked = Picked { atom: ca, residue: true, depth: 0.0 };
         let look = Appearance::default();
-        // On a ribbon, a sleeve halfway to each neighbour, and no atoms.
+        // On a ribbon nothing is added: the ribbon itself is painted.
         let ribbon = build_highlight(&s, picked, Repr::Cartoon, Style::Soft, &look);
-        assert!(ribbon.spheres.is_empty());
-        assert_eq!(ribbon.capsules.len(), 2);
-        let all = ribbon.spheres.iter().map(|p| p.alpha).chain(ribbon.capsules.iter().map(|c| c.alpha));
-        assert!(all.into_iter().all(|a| a < 1.0), "the glow hides what it marks");
+        assert!(ribbon.is_empty());
         // In atoms, a glow on each of its atoms.
         let atoms = s.atoms.iter().filter(|a| a.residue == 20).count();
         let sticks = build_highlight(&s, picked, Repr::BallAndStick, Style::Soft, &look);
@@ -3102,6 +3133,41 @@ mod tests {
         let one = build_highlight(&s, Picked { residue: false, ..picked }, Repr::Spacefill, Style::Soft, &look);
         assert_eq!(one.spheres.len(), 1);
         assert!(one.spheres[0].alpha < 1.0);
+    }
+
+    #[test]
+    fn a_residue_is_painted_on_its_own_stretch_of_ribbon() {
+        let s = sample("1crn.pdb.gz");
+        for repr in [Repr::Cartoon, Repr::Tube] {
+            let base = scene(&s, repr, Coloring::Chain, false);
+            assert_eq!(base.tri_residue.len(), base.tris.len());
+            assert_eq!(base.capsule_residue.len(), base.capsules.len());
+            let mut painted = base.clone();
+            painted.paint_residue(0..base.tris.len(), 0..base.capsules.len(), 20, Style::Soft, false);
+            let gold = highlight_color(Style::Soft);
+            let changed: Vec<u32> = (0..base.tris.len())
+                .filter(|&i| painted.tris[i].c != base.tris[i].c)
+                .map(|i| base.tri_residue[i])
+                .chain(
+                    (0..base.capsules.len())
+                        .filter(|&i| painted.capsules[i].ca != base.capsules[i].ca)
+                        .map(|i| base.capsule_residue[i]),
+                )
+                .collect();
+            assert!(!changed.is_empty(), "{repr:?}: nothing painted");
+            assert!(changed.iter().all(|&r| r == 20), "{repr:?}: another residue painted");
+            assert!(painted.tris.iter().filter(|t| t.c == gold).count() + painted.capsules.iter().filter(|c| c.ca == gold).count() > 0);
+            // Most of the way is neither the ribbon's colour nor the highlight's.
+            let mut faint = base.clone();
+            faint.paint_residue(0..base.tris.len(), 0..base.capsules.len(), 20, Style::Soft, true);
+            assert!(faint.tris.iter().all(|t| t.c != gold));
+            assert!(faint.capsules.iter().all(|c| c.ca != gold));
+        }
+        // Merged with atoms beside it, the lists still line up.
+        let mut both = scene(&s, Repr::BallAndStick, Coloring::Chain, false);
+        both.merge(scene(&s, Repr::Tube, Coloring::Chain, false));
+        assert_eq!(both.capsule_residue.len(), both.capsules.len());
+        assert_eq!(both.capsule_residue.iter().filter(|&&r| r != NO_RESIDUE).count(), scene(&s, Repr::Tube, Coloring::Chain, false).capsules.len());
     }
 
     #[test]

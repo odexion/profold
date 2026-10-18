@@ -237,6 +237,9 @@ pub struct Viewer {
     /// The scene without anything glowing in it, which a glow is laid over
     /// without building the rest again.
     base: Arc<Scene>,
+    /// The triangles and capsules of `base` each structure was built into,
+    /// by `Target::which`, for painting one of its residues.
+    parts: [(std::ops::Range<usize>, std::ops::Range<usize>); 2],
 
     open: Option<Dropdown>,
     export: Option<Task<()>>,
@@ -377,6 +380,7 @@ impl Viewer {
             selected: None,
             seq_hover: None,
             base: Arc::new(Scene::default()),
+            parts: [(0..0, 0..0), (0..0, 0..0)],
             open: None,
             export: None,
             prompt: None,
@@ -755,7 +759,9 @@ impl Viewer {
             _ => 0.3,
         };
         let mut scene = Scene::default();
-        for s in self.visible() {
+        let mut parts = [(0..0, 0..0), (0..0, 0..0)];
+        for (which, s) in (0..2).filter_map(|w| Some((w, self.shown(w)?))) {
+            let start = (scene.tris.len(), scene.capsules.len());
             scene.merge(render::build_scene(
                 s,
                 self.repr,
@@ -767,7 +773,9 @@ impl Viewer {
                 self.show_cell,
                 &self.appearance,
             ));
+            parts[which] = (start.0..scene.tris.len(), start.1..scene.capsules.len());
         }
+        self.parts = parts;
         self.base = Arc::new(scene);
         self.compose(cx);
         self.persist();
@@ -780,10 +788,20 @@ impl Viewer {
             let s = self.structure.as_ref()?;
             Some(Target { which: 0, picked: residue_pick(s, r)? })
         });
-        let glows: Vec<Target> = self.selected.into_iter().chain(hovered).collect();
+        // Pointed at, it is painted most of the way; picked, all the way.
+        let glows: Vec<(Target, bool)> = hovered
+            .map(|t| (t, true))
+            .into_iter()
+            .chain(self.selected.map(|t| (t, false)))
+            .collect();
         let mut scene = Scene::clone(&self.base);
-        for t in glows {
+        for (t, faint) in glows {
             if let Some(s) = self.shown(t.which) {
+                if t.picked.residue {
+                    let (tris, capsules) = self.parts[t.which].clone();
+                    let residue = s.atoms[t.picked.atom].residue;
+                    scene.paint_residue(tris, capsules, residue, self.style, faint);
+                }
                 scene.merge(render::build_highlight(s, t.picked, self.repr, self.style, &self.appearance));
             }
         }
@@ -5052,10 +5070,12 @@ mod ui_tests {
         });
         cx.run_until_parked();
         let glows = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            // In Cartoon a residue is painted on the ribbon: what differs
+            // from the scene with nothing marked.
             view.update(cx, |this, _| {
-                let scene = &this.scene;
-                scene.spheres.iter().filter(|s| s.alpha < 1.0).count()
-                    + scene.capsules.iter().filter(|c| c.alpha < 1.0).count()
+                let (now, base) = (&this.scene, &this.base);
+                now.tris.iter().zip(&base.tris).filter(|(a, b)| a.c != b.c).count()
+                    + now.spheres.iter().filter(|s| s.alpha < 1.0).count()
             })
         };
         assert_eq!(glows(&view, cx), 0);
