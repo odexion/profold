@@ -109,6 +109,7 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
             break;
         }
         b.frames.push(Snapshot {
+            step: None,
             pos: m.atoms.iter().map(|a| a.1).collect(),
             cell: None,
         });

@@ -129,7 +129,7 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
             if frame.len() != total {
                 break;
             }
-            b.frames.push(Snapshot { pos: frame, cell: None });
+            b.frames.push(Snapshot { step: None, pos: frame, cell: None });
         }
     }
 

@@ -234,6 +234,7 @@ ITEM: ATOMS id type xs ys zs
     assert_eq!(s.frame_count(), 2);
     assert!(close(s.atoms[1].pos, [1.0, 1.0, 1.0]));
     assert!(close(s.frames[1].pos[0], [0.2, 0.0, 0.0]));
+    assert_eq!(s.frames.iter().map(|f| f.step).collect::<Vec<_>>(), vec![Some(0), Some(100)]);
     assert_eq!(s.kinds, vec!["1".to_string(), "2".to_string()]);
     assert!(!s.atoms[0].element.is_known());
     // Atoms of no element are drawn half their spacing across.

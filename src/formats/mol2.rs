@@ -35,6 +35,7 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
                     molecule += 1;
                     if molecule > 2 || (molecule == 2 && !frame.is_empty()) {
                         b.frames.push(Snapshot {
+                            step: None,
                             pos: std::mem::take(&mut frame),
                             cell: None,
                         });
@@ -109,7 +110,7 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
         }
     }
     if !frame.is_empty() {
-        b.frames.push(Snapshot { pos: frame, cell: None });
+        b.frames.push(Snapshot { step: None, pos: frame, cell: None });
     }
 
     if b.len() == 0 {

@@ -107,6 +107,8 @@ impl Cell {
 /// too under constant pressure.
 #[derive(Clone)]
 pub struct Snapshot {
+    /// The simulation's own step number for the frame, where the file says.
+    pub step: Option<i64>,
     pub pos: Vec<[f32; 3]>,
     pub cell: Option<Cell>,
 }
@@ -934,6 +936,8 @@ pub struct Builder {
     pub cell: Option<Cell>,
     /// Frames after the first; the first is the atoms themselves.
     pub frames: Vec<Snapshot>,
+    /// The step number of that first frame, where the file says.
+    pub first_step: Option<i64>,
     pub kinds: Vec<String>,
     pub format: Option<&'static str>,
     pub assemblies: Vec<crate::assembly::Assembly>,
@@ -1073,6 +1077,7 @@ impl Builder {
         structure.unknown_radius = crate::bonds::spacing_radius(&self.atoms);
         if !self.frames.is_empty() {
             let first = Snapshot {
+                step: self.first_step,
                 pos: self.atoms.iter().map(|a| a.pos).collect(),
                 cell: self.cell,
             };

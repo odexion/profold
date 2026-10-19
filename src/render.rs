@@ -645,7 +645,7 @@ impl Style {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Camera {
     /// World to view, as rows. Dragging turns it about the screen's own
     /// axes, trackball fashion, so the molecule can go all the way round in
@@ -704,6 +704,14 @@ impl Camera {
     pub fn rotate(&mut self, across: f32, down: f32) {
         let turned = mul(mul(tilt(down), spin(across)), self.orientation);
         self.orientation = orthonormal(turned);
+    }
+
+    /// Turn the view in the screen's plane, clockwise as seen for positive
+    /// `a`.
+    pub fn roll(&mut self, a: f32) {
+        let (s, c) = a.sin_cos();
+        let roll = [[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]];
+        self.orientation = orthonormal(mul(roll, self.orientation));
     }
 
     /// Rotation away from the opening view, in degrees about the screen's
@@ -862,7 +870,7 @@ fn tilt(a: f32) -> [[f32; 3]; 3] {
     [[1.0, 0.0, 0.0], [0.0, c, s], [0.0, -s, c]]
 }
 
-fn mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+pub(crate) fn mul(a: [[f32; 3]; 3], b: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
     let mut m = [[0.0; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
@@ -884,7 +892,7 @@ fn transpose(a: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
 
 /// Square the rows up again, so thousands of small turns do not let the
 /// rotation drift into a skew.
-fn orthonormal(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+pub(crate) fn orthonormal(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
     let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let unit = |a: [f32; 3]| {
         let n = dot(a, a).sqrt().max(1e-12);
@@ -3456,6 +3464,16 @@ mod tests {
             s, repr, coloring, 1.0, Style::Soft, Palette::Spectrum, false, cell,
             &Appearance::default(),
         )
+    }
+
+    #[test]
+    fn a_positive_roll_turns_the_view_clockwise() {
+        let mut cam = Camera { orientation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], zoom: 1.0, pan: [0.0; 2], center: [0.0; 3], radius: 10.0, perspective: false, slab: None };
+        cam.roll(std::f32::consts::FRAC_PI_2);
+        // What was to the right now points down the screen (view y is up).
+        let m = cam.basis();
+        let v = [m[0][0], m[1][0], m[2][0]];
+        assert!(v[0].abs() < 1e-5 && (v[1] + 1.0).abs() < 1e-5 && v[2].abs() < 1e-5, "{v:?}");
     }
 
     #[test]

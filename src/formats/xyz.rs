@@ -141,7 +141,7 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
             if frame.len() != expected {
                 break;
             }
-            b.frames.push(Snapshot { pos: frame, cell });
+            b.frames.push(Snapshot { step: None, pos: frame, cell });
         }
     }
 

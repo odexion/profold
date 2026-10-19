@@ -76,7 +76,7 @@ pub fn dcd(bytes: &[u8]) -> Result<(usize, Vec<Snapshot>)> {
             record();
         }
         let pos = (0..natoms).map(|i| [x[i], y[i], z[i]]).collect();
-        frames.push(Snapshot { pos, cell });
+        frames.push(Snapshot { step: None, pos, cell });
     }
     if frames.is_empty() {
         bail!("the DCD file has no frames");
@@ -122,7 +122,7 @@ pub fn xtc(bytes: &[u8]) -> Result<(usize, Vec<Snapshot>)> {
         });
         let coords = xtc_coords(&mut r, natoms)?;
         let pos = coords.chunks_exact(3).map(|c| [c[0] * 10.0, c[1] * 10.0, c[2] * 10.0]).collect();
-        frames.push(Snapshot { pos, cell });
+        frames.push(Snapshot { step: None, pos, cell });
     }
     if frames.is_empty() {
         bail!("the XTC file has no frames");

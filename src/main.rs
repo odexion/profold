@@ -15,6 +15,7 @@ mod formats;
 mod gpu;
 mod job;
 mod measure;
+mod movie;
 mod plugins;
 mod protein;
 mod render;

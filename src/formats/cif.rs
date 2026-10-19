@@ -180,6 +180,7 @@ fn parse_mmcif(text: &str, id: String, source: Source) -> Result<Structure> {
                 if current_model.as_deref() != Some(model) {
                     if !frame.is_empty() {
                         b.frames.push(Snapshot {
+                            step: None,
                             pos: std::mem::take(&mut frame),
                             cell: None,
                         });
@@ -223,7 +224,7 @@ fn parse_mmcif(text: &str, id: String, source: Source) -> Result<Structure> {
             });
         }
         if !frame.is_empty() {
-            b.frames.push(Snapshot { pos: frame, cell: None });
+            b.frames.push(Snapshot { step: None, pos: frame, cell: None });
         }
         break;
     }

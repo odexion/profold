@@ -32,6 +32,8 @@ use crate::formats::write;
 mod session;
 #[path = "console.rs"]
 mod console;
+#[path = "export.rs"]
+mod export;
 use crate::measure::{self, Measurement};
 use crate::protein::{LigandPaint, Source, Structure};
 use crate::render::{
@@ -114,6 +116,8 @@ enum Field {
     Zoom,
     Hex(Pick),
     Rgb(Pick),
+    /// A value in the film dialog.
+    Movie(export::Knob),
 }
 
 /// What a colour picker colours.
@@ -206,23 +210,6 @@ struct PlotCache {
 
 /// The side of each plot, in pixels: the panel's width inside its margins.
 const PLOT: f32 = PANEL_WIDTH - 40.0;
-
-/// Frames as an endlessly looping GIF, each shown for its milliseconds.
-fn encode_gif(frames: Vec<(render::Frame, u32)>, out: impl std::io::Write) -> anyhow::Result<()> {
-    use image::codecs::gif::{GifEncoder, Repeat};
-    let mut encoder = GifEncoder::new_with_speed(out, 10);
-    encoder.set_repeat(Repeat::Infinite)?;
-    encoder.encode_frames(frames.into_iter().map(|(frame, delay)| {
-        // The renderer hands back BGRA.
-        let mut rgba = frame.bgra;
-        for p in rgba.chunks_exact_mut(4) {
-            p.swap(0, 2);
-        }
-        let buffer = image::RgbaImage::from_raw(frame.width as u32, frame.height as u32, rgba).expect("sized to fit");
-        image::Frame::from_parts(buffer, 0, 0, image::Delay::from_numer_denom_ms(delay, 1))
-    }))?;
-    Ok(())
-}
 
 /// A small picture from colours row by row, as GPUI takes them.
 fn picture(width: usize, height: usize, rgb: impl Fn(usize, usize) -> [f32; 3]) -> Arc<gpui::RenderImage> {
@@ -319,6 +306,8 @@ const CLICK_SLOP: f32 = 3.0;
 enum Drag {
     Orbit,
     Pan,
+    /// Turning in the screen's plane, about the middle of the view.
+    Roll,
 }
 
 /// The menus in the top bar. One at a time.
@@ -484,6 +473,9 @@ pub struct Viewer {
     all_chains: bool,
     /// The settings as last written, so they are written only on change.
     saved: String,
+
+    /// The film dialog, its preview and export, and recording.
+    movie: export::Movie,
 
     /// Trajectory playback.
     playing: bool,
@@ -699,6 +691,7 @@ impl Viewer {
             picking: None,
             all_chains: false,
             saved: settings.to_json(),
+            movie: Default::default(),
             playing: false,
             play_task: None,
             scrubber: Rc::new(Shared::new(Bounds::default())),
@@ -1523,7 +1516,7 @@ impl Viewer {
             {
                 self.opening = None;
                 let frames: Vec<crate::protein::Snapshot> = if s.frames.is_empty() {
-                    vec![crate::protein::Snapshot { pos: s.atoms.iter().map(|a| a.pos).collect(), cell: s.cell }]
+                    vec![crate::protein::Snapshot { step: None, pos: s.atoms.iter().map(|a| a.pos).collect(), cell: s.cell }]
                 } else {
                     s.frames.to_vec()
                 };
@@ -2104,6 +2097,7 @@ impl Viewer {
                     self.paint(target, Some(c), cx);
                 }
             }
+            Field::Movie(knob) => self.commit_movie(knob, &text, cx),
         }
         cx.notify();
     }
@@ -2465,70 +2459,6 @@ impl Viewer {
             )))
     }
 
-    /// Save an animation as a GIF: one turn of the molecule, or with
-    /// `trajectory` its frames played through. Drawn and encoded off the
-    /// main thread, no more than 720 pixels across.
-    pub fn save_gif(&mut self, trajectory: bool, cx: &mut Context<Self>) {
-        self.open = None;
-        let (w, h) = self.cache.borrow().size;
-        let Some(structure) = self.structure.clone() else { return };
-        if w == 0 || h == 0 {
-            return;
-        }
-        let k = (720.0 / w.max(h) as f32).min(1.0);
-        let (width, height) = (((w as f32 * k) as usize).max(2), ((h as f32 * k) as usize).max(2));
-        let (camera, style, repr, coloring, palette, standard, cell) =
-            (self.camera, self.style, self.repr, self.coloring, self.palette, self.standard_colors, self.show_cell);
-        let appearance = self.appearance.clone();
-        let scene = self.scene.clone();
-        let page = theme::view();
-        let suggested = format!("{}{}.gif", structure.id.to_lowercase(), if trajectory { "-trajectory" } else { "-turn" });
-        let directory = dirs::home_dir().map(|home| home.join("Desktop")).unwrap_or_else(|| PathBuf::from("."));
-        let chosen = cx.prompt_for_new_path(&directory, Some(&suggested));
-        self.export = Some(cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(path))) = chosen.await else { return };
-            let _ = this.update(cx, |this, cx| {
-                this.note("Drawing the animation".to_string());
-                cx.notify();
-            });
-            let made = cx
-                .background_executor()
-                .spawn(async move {
-                    let to_frame = |frame: render::Frame, delay: u32| (frame, delay);
-                    let mut frames = Vec::new();
-                    if trajectory {
-                        let count = structure.frame_count();
-                        let step = count.div_ceil(200).max(1);
-                        let mut s = Structure::clone(&structure);
-                        for i in (0..count).step_by(step) {
-                            s.set_frame(i);
-                            let sc = render::build_scene(&s, repr, coloring, 1.0, style, palette, standard, cell, &appearance).stamp();
-                            frames.push(to_frame(render::render(&sc, &camera, width, height, page, style), 60));
-                        }
-                    } else {
-                        let mut cam = camera;
-                        for _ in 0..72 {
-                            frames.push(to_frame(render::render(&scene, &cam, width, height, page, style), 40));
-                            cam.rotate(std::f32::consts::TAU / 72.0, 0.0);
-                        }
-                    }
-                    encode_gif(frames, std::fs::File::create(&path)?)?;
-                    anyhow::Ok(path)
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                match made {
-                    Ok(path) => {
-                        this.note(format!("Saved {}", path.display()));
-                        cx.reveal_path(&path);
-                    }
-                    Err(e) => this.error = Some(format!("{e:#}").into()),
-                }
-                cx.notify();
-            });
-        }));
-    }
-
     /// After a change of palette, say for a few seconds what kept its own
     /// colour through it, so the colours that did not move are no surprise.
     fn say_kept(&mut self, cx: &mut Context<Self>) {
@@ -2773,6 +2703,7 @@ impl Viewer {
                     ("⌘1 – ⌘9", "Go to a tab"),
                     ("⌃Tab", "Next tab"),
                     ("⇧⌘S", "Export an image"),
+                    ("⇧⌘E", "Export a film"),
                 ],
             ),
             (
@@ -2792,6 +2723,7 @@ impl Viewer {
                 &[
                     ("Drag", "Turn"),
                     ("⇧ Drag", "Move"),
+                    ("⌘ Drag", "Roll clockwise or back"),
                     ("Scroll", "Zoom"),
                     ("Double-click", "Fit the structure to the view"),
                     ("Click", "Pick an atom or residue"),
@@ -2954,6 +2886,8 @@ impl Viewer {
         } else {
             self.drag = Some(if e.modifiers.shift || e.button == MouseButton::Right {
                 Drag::Pan
+            } else if e.modifiers.platform {
+                Drag::Roll
             } else {
                 Drag::Orbit
             });
@@ -2994,6 +2928,19 @@ impl Viewer {
             Drag::Pan => {
                 self.camera.pan[0] += dx;
                 self.camera.pan[1] += dy;
+            }
+            Drag::Roll => {
+                // The angle the pointer sweeps about the middle of the view,
+                // so the molecule turns with the hand.
+                let bounds = self.cache.borrow().bounds;
+                let cx_ = f32::from(bounds.origin.x + bounds.size.width / 2.0) + self.camera.pan[0];
+                let cy_ = f32::from(bounds.origin.y + bounds.size.height / 2.0) + self.camera.pan[1];
+                let (x, y) = (f32::from(e.position.x) - cx_, f32::from(e.position.y) - cy_);
+                let (px_, py_) = (x - dx, y - dy);
+                if x * x + y * y > 4.0 && px_ * px_ + py_ * py_ > 4.0 {
+                    let a = (px_ * y - py_ * x).atan2(px_ * x + py_ * y);
+                    self.camera.roll(a);
+                }
             }
         }
         cx.notify();
@@ -4202,14 +4149,22 @@ impl Viewer {
     /// Write the viewport out as a picture, at a multiple of its size.
     fn image_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (w, h) = self.cache.borrow().size;
-        let gif_turn = item("gif-turn", "Save GIF · one turn".into(), false)
-            .debug_selector(|| "gif-turn".into())
-            .on_click(cx.listener(|this, _, _, cx| this.save_gif(false, cx)));
-        let gif_traj = (self.frame_count() > 1).then(|| {
-            item("gif-trajectory", "Save GIF · the trajectory".into(), false)
-                .debug_selector(|| "gif-trajectory".into())
-                .on_click(cx.listener(|this, _, _, cx| this.save_gif(true, cx)))
-        });
+        let film = item("movie-open", "Export film…".into(), false)
+            .debug_selector(|| "movie-open".into())
+            .on_click(cx.listener(|this, _, _, cx| this.open_movie(cx)));
+        let record = item(
+            "movie-record-menu",
+            if self.recording() { "Stop recording".into() } else { "Record a camera path".into() },
+            false,
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.open = None;
+            if this.recording() {
+                this.stop_recording(cx);
+            } else {
+                this.start_recording(cx);
+            }
+        }));
         let transparent = item("transparent", "Transparent background".into(), self.transparent)
             .debug_selector(|| "transparent".into())
             .on_click(cx.listener(|this, _, _, cx| {
@@ -4255,8 +4210,8 @@ impl Viewer {
             .child(divide())
             .child(transparent)
             .child(divide())
-            .child(gif_turn)
-            .when_some(gif_traj, |d, g| d.child(g))
+            .child(film)
+            .child(record)
     }
 
     /// The logo and what the tab is for, at the head of the panel.
@@ -6856,12 +6811,15 @@ impl Viewer {
                         .text_size(px(9.5))
                         .text_color(theme::faint())
                         .child(format!(
-                            "drag to orbit · shift-drag to pan · scroll to zoom · double-click to reset · {} for shortcuts",
+                            "drag to orbit · shift-drag to pan · {}-drag to roll · scroll to zoom · double-click to reset · {} for shortcuts",
+                            theme::keys("⌘"),
                             theme::keys("⌘/")
                         )),
                 )
             })
             .children(self.console_view())
+            .children(self.recording_badge(cx))
+            .children(self.movie_dialog(cx))
             .children(self.shortcut_sheet(cx))
     }
 }
@@ -8327,6 +8285,48 @@ mod ui_tests {
     }
 
     #[gpui::test]
+    fn the_film_dialog_sets_up_a_turning_trajectory(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        let melt = SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+        view.update(cx, |this, cx| {
+            this.show(formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap(), cx);
+            this.open_movie(cx);
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("movie").is_some(), "the dialog is not up");
+        let frames = view.update(cx, |this, _| this.frame_count());
+        // Turning, every other frame, smoothed.
+        view.update(cx, |this, cx| {
+            this.change(cx, |o| {
+                o.motion = crate::movie::Motion::Turn;
+                o.every = 2;
+                o.smooth = 1;
+                o.trajectory = true;
+                o.seconds = 0.0;
+            })
+        });
+        cx.run_until_parked();
+        let (count, _) = view.update(cx, |this, _| this.movie_length(&this.options()));
+        let used = frames.div_ceil(2);
+        assert_eq!(count, (used - 1) * 2 + 1);
+
+        // Recording a path makes it the camera's motion.
+        view.update(cx, |this, cx| {
+            this.close_movie(cx);
+            this.start_recording(cx);
+        });
+        assert!(view.update(cx, |this, _| !this.movie.open && this.recording()));
+        view.update(cx, |this, cx| {
+            this.camera.rotate(0.5, 0.0);
+            this.stop_recording(cx);
+        });
+        cx.run_until_parked();
+        let motion = view.update(cx, |this, _| this.options().motion);
+        assert_eq!(motion, crate::movie::Motion::Recorded);
+        assert!(view.update(cx, |this, _| this.movie.open && !this.recording()), "the dialog did not come back");
+    }
+
+    #[gpui::test]
     fn a_trajectory_moves_the_structure_shown(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
         let crambin = formats::load_bytes(SAMPLES[2].file, SAMPLES[2].bytes.to_vec()).unwrap();
@@ -8334,7 +8334,7 @@ mod ui_tests {
         cx.run_until_parked();
         // Three frames, each shifted a little further along x.
         let frames: Vec<crate::protein::Snapshot> = (0..3)
-            .map(|k| crate::protein::Snapshot { pos: crambin.atoms.iter().map(|a| [a.pos[0] + k as f32, a.pos[1], a.pos[2]]).collect(), cell: None })
+            .map(|k| crate::protein::Snapshot { step: None, pos: crambin.atoms.iter().map(|a| [a.pos[0] + k as f32, a.pos[1], a.pos[2]]).collect(), cell: None })
             .collect();
         let traj = Structure::beads("run.dcd", crambin.atoms.len(), frames);
         view.update(cx, |this, cx| this.finish(Ok(traj), cx));
@@ -8351,30 +8351,56 @@ mod ui_tests {
         assert!((moved[0] - crambin.atoms[0].pos[0] - 2.0).abs() < 1e-5);
 
         // One that does not fit opens on its own, as beads.
-        let other = Structure::beads("other.xtc", 10, vec![crate::protein::Snapshot { pos: vec![[0.0; 3]; 10], cell: None }]);
+        let other = Structure::beads("other.xtc", 10, vec![crate::protein::Snapshot { step: None, pos: vec![[0.0; 3]; 10], cell: None }]);
         view.update(cx, |this, cx| this.finish(Ok(other), cx));
         assert_eq!(view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms.len()), 10);
     }
 
     #[test]
-    fn a_turn_is_written_as_a_looping_gif() {
+    fn a_trajectory_turning_is_written_as_a_looping_gif() {
         use image::AnimationDecoder;
-        let s = formats::load_bytes(SAMPLES[0].file, SAMPLES[0].bytes.to_vec()).unwrap();
-        let scene = render::build_scene(&s, Repr::BallAndStick, Coloring::Element, 1.0, Style::Soft, Palette::Spectrum, true, false, &Appearance::default());
-        let mut cam = Camera::frame(&s);
-        let frames: Vec<(render::Frame, u32)> = (0..6)
-            .map(|_| {
-                let f = render::render_cpu(&scene, &cam, 120, 90, [1.0; 3], Style::Soft);
-                cam.rotate(1.0, 0.0);
-                (f, 40)
-            })
-            .collect();
-        let mut bytes = Vec::new();
-        encode_gif(frames, &mut bytes).unwrap();
+        let melt = SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+        let s = formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap();
+        assert!(s.frame_count() > 4);
+        let options = crate::movie::Options {
+            motion: crate::movie::Motion::Turn,
+            last: 4,
+            seconds: 0.0,
+            size: crate::movie::Size::Custom,
+            width: 120,
+            height: 90,
+            supersample: 2,
+            format: crate::movie::Format::Gif,
+            counter: true,
+            scale_bar: true,
+            caption: "melt".into(),
+            ..Default::default()
+        };
+        let camera = Camera::frame(&s);
+        let shots = crate::movie::plan(&options, &camera, 0, s.frame_count(), None);
+        assert_eq!(shots.len(), 4);
+        let job = crate::movie::Job {
+            structure: s,
+            build: Arc::new(|s: &Structure| {
+                render::build_scene(s, Repr::Spacefill, Coloring::Element, 1.0, Style::Soft, Palette::Spectrum, true, false, &Appearance::default())
+            }),
+            style: Style::Soft,
+            page: [1.0; 3],
+            view: (120, 90),
+            shots,
+            options,
+        };
+        let dir = std::env::temp_dir().join(format!("profold-gif-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let progress = crate::movie::Progress::default();
+        let path = crate::movie::export(&job, &dir.join("melt.gif"), &progress).unwrap();
+        assert_eq!(progress.done.load(std::sync::atomic::Ordering::Relaxed), 4);
+        let bytes = std::fs::read(&path).unwrap();
         let decoded = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).unwrap().into_frames().collect_frames().unwrap();
-        assert_eq!(decoded.len(), 6);
+        assert_eq!(decoded.len(), 4);
         assert_eq!(decoded[0].buffer().dimensions(), (120, 90));
-        assert_ne!(decoded[0].buffer().as_raw(), decoded[3].buffer().as_raw(), "every frame the same");
+        assert_ne!(decoded[0].buffer().as_raw(), decoded[2].buffer().as_raw(), "every frame the same");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[gpui::test]

@@ -203,6 +203,7 @@ pub fn parse_data(text: &str, id: String, source: Source) -> Result<Structure> {
 // ---------------------------------------------------------------------------
 
 struct DumpFrame {
+    step: Option<i64>,
     cell: Cell,
     /// Sorted by atom id.
     atoms: Vec<DumpAtom>,
@@ -254,6 +255,7 @@ fn read_frames(text: &str) -> Result<Vec<DumpFrame>> {
     let mut frames = Vec::new();
     let mut lines = text.lines();
     let mut natoms = 0usize;
+    let mut step = None;
     let mut cell = Cell::from_bounds([0.0; 3], [1.0; 3]);
 
     while let Some(line) = lines.next() {
@@ -261,7 +263,9 @@ fn read_frames(text: &str) -> Result<Vec<DumpFrame>> {
             continue;
         };
         let item = item.trim();
-        if item.starts_with("NUMBER OF ATOMS") {
+        if item.starts_with("TIMESTEP") {
+            step = lines.next().and_then(|l| l.trim().parse().ok());
+        } else if item.starts_with("NUMBER OF ATOMS") {
             natoms = lines.next().unwrap_or("").trim().parse().unwrap_or(0);
         } else if item.starts_with("BOX BOUNDS") {
             let tilted = item.contains("xy");
@@ -348,7 +352,7 @@ fn read_frames(text: &str) -> Result<Vec<DumpFrame>> {
                 });
             }
             atoms.sort_by_key(|a| a.id);
-            frames.push(DumpFrame { cell, atoms });
+            frames.push(DumpFrame { step: step.take(), cell, atoms });
         }
     }
     Ok(frames)
@@ -361,6 +365,7 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
     };
     let mut b = Builder::new("LAMMPS dump");
     b.cell = Some(first.cell);
+    b.first_step = first.step;
     for a in &first.atoms {
         let kind = b.kind(&a.kind);
         b.push(Record {
@@ -379,6 +384,7 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
             break;
         }
         b.frames.push(Snapshot {
+            step: f.step,
             pos: f.atoms.iter().map(|a| a.pos).collect(),
             cell: Some(f.cell),
         });

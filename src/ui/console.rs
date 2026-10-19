@@ -33,6 +33,11 @@ pub const HELP: &[(&str, &str)] = &[
     ("water on|off, hydrogens on|off", "toggle display"),
     ("frame <n>, play", "step a trajectory"),
     ("save <file.png|.pdb|.cif|.profold>", "save to file without prompting"),
+    (
+        "movie [<file.mp4|.gif|.webm|.mov|folder> key=value …]",
+        "open the film dialog, or make a film: frames=first:last:every fps= seconds= turn=° rock=° axis=x|y|z smooth= pingpong size=1080p|4k|WxH aa= quality= bg=theme|transparent|#hex counter time dt=2fs scalebar caption=\"…\" recorded",
+    ),
+    ("record, record stop", "record a camera path, for movie … recorded"),
     ("run <script>", "run commands from a script file, one per line"),
     ("undo, redo, help", ""),
 ];
@@ -329,6 +334,21 @@ impl Viewer {
                 }
                 format!("saved {}", path.display())
             }
+            "movie" | "film" => self.movie_command(rest, cx)?,
+            "record" => match rest {
+                "" | "start" | "on" => {
+                    if self.recording() {
+                        bail!("already recording; record stop ends it");
+                    }
+                    self.start_recording(cx);
+                    "recording; record stop ends it".into()
+                }
+                "stop" | "off" | "end" => match self.stop_recording(cx) {
+                    Some(t) => format!("recorded {t:.1} s; movie <file> recorded makes a film of it"),
+                    None => bail!("nothing is being recorded"),
+                },
+                other => bail!("record takes start or stop, not {other}"),
+            },
             "run" | "source" | "@" => {
                 need("a script")?;
                 let text = std::fs::read_to_string(rest).with_context(|| format!("could not read {rest}"))?;

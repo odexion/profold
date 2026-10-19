@@ -50,6 +50,7 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
             if seen_atoms {
                 if model > 0 {
                     b.frames.push(Snapshot {
+                        step: None,
                         pos: std::mem::take(&mut frame),
                         cell: None,
                     });
@@ -107,7 +108,7 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
     }
     // A last model with no ENDMDL after it.
     if !frame.is_empty() {
-        b.frames.push(Snapshot { pos: frame, cell: None });
+        b.frames.push(Snapshot { step: None, pos: frame, cell: None });
     }
 
     if b.len() == 0 {

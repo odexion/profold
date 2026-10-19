@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Films
+- **Export film** (Image menu, ⇧⌘E) replaces the two fixed GIFs with one
+  dialog. A trajectory plays through while the camera holds still, turns,
+  rocks, or follows a path you recorded by hand, all at once if you like.
+- **Recording.** *Record a camera path* captures what you do in the viewport,
+  30 times a second: turning, zooming, panning, and playing or scrubbing the
+  trajectory. Stop it, and the film plays it back at full quality.
+- **Frames.** Set the first and last frame and keep every Nth. Smoothing
+  blends 2×, 4× or 8× between frames (the short way across a periodic cell),
+  and ping-pong plays forward then back. Set a frame rate, plus a length in
+  seconds or *auto*.
+- **Image.** Window size, 720p, 1080p, 4K, square or custom; 1×, 2× or 4×
+  antialiasing; a quality setting for video; the background as shown, a
+  colour of your own, or transparent.
+- **Formats.** MP4 (H.264, encoded in the app), GIF, and numbered PNGs with
+  transparency. With ffmpeg installed, also WebM (VP9) and ProRes 4444, both
+  with transparency.
+- **Overlays.** A frame counter, the simulation step and time (LAMMPS
+  timesteps are now read; give the timestep in fs, ps or τ), a scale bar,
+  and a caption.
+- **Preview** plays a small version in the dialog first. While a film is
+  being made it shows a progress bar with Cancel, and the settings are
+  remembered.
+- **Console.** `movie` opens the dialog; `movie out.mp4 frames=1:500:2 fps=30
+  turn=360 smooth=3 bg=transparent counter scalebar caption="…"` makes a
+  film without it. `record` and `record stop` capture a path for
+  `movie … recorded`.
+
 ## 0.3.0 — 2026-10-18
 
 ### Looking at a structure

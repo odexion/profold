@@ -9,6 +9,9 @@ with, the third-party software and data listed here, each under its own terms.
 | --- | --- | --- |
 | [GPUI](https://www.gpui.rs) | Apache-2.0 | UI framework. [`src/ui/input.rs`](src/ui/input.rs) is adapted from GPUI's `input.rs` example and keeps the Apache-2.0 terms for the parts taken from it. |
 | [wgpu](https://wgpu.rs) | MIT OR Apache-2.0 | GPU rendering |
+| [OpenH264](https://github.com/cisco/openh264), through the [openh264](https://github.com/ralfbiedert/openh264-rs) crate | BSD-2-Clause | H.264 encoding for MP4 films, built from source. H.264 is covered by patents (MPEG LA / Via LA); Cisco's royalty coverage applies only to its own prebuilt binaries, not to this build. |
+| [Inter](https://rsms.me/inter/) | SIL Open Font License 1.1 ([`assets/fonts/Inter-LICENSE`](assets/fonts/Inter-LICENSE)) | The typeface for captions and labels written into films |
+| [mp4](https://github.com/alfg/mp4-rust), [ab_glyph](https://github.com/alexheretic/ab-glyph) | MIT; Apache-2.0 | MP4 writing; drawing text into films |
 | [rayon](https://github.com/rayon-rs/rayon), [image](https://github.com/image-rs/image), [ureq](https://github.com/algesten/ureq), [flate2](https://github.com/rust-lang/flate2-rs), [serde_json](https://github.com/serde-rs/json) and others | MIT OR Apache-2.0 | |
 
 profold has nearly 800 crates in its dependency tree, across all platforms. Nearly all of them are

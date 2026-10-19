@@ -45,6 +45,7 @@ actions!(
         HideOthers,
         ShowAll,
         SaveImage,
+        ExportMovie,
         ToggleDark,
         ShowCartoon,
         ShowTube,
@@ -101,6 +102,7 @@ pub fn bind_keys(cx: &mut App) {
         #[cfg(not(target_os = "macos"))]
         gpui::KeyBinding::new("alt-f4", Quit, None),
         gpui::KeyBinding::new("secondary-shift-s", SaveImage, None),
+        gpui::KeyBinding::new("secondary-shift-e", ExportMovie, None),
         gpui::KeyBinding::new("secondary-shift-d", ToggleDark, None),
         // ⌘1 to ⌘9 are the tabs, so the views take ⌥⌘ and the styles ⌃⌘.
         gpui::KeyBinding::new("alt-secondary-1", ShowCartoon, None),
@@ -165,6 +167,7 @@ pub fn menus() -> Vec<Menu> {
                     MenuItem::action("Open…", OpenFile),
                     MenuItem::separator(),
                     MenuItem::action("Save Image…", SaveImage),
+                    MenuItem::action("Export Film…", ExportMovie),
                     MenuItem::separator(),
                     MenuItem::action("Close Tab", CloseTab),
                 ]);
@@ -1110,6 +1113,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleDark, _, cx| this.toggle_theme(cx)))
             .on_action(cx.listener(|this, _: &SaveImage, _, cx| {
                 this.active().update(cx, |tab, cx| tab.save_image(2, cx))
+            }))
+            .on_action(cx.listener(|this, _: &ExportMovie, _, cx| {
+                this.active().update(cx, |tab, cx| tab.open_movie(cx))
             }))
             .on_action(cx.listener(|this, _: &ShowCartoon, _, cx| this.show(Repr::Cartoon, cx)))
             .on_action(cx.listener(|this, _: &ShowTube, _, cx| this.show(Repr::Tube, cx)))
