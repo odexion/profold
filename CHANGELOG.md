@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Viewing
+- **Honest angle readout.** X and Y are now measured from square-on (looking
+  down z, with x across and y up), so the three-quarter opening view reads
+  14° and 32° rather than 0°. Typing 0 and 0 gives the square-on view.
+
 ### Films
 - **Export film** (Image menu, ⇧⌘E) replaces the two fixed GIFs with one
   dialog. A trajectory plays through while the camera holds still, turns,

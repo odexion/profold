@@ -689,8 +689,9 @@ impl Camera {
         }
     }
 
-    /// The three-quarter view every structure opens at, which reads as
-    /// zero degrees on the angle readout.
+    /// The three-quarter view every structure opens at: turned this far
+    /// about the screen's upright, then tilted this far towards the viewer,
+    /// from square on. The angle readout shows it as such, not as zero.
     pub const HOME_YAW: f32 = 0.55;
     pub const HOME_PITCH: f32 = 0.25;
 
@@ -714,8 +715,10 @@ impl Camera {
         self.orientation = orthonormal(mul(roll, self.orientation));
     }
 
-    /// Rotation away from the opening view, in degrees about the screen's
-    /// x axis (tilting) and y axis (turning), each in -180..=180.
+    /// Rotation away from square on (looking down z, with x across and y
+    /// up), in degrees about the screen's x axis (tilting) and y axis
+    /// (turning), each in -180..=180. The opening view reads as its own
+    /// tilt and turn.
     pub fn angles(&self) -> [f32; 2] {
         let wrap = |r: f32| {
             let d = r.to_degrees().rem_euclid(360.0);
@@ -725,10 +728,10 @@ impl Camera {
                 d
             }
         };
-        // The turn from home, read as a tilt after a spin: tilt(a) * spin(b)
-        // has -sin b and cos b along its first row, and -sin a and cos a
-        // down its middle column.
-        let r = mul(self.orientation, transpose(Self::home()));
+        // Read as a tilt after a spin: tilt(a) * spin(b) has -sin b and
+        // cos b along its first row, and -sin a and cos a down its middle
+        // column.
+        let r = self.orientation;
         let turn = (-r[0][2]).atan2(r[0][0]);
         let tilt = (-r[2][1]).atan2(r[1][1]);
         [wrap(tilt), wrap(turn)]
@@ -736,7 +739,7 @@ impl Camera {
 
     /// Set the view to read `[x, y]` degrees on the angle readout.
     pub fn set_angles(&mut self, [x, y]: [f32; 2]) {
-        self.orientation = mul(mul(tilt(x.to_radians()), spin(y.to_radians())), Self::home());
+        self.orientation = mul(tilt(x.to_radians()), spin(y.to_radians()));
     }
 
     pub fn frame(structure: &Structure) -> Self {
@@ -4018,9 +4021,14 @@ mod tests {
     }
 
     #[test]
-    fn angles_start_at_zero() {
+    fn angles_are_read_from_square_on() {
         let mut cam = Camera::frame_all(&[]);
-        assert_eq!(cam.angles(), [0.0, 0.0]);
+        // The opening view is turned and tilted, and says so.
+        let [x, y] = cam.angles();
+        assert!((x - Camera::HOME_PITCH.to_degrees()).abs() < 1e-3, "{x}");
+        assert!((y - Camera::HOME_YAW.to_degrees()).abs() < 1e-3, "{y}");
+        cam.set_angles([0.0, 0.0]);
+        assert_eq!(cam.orientation, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
         cam.rotate(std::f32::consts::FRAC_PI_2, 0.0);
         cam.rotate(0.0, -10f32.to_radians());
         let [x, y] = cam.angles();

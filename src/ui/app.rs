@@ -3554,7 +3554,7 @@ impl Viewer {
             })
     }
 
-    /// How far the view has turned about each axis since it opened, and how
+    /// How far the view is turned about each axis from square on, and how
     /// far it is zoomed, live as the molecule is moved. Click a figure to
     /// type one.
     fn angle_readout(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -8538,8 +8538,8 @@ mod ui_tests {
         cx.run_until_parked();
         click(cx, "tab-camera");
         click(cx, "reset-view");
-        let (angles, zoom) = view.update(cx, |this, _| (this.camera.angles(), this.camera.zoom));
-        assert_eq!(angles, [0.0, 0.0]);
+        let (orientation, zoom) = view.update(cx, |this, _| (this.camera.orientation, this.camera.zoom));
+        assert_eq!(orientation, Camera::home(), "not back at the opening view");
         assert_eq!(zoom, 1.0);
     }
 
