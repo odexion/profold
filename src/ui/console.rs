@@ -23,6 +23,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("style illustrative|flat|soft|studio", "set the rendering style"),
     ("sticks|spheres|hide <selection>", "apply a representation to a selection"),
     ("clear", "clear all selections"),
+    ("layout", "move the panel under the view, phone-shaped, or back beside it"),
     ("distance|angle|dihedral <sel>, <sel>, …", "measure between the first atom of each"),
     ("focus <selection>", "centre the view on a selection"),
     ("site <ligand>", "show a ligand's binding site"),
@@ -70,6 +71,10 @@ impl Viewer {
             self.structure.clone().ok_or_else(|| anyhow!("nothing is open"))
         };
         Ok(match verb.as_str() {
+            "layout" => {
+                cx.dispatch_action(&crate::ui::workspace::ToggleLayout);
+                "the panel moved".into()
+            }
             "help" | "?" => HELP.iter().map(|(c, _)| *c).collect::<Vec<_>>().join(" · "),
             "open" | "load" | "fetch" => {
                 need("a structure to open")?;

@@ -90,6 +90,43 @@ pub fn phone_width(height: f32) -> f32 {
     (height * 0.5).clamp(380., 480.)
 }
 
+/// Make the window this wide, keeping it the same height and centred where
+/// it was, but not past the edges of the screen. On macOS the frame is set
+/// directly: GPUI's own resize sets the size of the content, which is the
+/// whole frame here, and holds the window by its bottom-left corner, so
+/// that a window narrowed and widened again crept across the screen.
+#[cfg(all(target_os = "macos", not(test)))]
+fn set_width(window: &mut Window, width: f32, cx: &mut Context<Workspace>) {
+    use objc2_app_kit::NSView;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = HasWindowHandle::window_handle(&*window) else { return };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return };
+    // SAFETY: the handle is this window's own view, alive while the window is.
+    let view: &NSView = unsafe { appkit.ns_view.cast().as_ref() };
+    let Some(ns_window) = view.window() else { return };
+    let mut frame = ns_window.frame();
+    let width = width as f64;
+    frame.origin.x += (frame.size.width - width) / 2.0;
+    frame.size.width = width;
+    if let Some(screen) = ns_window.screen() {
+        let room = screen.visibleFrame();
+        let right = room.origin.x + room.size.width - width;
+        frame.origin.x = frame.origin.x.min(right).max(room.origin.x);
+    }
+    // Set once this event is done with: the window is drawn again at each
+    // step of the change, and must not be in use when it is.
+    cx.spawn(async move |_, _| ns_window.setFrame_display_animate(frame, true, true))
+        .detach();
+}
+
+// Elsewhere, and in tests, whose windows have no NSWindow behind them.
+#[cfg(any(not(target_os = "macos"), test))]
+fn set_width(window: &mut Window, width: f32, _: &mut Context<Workspace>) {
+    let height = window.bounds().size.height;
+    window.resize(gpui::size(px(width), height));
+}
+
 /// Height of the tab row, which is also the window's title bar.
 const TAB_BAR: f32 = 40.0;
 /// Room for the traffic lights at the left of the bar. Elsewhere the
@@ -293,9 +330,9 @@ pub struct Workspace {
 
     /// Redraws the bar while the updater works.
     update_poll: Option<Task<()>>,
-    /// The window's size before the panel went under the view and the
+    /// The window's width before the panel went under the view and the
     /// window was made phone-shaped, to go back to.
-    landscape: Option<gpui::Size<gpui::Pixels>>,
+    landscape: Option<gpui::Pixels>,
 }
 
 /// A tab being dragged along the bar, by where it was.
@@ -360,20 +397,21 @@ impl Workspace {
     /// The window goes with it: under the view, it is made the shape of a
     /// phone held upright, and back beside, the size it was before. Only
     /// the width changes, as macOS keeps a window's bottom edge where it is
-    /// and a new height would move its title bar. A window filling the
-    /// screen is left as it is.
+    /// A window filling the screen is left as it is.
     fn toggle_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vertical = !theme::vertical();
         if !window.is_fullscreen() && !window.is_maximized() {
-            let size = window.bounds().size;
+            let width = window.bounds().size.width;
             if vertical {
-                self.landscape = Some(size);
-                let height = f32::from(size.height);
-                window.resize(gpui::size(px(phone_width(height)), size.height));
+                self.landscape = Some(width);
+                set_width(window, phone_width(f32::from(window.bounds().size.height)), cx);
             } else {
-                let back = self.landscape.take().map(|s| s.width).unwrap_or(px(1180.));
-                if back > size.width {
-                    window.resize(gpui::size(back, size.height));
+                // The width it had; or, for a window that opened narrow, the
+                // width a window opens at, unless it has been widened since.
+                match self.landscape.take() {
+                    Some(back) => set_width(window, f32::from(back), cx),
+                    None if width < px(1180.) => set_width(window, 1180., cx),
+                    None => {}
                 }
             }
         }

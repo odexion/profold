@@ -339,6 +339,10 @@ enum Dropdown {
     /// Open, with the ways to lay a second structure over the first.
     Open,
     Save,
+    /// The viewport's own choices, folded into menus in a narrow window.
+    Repr,
+    Style,
+    Coloring,
 }
 
 pub struct Viewer {
@@ -508,6 +512,8 @@ pub struct Viewer {
     /// The window is too narrow for the panel's sections side by side, the
     /// angle readout or the hints: as narrow as a phone held upright.
     narrow: bool,
+    /// The viewport is too narrow for its rows of pills, which become menus.
+    compact: bool,
 
     #[cfg(feature = "simplefold")]
     pub(crate) simplefold: SimpleFold,
@@ -723,6 +729,7 @@ impl Viewer {
             scrubbing: false,
             resizing: false,
             narrow: false,
+            compact: false,
             #[cfg(feature = "simplefold")]
             simplefold: SimpleFold::new(),
             copied: false,
@@ -3881,6 +3888,83 @@ impl Viewer {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         };
 
+        // In a viewport as narrow as a phone the rows will not fit across,
+        // so each becomes one button naming the choice made, with the rest
+        // in a menu under it.
+        if self.compact {
+            let reprs: Vec<gpui::AnyElement> = Repr::ALL
+                .iter()
+                .map(|r| {
+                    let r = *r;
+                    let enabled = !r.needs_polymer() || polymer;
+                    item(("repr-item", r as usize), r.label().to_string(), r == repr)
+                        .debug_selector(move || format!("repr-item-{}", r.label()))
+                        .when(!enabled, |d| d.opacity(0.4))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open = None;
+                            this.set_repr(r, cx);
+                        }))
+                        .into_any_element()
+                })
+                .collect();
+            let styles: Vec<gpui::AnyElement> = Style::ALL
+                .iter()
+                .map(|st| {
+                    let st = *st;
+                    item(("style-item", st as usize), st.label().to_string(), st == style)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open = None;
+                            this.set_style(st, cx);
+                        }))
+                        .into_any_element()
+                })
+                .collect();
+            let colour_name = |c: Coloring| match c {
+                Coloring::Chain if !polymer => "Molecule",
+                _ => c.label(),
+            };
+            let colourings: Vec<gpui::AnyElement> = options
+                .iter()
+                .filter(|c| **c != Coloring::Confidence || has_confidence)
+                .filter(|c| **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some()))
+                .filter(|c| **c != Coloring::Structure || polymer)
+                .map(|c| {
+                    let c = *c;
+                    item(("colour-item", c as usize), colour_name(c).to_string(), c == coloring)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open = None;
+                            this.coloring = c;
+                            this.rebuild(cx);
+                        }))
+                        .into_any_element()
+                })
+                .collect();
+            let top = bar()
+                .debug_selector(|| "top-controls".into())
+                .top(px(12.))
+                .child(self.choice(Dropdown::Repr, "repr-menu", repr.label(), false, reprs, cx))
+                .child(self.choice(Dropdown::Style, "style-menu", style.label(), false, styles, cx))
+                .child(group(vec![pill("measure", "Measure", self.measuring)
+                    .debug_selector(|| "measure".into())
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_measuring(cx)))
+                    .into_any_element()]))
+                .when(has_cell, |d| {
+                    d.child(group(vec![pill("cell", "Cell", self.show_cell)
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_cell = !this.show_cell;
+                            this.rebuild(cx);
+                        }))
+                        .into_any_element()]))
+                });
+            let bottom = bar()
+                .bottom(px(bottom))
+                .child(self.palette_button(cx))
+                .child(self.choice(Dropdown::Coloring, "colour-menu", colour_name(coloring), true, colourings, cx));
+            return vec![top.into_any_element(), bottom.into_any_element()];
+        }
+
         // Up top, how it is drawn; at the foot, what it is coloured by
         // beside the palette it is coloured from.
         let top = bar()
@@ -3958,6 +4042,55 @@ impl Viewer {
             ));
 
         vec![top.into_any_element(), bottom.into_any_element()]
+    }
+
+    /// A choice made from a menu: a button naming what is chosen, the size
+    /// of the palette button beside it, with the menu opening away from the
+    /// viewport's edge it sits on.
+    fn choice(
+        &self,
+        which: Dropdown,
+        id: &'static str,
+        label: &'static str,
+        up: bool,
+        items: Vec<gpui::AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let open = self.open == Some(which);
+        let list = menu(156.)
+            .when(up, |d| d.top_auto().bottom(px(36.)))
+            .when(!up, |d| d.top(px(36.)))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.open = None;
+                cx.notify();
+            }))
+            .children(items);
+        let arrow = if open == up { "▾" } else { "▴" };
+        div()
+            .relative()
+            .child(
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .flex()
+                    .items_center()
+                    .gap(px(7.))
+                    .h(px(32.))
+                    .pl(px(12.))
+                    .pr(px(10.))
+                    .rounded(px(8.))
+                    .bg(theme::surface())
+                    .border_1()
+                    .border_color(theme::border())
+                    .shadow_sm()
+                    .cursor_pointer()
+                    .when(open, |d| d.bg(theme::sunken()))
+                    .hover(|s| s.bg(theme::sunken()))
+                    .child(div().text_size(px(11.)).text_color(theme::ink()).child(label))
+                    .child(div().text_size(px(10.)).text_color(theme::muted()).child(arrow))
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle(which, cx))),
+            )
+            .when(open, |d| d.child(deferred(list).with_priority(2)))
     }
 
     /// The current palette, shown as its own ramp; its menu opens upward,
@@ -7971,7 +8104,10 @@ impl Render for Viewer {
         let folding = self.mode == Mode::Fold;
         let structure = self.structure.clone();
         let vertical = theme::vertical();
-        self.narrow = window.viewport_size().width < px(2. * PANEL_WIDTH + 40.);
+        let width = f32::from(window.viewport_size().width);
+        self.narrow = width < 2. * PANEL_WIDTH + 40.;
+        let stage = if vertical { width } else { width - theme::side_width() };
+        self.compact = stage < 640.;
 
         div()
             .flex()
@@ -8806,6 +8942,24 @@ mod ui_tests {
         assert_eq!(crate::settings::recent().first().map(String::as_str), Some("sample:1ubq.pdb.gz"));
         click(cx, "tab-samples");
         assert!(cx.debug_bounds("recent-0").is_some(), "no recent entry in the menu");
+    }
+
+    #[gpui::test]
+    fn a_phone_shaped_window_folds_the_rows_into_menus(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        theme::set_vertical(true);
+        cx.simulate_resize(gpui::size(px(400.), px(820.)));
+        cx.run_until_parked();
+        assert!(view.update(cx, |this, _| this.compact), "no menus in a narrow window");
+        click(cx, "repr-menu");
+        assert!(view.update(cx, |this, _| this.open == Some(Dropdown::Repr)));
+        click(cx, "repr-item-Spacefill");
+        assert!(view.update(cx, |this, _| this.repr == Repr::Spacefill && this.open.is_none()));
+
+        cx.simulate_resize(gpui::size(px(1180.), px(760.)));
+        cx.run_until_parked();
+        assert!(!view.update(cx, |this, _| this.compact), "a wide window keeps its rows");
+        theme::set_vertical(false);
     }
 
     #[gpui::test]

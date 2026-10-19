@@ -4368,6 +4368,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "pollster 0.4.0",
+ "raw-window-handle",
  "rayon",
  "serde_json",
  "sha2 0.10.9",
