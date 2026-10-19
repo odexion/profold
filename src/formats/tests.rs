@@ -573,3 +573,13 @@ fn a_simulation_names_its_atoms_by_type() {
     assert_eq!(card.kind, Some((0, "1".to_string())));
     assert!(card.element.is_none());
 }
+
+/// `PROFOLD_LOAD=<file> cargo test --release time_load -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn time_load() {
+    let path = std::env::var("PROFOLD_LOAD").expect("PROFOLD_LOAD");
+    let t = std::time::Instant::now();
+    let s = super::load_path(std::path::Path::new(&path)).unwrap();
+    println!("{} atoms, {} frames in {:?}", s.atoms.len(), s.frames.len(), t.elapsed());
+}

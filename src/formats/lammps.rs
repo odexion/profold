@@ -205,16 +205,17 @@ pub fn parse_data(text: &str, id: String, source: Source) -> Result<Structure> {
 struct DumpFrame {
     step: Option<i64>,
     cell: Cell,
-    /// Sorted by atom id.
-    atoms: Vec<DumpAtom>,
+    /// In file order, which LAMMPS does not keep from frame to frame.
+    ids: Vec<i64>,
+    pos: Vec<[f32; 3]>,
+    /// Types, elements and molecules, read in the first frame only.
+    detail: Vec<Detail>,
 }
 
-struct DumpAtom {
-    id: i64,
+struct Detail {
     kind: String,
     element: Element,
     mol: i32,
-    pos: [f32; 3],
 }
 
 /// Columns of interest in an `ITEM: ATOMS` header.
@@ -226,6 +227,18 @@ struct Columns {
     mol: Option<usize>,
     pos: [usize; 3],
     scaled: bool,
+}
+
+impl Columns {
+    /// The last column read, so the rest of a line can be skipped.
+    fn last(&self) -> usize {
+        [self.id, self.kind, self.element, self.mass, self.mol]
+            .into_iter()
+            .flatten()
+            .chain(self.pos)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 fn columns(names: &[&str]) -> Result<Columns> {
@@ -251,12 +264,30 @@ fn columns(names: &[&str]) -> Result<Columns> {
     })
 }
 
-fn read_frames(text: &str) -> Result<Vec<DumpFrame>> {
+/// The dump cut where each frame begins, so frames can be read in parallel.
+/// Text before the first `ITEM: TIMESTEP` stays with the first piece.
+fn split_frames(text: &str) -> Vec<&str> {
+    const MARK: &str = "ITEM: TIMESTEP";
+    let mut starts: Vec<usize> = text
+        .match_indices(MARK)
+        .map(|(i, _)| i)
+        .filter(|&i| i == 0 || text.as_bytes()[i - 1] == b'\n')
+        .collect();
+    if starts.first() != Some(&0) {
+        starts.insert(0, 0);
+    }
+    starts.push(text.len());
+    starts.windows(2).map(|w| &text[w[0]..w[1]]).collect()
+}
+
+/// The frames in a piece of a dump; `detail` reads types for the first.
+fn read_frames(text: &str, mut detail: bool) -> Result<Vec<DumpFrame>> {
     let mut frames = Vec::new();
     let mut lines = text.lines();
     let mut natoms = 0usize;
     let mut step = None;
     let mut cell = Cell::from_bounds([0.0; 3], [1.0; 3]);
+    let mut f: Vec<&str> = Vec::new();
 
     while let Some(line) = lines.next() {
         let Some(item) = line.trim().strip_prefix("ITEM:") else {
@@ -295,34 +326,35 @@ fn read_frames(text: &str) -> Result<Vec<DumpFrame>> {
         } else if let Some(header) = item.strip_prefix("ATOMS") {
             let names: Vec<&str> = header.split_whitespace().collect();
             let cols = columns(&names)?;
-            // Only the first frame's types matter; later frames are positions.
-            let detail = frames.is_empty();
-            let mut atoms = Vec::with_capacity(natoms);
+            let last = cols.last();
+            let mut frame = DumpFrame {
+                step: step.take(),
+                cell,
+                ids: Vec::with_capacity(natoms),
+                pos: Vec::with_capacity(natoms),
+                detail: Vec::new(),
+            };
             for (i, line) in lines.by_ref().take(natoms).enumerate() {
-                let f: Vec<&str> = line.split_whitespace().collect();
+                f.clear();
+                f.extend(line.split_whitespace().take(last + 1));
                 let num = |c: usize| f.get(c).and_then(|v| v.parse::<f32>().ok());
                 let (Some(x), Some(y), Some(z)) =
                     (num(cols.pos[0]), num(cols.pos[1]), num(cols.pos[2]))
                 else {
                     continue;
                 };
-                let pos = if cols.scaled {
+                frame.pos.push(if cols.scaled {
                     cell.to_cartesian([x, y, z])
                 } else {
                     [x, y, z]
-                };
+                });
+                frame.ids.push(
+                    cols.id
+                        .and_then(|c| f.get(c))
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(i as i64),
+                );
                 if !detail {
-                    atoms.push(DumpAtom {
-                        id: cols
-                            .id
-                            .and_then(|c| f.get(c))
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or(i as i64),
-                        kind: String::new(),
-                        element: Element::UNKNOWN,
-                        mol: 0,
-                        pos,
-                    });
                     continue;
                 }
                 let element = cols
@@ -331,12 +363,7 @@ fn read_frames(text: &str) -> Result<Vec<DumpFrame>> {
                     .map(|e| Element::from_symbol(e))
                     .or_else(|| cols.mass.and_then(num).map(Element::from_mass))
                     .unwrap_or_default();
-                atoms.push(DumpAtom {
-                    id: cols
-                        .id
-                        .and_then(|c| f.get(c))
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(i as i64),
+                frame.detail.push(Detail {
                     kind: cols
                         .kind
                         .and_then(|c| f.get(c))
@@ -348,47 +375,81 @@ fn read_frames(text: &str) -> Result<Vec<DumpFrame>> {
                         .and_then(|c| f.get(c))
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0),
-                    pos,
                 });
             }
-            atoms.sort_by_key(|a| a.id);
-            frames.push(DumpFrame { step: step.take(), cell, atoms });
+            // Only the first frame's types matter; later frames are positions.
+            detail = false;
+            frames.push(frame);
         }
     }
     Ok(frames)
 }
 
+/// The order that sorts atoms by id.
+fn by_id(ids: &[i64]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..ids.len()).collect();
+    order.sort_by_key(|&i| ids[i]);
+    order
+}
+
 pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
-    let mut frames = read_frames(text)?.into_iter();
-    let Some(first) = frames.next() else {
+    use rayon::prelude::*;
+
+    let pieces = split_frames(text);
+    let mut head = read_frames(pieces[0], true)?.into_iter();
+    let Some(first) = head.next() else {
         bail!("no frames in LAMMPS dump");
     };
+    // Atoms go in by id: that keeps molecules together, and is the one
+    // order every frame can be put back into.
+    let order = by_id(&first.ids);
+    let sorted: Vec<i64> = order.iter().map(|&i| first.ids[i]).collect();
+    // A frame in the first frame's file order, as LAMMPS usually writes
+    // them, needs no sorting of its own. Atoms lost or gained partway end
+    // the trajectory there.
+    let snapshot = |f: DumpFrame| -> Option<Snapshot> {
+        let own;
+        let order = if f.ids == first.ids {
+            &order
+        } else {
+            own = by_id(&f.ids);
+            if own.len() != sorted.len() || own.iter().zip(&sorted).any(|(&i, id)| f.ids[i] != *id) {
+                return None;
+            }
+            &own
+        };
+        Some(Snapshot {
+            step: f.step,
+            pos: order.iter().map(|&i| f.pos[i]).collect(),
+            cell: Some(f.cell),
+        })
+    };
+    let rest: Vec<Vec<Option<Snapshot>>> = pieces[1..]
+        .par_iter()
+        .map(|piece| Ok(read_frames(piece, false)?.into_iter().map(snapshot).collect()))
+        .collect::<Result<_>>()?;
+    let frames: Vec<Snapshot> = head
+        .map(snapshot)
+        .chain(rest.into_iter().flatten())
+        .map_while(|s| s)
+        .collect();
+
     let mut b = Builder::new("LAMMPS dump");
     b.cell = Some(first.cell);
     b.first_step = first.step;
-    for a in &first.atoms {
+    for &i in &order {
+        let (a, pos) = (&first.detail[i], first.pos[i]);
         let kind = b.kind(&a.kind);
         b.push(Record {
             res_seq: a.mol,
             name: &a.kind,
             element: a.element,
-            pos: a.pos,
+            pos,
             kind,
             ..Record::default()
         });
     }
-    let ids: Vec<i64> = first.atoms.iter().map(|a| a.id).collect();
-    for f in frames {
-        // Atoms lost or gained partway end the trajectory there.
-        if f.atoms.len() != ids.len() || f.atoms.iter().zip(&ids).any(|(a, id)| a.id != *id) {
-            break;
-        }
-        b.frames.push(Snapshot {
-            step: f.step,
-            pos: f.atoms.iter().map(|a| a.pos).collect(),
-            cell: Some(f.cell),
-        });
-    }
+    b.frames = frames;
     if b.len() == 0 {
         bail!("no atoms in LAMMPS dump");
     }
