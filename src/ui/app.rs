@@ -4339,8 +4339,8 @@ impl Viewer {
     fn masthead(&self) -> impl IntoElement {
         // Each name at the size that spans the panel beside the logo.
         let (name, size, purpose) = match self.mode {
-            Mode::View => ("profold", 68., "Proteins, molecules and crystals"),
-            Mode::Fold => ("Fold a protein", 35., "Structure prediction with Apple's SimpleFold"),
+            Mode::View => ("profold", 66., "Proteins, molecules and crystals"),
+            Mode::Fold => ("Fold a protein", 34., "Structure prediction with Apple's SimpleFold"),
         };
         div()
             .flex()
@@ -4361,6 +4361,7 @@ impl Viewer {
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_size(px(size))
                             .line_height(px(size + 2.))
+                            .whitespace_nowrap()
                             .text_color(theme::ink())
                             .child(name),
                     )

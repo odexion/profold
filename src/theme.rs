@@ -150,13 +150,17 @@ pub const MONO: &str = "Consolas";
 pub const MONO: &str = "DejaVu Sans Mono";
 
 /// Display serif, used only for the wordmark and the name of the structure
-/// on screen.
-#[cfg(target_os = "macos")]
-pub const SERIF: &str = "Charter";
-#[cfg(windows)]
-pub const SERIF: &str = "Cambria";
-#[cfg(not(any(target_os = "macos", windows)))]
-pub const SERIF: &str = "DejaVu Serif";
+/// on screen: Charis SIL Bold, Charter's open twin, shipped inside the app so
+/// it is the same on every system.
+pub const SERIF: &str = "Charis SIL";
+
+/// Registers the fonts the app carries, before any window draws.
+pub fn add_fonts(cx: &mut gpui::App) {
+    static CHARIS_BOLD: &[u8] = include_bytes!("../assets/fonts/CharisSIL-Bold.ttf");
+    if let Err(e) = cx.text_system().add_fonts(vec![std::borrow::Cow::Borrowed(CHARIS_BOLD)]) {
+        eprintln!("profold: couldn't load the display font: {e}");
+    }
+}
 
 /// A shortcut as this system writes it: `⇧⌘T` on a Mac, `Ctrl+Shift+T`
 /// elsewhere. Written the Mac way, with ⇧ before ⌘.

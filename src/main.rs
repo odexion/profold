@@ -51,6 +51,7 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         #[cfg(target_os = "macos")]
         set_dock_icon();
+        theme::add_fonts(cx);
         ui::input::bind_keys(cx);
         ui::workspace::bind_keys(cx);
         // Closing the window quits, except on a Mac, where the app stays in
