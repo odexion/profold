@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Viewing
+- **⌘-click to focus** (Ctrl-click on Linux and Windows) picks an atom or
+  residue and flies the view to it, as the card's Focus button does.
+
+### Menus
+- **The bar along the top** is now Open · Samples · Camera · Image · Film ·
+  Save. Overlaying a second structure moved into Open; recording a camera
+  path and exporting a film have a Film menu of their own; Image is for
+  pictures alone. Camera gains *Focus on the pick*.
+- **The menu bar** gains Structure (the representations and styles) and
+  Camera (centre, focus, reset, spin, rock, perspective, slab), leaving View
+  for the theme, console, shortcuts and full screen. File now overlays,
+  records a camera path, and saves the structure or the session.
+
 ## 0.4.0 — 2026-10-19
 
 ### Viewing

@@ -317,7 +317,9 @@ enum Dropdown {
     Palette,
     Camera,
     Image,
-    Overlay,
+    Film,
+    /// Open, with the ways to lay a second structure over the first.
+    Open,
     Save,
 }
 
@@ -977,6 +979,16 @@ impl Viewer {
         }
     }
 
+    /// The pointer is over a card floating on the viewport: the structure
+    /// behind it is out of reach, so nothing there is pointed at. A drag
+    /// still passes through, so the view keeps turning under the card.
+    fn over_card(&mut self, _: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.drag.is_none() && self.sliding.is_none() && !self.scrubbing {
+            self.set_hover(None, cx);
+            cx.stop_propagation();
+        }
+    }
+
     /// Pick out an atom or residue, or with `None` let go of the one picked.
     fn select(&mut self, target: Option<Target>, cx: &mut Context<Self>) {
         // A second click on the same thing lets go of it.
@@ -1342,7 +1354,7 @@ impl Viewer {
     }
 
     /// Fly to what is picked: an atom up close, a residue whole.
-    fn focus_selected(&mut self, cx: &mut Context<Self>) {
+    pub fn focus_selected(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.selected else { return };
         let Some(s) = self.shown(t.which) else { return };
         let atoms = if t.picked.residue {
@@ -1621,8 +1633,11 @@ impl Viewer {
     }
 
     /// Pick a file to lay over the structure shown.
-    fn prompt_overlay(&mut self, cx: &mut Context<Self>) {
+    pub fn prompt_overlay(&mut self, cx: &mut Context<Self>) {
         self.open = None;
+        if self.structure.is_none() {
+            return;
+        }
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -1642,14 +1657,24 @@ impl Viewer {
         }));
     }
 
-    /// The overlay menu: a file, or whatever is typed next into the field.
-    fn overlay_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The open menu: a file in place of what is shown, or one laid over
+    /// it, from a file or whatever is typed next into the field.
+    fn open_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let comparing = self.compare.is_some();
         menu(240.)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.open = None;
                 cx.notify();
             }))
+            .child(
+                item("open-file", "Open a file…".into(), false)
+                    .debug_selector(|| "open-file".into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.open = None;
+                        this.prompt_open(cx);
+                    })),
+            )
+            .child(divide())
             .child(
                 item("overlay-file", "Overlay a file…".into(), false)
                     .debug_selector(|| "overlay-file".into())
@@ -2402,6 +2427,22 @@ impl Viewer {
 
     /// What can be saved: the structure as PDB or mmCIF, the picked
     /// residue's chain, the binding site looked into, and the session.
+    /// Write out the whole structure, as PDB or as mmCIF.
+    pub fn save_structure(&mut self, cif: bool, cx: &mut Context<Self>) {
+        let Some(s) = self.structure.clone() else { return };
+        let stem = s.id.to_lowercase();
+        let (text, ext) = if cif { (write::mmcif(&s, |_| true), "cif") } else { (write::pdb(&s, |_| true), "pdb") };
+        self.save_text(format!("{stem}.{ext}"), text, cx);
+    }
+
+    /// Write out the session: what is open and how it is shown.
+    pub fn save_session(&mut self, cx: &mut Context<Self>) {
+        if let Some(json) = self.session_json() {
+            let stem = self.structure.as_ref().map(|s| s.id.to_lowercase()).unwrap_or_default();
+            self.save_text(format!("{stem}.{}", session::EXTENSION), json, cx);
+        }
+    }
+
     fn save_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(s) = self.structure.clone() else {
             return menu(240.);
@@ -2410,11 +2451,9 @@ impl Viewer {
         let chain = self.selected.filter(|t| t.which == 0).map(|t| s.residues[s.atoms[t.picked.atom].residue as usize].chain as usize);
         let site = self.site.clone();
         let whole = |id: &'static str, label: &'static str, cif: bool| {
-            let (s, stem) = (s.clone(), stem.clone());
-            item(id, label.into(), false).debug_selector(move || id.into()).on_click(cx.listener(move |this, _, _, cx| {
-                let (text, ext) = if cif { (write::mmcif(&s, |_| true), "cif") } else { (write::pdb(&s, |_| true), "pdb") };
-                this.save_text(format!("{stem}.{ext}"), text, cx);
-            }))
+            item(id, label.into(), false)
+                .debug_selector(move || id.into())
+                .on_click(cx.listener(move |this, _, _, cx| this.save_structure(cif, cx)))
         };
         menu(240.)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -2449,14 +2488,11 @@ impl Viewer {
                 ))
             })
             .child(divide())
-            .child(item("save-session", "Session…".into(), false).debug_selector(|| "save-session".into()).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    if let Some(json) = this.session_json() {
-                        let stem = this.structure.as_ref().map(|s| s.id.to_lowercase()).unwrap_or_default();
-                        this.save_text(format!("{stem}.{}", session::EXTENSION), json, cx);
-                    }
-                },
-            )))
+            .child(
+                item("save-session", "Session…".into(), false)
+                    .debug_selector(|| "save-session".into())
+                    .on_click(cx.listener(|this, _, _, cx| this.save_session(cx))),
+            )
     }
 
     /// After a change of palette, say for a few seconds what kept its own
@@ -2559,7 +2595,12 @@ impl Viewer {
     /// is whatever the last step of the drag was.
     /// Cut the structure down to a slab a fifth of it thick, through the
     /// middle, or show it whole again.
-    fn toggle_slab(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_perspective(&mut self, cx: &mut Context<Self>) {
+        self.camera.perspective = !self.camera.perspective;
+        cx.notify();
+    }
+
+    pub fn toggle_slab(&mut self, cx: &mut Context<Self>) {
         let r = self.camera.radius;
         self.camera.slab = match self.camera.slab {
             Some(_) => None,
@@ -2727,6 +2768,7 @@ impl Viewer {
                     ("Scroll", "Zoom"),
                     ("Double-click", "Fit the structure to the view"),
                     ("Click", "Pick an atom or residue"),
+                    ("⌘ Click", "Fly to an atom or residue"),
                     ("⌥ Scroll", "Move the slab"),
                     ("⌥⇧ Scroll", "Increase slab thickness"),
                 ],
@@ -2799,6 +2841,14 @@ impl Viewer {
     }
 
     /// Set the camera turning by itself, or with the same again stop it.
+    pub fn toggle_spin(&mut self, cx: &mut Context<Self>) {
+        self.toggle_turn(Turn::Spin, cx);
+    }
+
+    pub fn toggle_rock(&mut self, cx: &mut Context<Self>) {
+        self.toggle_turn(Turn::Rock, cx);
+    }
+
     fn toggle_turn(&mut self, turn: Turn, cx: &mut Context<Self>) {
         self.open = None;
         if self.turning == Some(turn) {
@@ -2956,6 +3006,16 @@ impl Viewer {
             let target = self.pick_at(p);
             if self.measuring {
                 self.measure_click(target, cx);
+            } else if e.modifiers.secondary() {
+                // ⌘-click: pick it and fly to it. Never a second click that
+                // lets go, and a miss leaves the pick as it was.
+                if target.is_some() {
+                    if target != self.selected {
+                        self.selected = target;
+                        self.compose(cx);
+                    }
+                    self.focus_selected(cx);
+                }
             } else {
                 self.select(target, cx);
             }
@@ -3497,10 +3557,23 @@ impl Viewer {
             .border_b_1()
             .border_color(theme::border())
             .when(viewing, |d| {
-                d.child(
-                    tab("open-file", "Open", false)
-                        .on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))),
-                )
+                // With nothing loaded there is nothing to overlay, and Open
+                // opens straight away.
+                d.when(!loaded, |d| {
+                    d.child(
+                        tab("open-file", "Open", false)
+                            .on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))),
+                    )
+                })
+                .when(loaded, |d| {
+                    d.child(self.tab_with_menu(
+                        Dropdown::Open,
+                        "open",
+                        "Open",
+                        self.open_menu(cx).into_any_element(),
+                        cx,
+                    ))
+                })
                 .child(self.tab_with_menu(
                     Dropdown::Samples,
                     "samples",
@@ -3524,19 +3597,19 @@ impl Viewer {
                     self.image_menu(cx).into_any_element(),
                     cx,
                 ))
+                .child(self.tab_with_menu(
+                    Dropdown::Film,
+                    "film",
+                    "Film",
+                    self.film_menu(cx).into_any_element(),
+                    cx,
+                ))
                 .when(viewing, |d| {
                     d.child(self.tab_with_menu(
                         Dropdown::Save,
                         "save",
                         "Save",
                         self.save_menu(cx).into_any_element(),
-                        cx,
-                    ))
-                    .child(self.tab_with_menu(
-                        Dropdown::Overlay,
-                        "overlay",
-                        "Overlay",
-                        self.overlay_menu(cx).into_any_element(),
                         cx,
                     ))
                 })
@@ -4096,10 +4169,7 @@ impl Viewer {
             .child(
                 item("perspective", "Perspective".into(), self.camera.perspective)
                     .debug_selector(|| "perspective".into())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.camera.perspective = !this.camera.perspective;
-                        cx.notify();
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_perspective(cx))),
             )
             .child(
                 item("slab", "Clipping slab".into(), self.camera.slab.is_some())
@@ -4139,6 +4209,16 @@ impl Viewer {
                 item("recentre", "Centre".into(), false)
                     .on_click(cx.listener(|this, _, _, cx| this.recentre(cx))),
             )
+            .when(self.selected.is_some(), |d| {
+                d.child(
+                    item("focus-menu", "Focus on the pick".into(), false)
+                        .debug_selector(|| "focus-menu".into())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.open = None;
+                            this.focus_selected(cx);
+                        })),
+                )
+            })
             .child(
                 item("reset-view", "Reset view".into(), false)
                     .debug_selector(|| "reset-view".into())
@@ -4146,9 +4226,18 @@ impl Viewer {
             )
     }
 
-    /// Write the viewport out as a picture, at a multiple of its size.
-    fn image_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let (w, h) = self.cache.borrow().size;
+    /// Start recording a camera path, or stop the one being recorded.
+    pub fn toggle_recording(&mut self, cx: &mut Context<Self>) {
+        self.open = None;
+        if self.recording() {
+            self.stop_recording(cx);
+        } else {
+            self.start_recording(cx);
+        }
+    }
+
+    /// A film of the view, or the camera path to make one along.
+    fn film_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let film = item("movie-open", "Export film…".into(), false)
             .debug_selector(|| "movie-open".into())
             .on_click(cx.listener(|this, _, _, cx| this.open_movie(cx)));
@@ -4157,14 +4246,19 @@ impl Viewer {
             if self.recording() { "Stop recording".into() } else { "Record a camera path".into() },
             false,
         )
-        .on_click(cx.listener(|this, _, _, cx| {
-            this.open = None;
-            if this.recording() {
-                this.stop_recording(cx);
-            } else {
-                this.start_recording(cx);
-            }
-        }));
+        .on_click(cx.listener(|this, _, _, cx| this.toggle_recording(cx)));
+        menu(200.)
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.open = None;
+                cx.notify();
+            }))
+            .child(film)
+            .child(record)
+    }
+
+    /// Write the viewport out as a picture, at a multiple of its size.
+    fn image_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let (w, h) = self.cache.borrow().size;
         let transparent = item("transparent", "Transparent background".into(), self.transparent)
             .debug_selector(|| "transparent".into())
             .on_click(cx.listener(|this, _, _, cx| {
@@ -4209,9 +4303,6 @@ impl Viewer {
             }))
             .child(divide())
             .child(transparent)
-            .child(divide())
-            .child(film)
-            .child(record)
     }
 
     /// The logo and what the tab is for, at the head of the panel.
@@ -6753,6 +6844,7 @@ impl Viewer {
                                 .gap(px(8.))
                                 // Clicks on the cards are theirs, not the viewport's.
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_mouse_move(cx.listener(Self::over_card))
                                 .children(cards),
                         )
                     })
@@ -7258,6 +7350,7 @@ impl Viewer {
                 .shadow_sm()
                 // Clicks on the card are its own, not the viewport's.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_move(cx.listener(Self::over_card))
                 .child(kinds)
                 .child(div().text_size(px(10.)).text_color(theme::faint()).child(hint))
                 .child(div().flex().flex_col().children(rows))
@@ -7369,6 +7462,8 @@ impl Viewer {
                 .border_1()
                 .border_color(theme::border())
                 .shadow_sm()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_move(cx.listener(Self::over_card))
                 .child(
                     div()
                         .flex()
@@ -7572,6 +7667,7 @@ impl Viewer {
             .shadow_sm()
             // The viewport underneath would take this as the start of a drag.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_move(cx.listener(Self::over_card))
             .child(
                 pill("step-back", "‹", false)
                     .cursor_pointer()
@@ -7800,6 +7896,28 @@ mod ui_tests {
     }
 
     #[gpui::test]
+    fn command_click_picks_an_atom_and_flies_to_it(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        let at = front_atom(&view, cx);
+        let before = view.update(cx, |this, _| this.camera.center);
+        cx.simulate_click(at, Modifiers::secondary_key());
+        cx.executor().advance_clock(Duration::from_millis(1500));
+        cx.run_until_parked();
+        let (picked, centre) = view.update(cx, |this, _| {
+            let t = this.selected.expect("nothing picked");
+            (this.structure.as_ref().unwrap().atoms[t.picked.atom].pos, this.camera.center)
+        });
+        assert_ne!(centre, before, "the view did not move");
+        let off = (0..3).map(|i| (centre[i] - picked[i]).powi(2)).sum::<f32>().sqrt();
+        assert!(off < 0.5, "the view is {off} Å from the atom");
+
+        // Again on the same atom keeps it picked, rather than letting go.
+        cx.simulate_click(at, Modifiers::secondary_key());
+        cx.run_until_parked();
+        assert!(view.update(cx, |this, _| this.selected.is_some()));
+    }
+
+    #[gpui::test]
     fn the_sequence_and_the_viewport_point_at_each_other(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
         view.update(cx, |this, cx| {
@@ -8001,7 +8119,7 @@ mod ui_tests {
         view.update(cx, |this, cx| this.show(haemoglobin.clone(), cx));
         cx.run_until_parked();
 
-        click(cx, "tab-overlay");
+        click(cx, "tab-open");
         click(cx, "overlay-entry");
         assert!(view.update(cx, |this, _| this.overlay_next));
         assert!(cx.debug_bounds("overlay-cancel").is_some(), "nothing says the next is overlaid");

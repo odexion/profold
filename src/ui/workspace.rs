@@ -44,8 +44,18 @@ actions!(
         HideApp,
         HideOthers,
         ShowAll,
+        OpenOverlay,
         SaveImage,
         ExportMovie,
+        RecordPath,
+        SaveStructurePdb,
+        SaveStructureCif,
+        SaveSession,
+        FocusSelection,
+        ToggleSpin,
+        ToggleRock,
+        TogglePerspective,
+        ToggleSlab,
         ToggleDark,
         ShowCartoon,
         ShowTube,
@@ -165,9 +175,15 @@ pub fn menus() -> Vec<Menu> {
                 }
                 items.extend([
                     MenuItem::action("Open…", OpenFile),
+                    MenuItem::action("Overlay a File…", OpenOverlay),
                     MenuItem::separator(),
                     MenuItem::action("Save Image…", SaveImage),
                     MenuItem::action("Export Film…", ExportMovie),
+                    MenuItem::action("Start or Stop a Camera Path", RecordPath),
+                    MenuItem::separator(),
+                    MenuItem::action("Save Structure as PDB…", SaveStructurePdb),
+                    MenuItem::action("Save Structure as mmCIF…", SaveStructureCif),
+                    MenuItem::action("Save Session…", SaveSession),
                     MenuItem::separator(),
                     MenuItem::action("Close Tab", CloseTab),
                 ]);
@@ -191,6 +207,15 @@ pub fn menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action(if theme::dark() { "Light Mode" } else { "Dark Mode" }, ToggleDark),
                 MenuItem::separator(),
+                MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
+                MenuItem::action("Console", ToggleConsole),
+                MenuItem::separator(),
+                MenuItem::action("Enter Full Screen", ToggleFullScreen),
+            ],
+        },
+        Menu {
+            name: "Structure".into(),
+            items: vec![
                 MenuItem::action(Repr::Cartoon.label(), ShowCartoon),
                 MenuItem::action(Repr::Tube.label(), ShowTube),
                 MenuItem::action(Repr::BallAndStick.label(), ShowBallAndStick),
@@ -202,13 +227,20 @@ pub fn menus() -> Vec<Menu> {
                 MenuItem::action(Style::Flat.label(), StyleFlat),
                 MenuItem::action(Style::Soft.label(), StyleSoft),
                 MenuItem::action(Style::Studio.label(), StyleStudio),
-                MenuItem::separator(),
+            ],
+        },
+        Menu {
+            name: "Camera".into(),
+            items: vec![
                 MenuItem::action("Centre", Recentre),
+                MenuItem::action("Focus on the Pick", FocusSelection),
                 MenuItem::action("Reset View", ResetView),
                 MenuItem::separator(),
-                MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
-                MenuItem::action("Console", ToggleConsole),
-                MenuItem::action("Enter Full Screen", ToggleFullScreen),
+                MenuItem::action("Spin", ToggleSpin),
+                MenuItem::action("Rock", ToggleRock),
+                MenuItem::separator(),
+                MenuItem::action("Perspective", TogglePerspective),
+                MenuItem::action("Clipping Slab", ToggleSlab),
             ],
         },
         Menu {
@@ -1116,6 +1148,36 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &ExportMovie, _, cx| {
                 this.active().update(cx, |tab, cx| tab.open_movie(cx))
+            }))
+            .on_action(cx.listener(|this, _: &OpenOverlay, _, cx| {
+                this.active().update(cx, |tab, cx| tab.prompt_overlay(cx))
+            }))
+            .on_action(cx.listener(|this, _: &RecordPath, _, cx| {
+                this.active().update(cx, |tab, cx| tab.toggle_recording(cx))
+            }))
+            .on_action(cx.listener(|this, _: &SaveStructurePdb, _, cx| {
+                this.active().update(cx, |tab, cx| tab.save_structure(false, cx))
+            }))
+            .on_action(cx.listener(|this, _: &SaveStructureCif, _, cx| {
+                this.active().update(cx, |tab, cx| tab.save_structure(true, cx))
+            }))
+            .on_action(cx.listener(|this, _: &SaveSession, _, cx| {
+                this.active().update(cx, |tab, cx| tab.save_session(cx))
+            }))
+            .on_action(cx.listener(|this, _: &FocusSelection, _, cx| {
+                this.active().update(cx, |tab, cx| tab.focus_selected(cx))
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSpin, _, cx| {
+                this.active().update(cx, |tab, cx| tab.toggle_spin(cx))
+            }))
+            .on_action(cx.listener(|this, _: &ToggleRock, _, cx| {
+                this.active().update(cx, |tab, cx| tab.toggle_rock(cx))
+            }))
+            .on_action(cx.listener(|this, _: &TogglePerspective, _, cx| {
+                this.active().update(cx, |tab, cx| tab.toggle_perspective(cx))
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSlab, _, cx| {
+                this.active().update(cx, |tab, cx| tab.toggle_slab(cx))
             }))
             .on_action(cx.listener(|this, _: &ShowCartoon, _, cx| this.show(Repr::Cartoon, cx)))
             .on_action(cx.listener(|this, _: &ShowTube, _, cx| this.show(Repr::Tube, cx)))
