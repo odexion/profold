@@ -57,6 +57,7 @@ actions!(
         TogglePerspective,
         ToggleSlab,
         ToggleDark,
+        ToggleLayout,
         ShowCartoon,
         ShowTube,
         ShowBallAndStick,
@@ -114,6 +115,7 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("secondary-shift-s", SaveImage, None),
         gpui::KeyBinding::new("secondary-shift-e", ExportMovie, None),
         gpui::KeyBinding::new("secondary-shift-d", ToggleDark, None),
+        gpui::KeyBinding::new("secondary-shift-l", ToggleLayout, None),
         // ⌘1 to ⌘9 are the tabs, so the views take ⌥⌘ and the styles ⌃⌘.
         gpui::KeyBinding::new("alt-secondary-1", ShowCartoon, None),
         gpui::KeyBinding::new("alt-secondary-2", ShowTube, None),
@@ -206,6 +208,10 @@ pub fn menus() -> Vec<Menu> {
             name: "View".into(),
             items: vec![
                 MenuItem::action(if theme::dark() { "Light Mode" } else { "Dark Mode" }, ToggleDark),
+                MenuItem::action(
+                    if theme::vertical() { "Panel Beside the View" } else { "Panel Under the View" },
+                    ToggleLayout,
+                ),
                 MenuItem::separator(),
                 MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
                 MenuItem::action("Console", ToggleConsole),
@@ -319,7 +325,9 @@ impl Workspace {
             about: false,
             update_poll: None,
         };
-        theme::set_dark(settings::Settings::load().dark);
+        let saved = settings::Settings::load();
+        theme::set_dark(saved.dark);
+        theme::set_vertical(saved.vertical);
         cx.set_menus(menus());
         this.add(Mode::View, window, cx);
         if update::due() {
@@ -333,6 +341,16 @@ impl Workspace {
         theme::set_dark(!theme::dark());
         cx.set_menus(menus());
         self.retheme(cx);
+    }
+
+    /// Move the panel under the view, or back beside it.
+    fn toggle_layout(&mut self, cx: &mut Context<Self>) {
+        theme::set_vertical(!theme::vertical());
+        cx.set_menus(menus());
+        for tab in &self.tabs {
+            tab.update(cx, |tab, cx| tab.relayout(cx));
+        }
+        cx.notify();
     }
 
     fn show(&mut self, repr: Repr, cx: &mut Context<Self>) {
@@ -1143,6 +1161,7 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleDark, _, cx| this.toggle_theme(cx)))
+            .on_action(cx.listener(|this, _: &ToggleLayout, _, cx| this.toggle_layout(cx)))
             .on_action(cx.listener(|this, _: &SaveImage, _, cx| {
                 this.active().update(cx, |tab, cx| tab.save_image(2, cx))
             }))

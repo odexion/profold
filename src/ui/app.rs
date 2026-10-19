@@ -1029,6 +1029,13 @@ impl Viewer {
         self.rebuild(cx);
     }
 
+    /// The panel has moved: nothing to redraw but the window, and the
+    /// layout to remember.
+    pub fn relayout(&mut self, cx: &mut Context<Self>) {
+        self.persist();
+        cx.notify();
+    }
+
     /// Show the structure another way. A backbone style is refused for a
     /// structure without a backbone, as its pill is greyed out.
     pub fn set_repr(&mut self, repr: Repr, cx: &mut Context<Self>) {
@@ -2055,6 +2062,7 @@ impl Viewer {
             standard_colors: self.standard_colors,
             appearance: self.appearance.clone(),
             dark: theme::dark(),
+            vertical: theme::vertical(),
         }
         .to_json();
         if json != self.saved {
@@ -2754,6 +2762,7 @@ impl Viewer {
                     ("⌃⌘1 – ⌃⌘4", "Illustrative … Studio"),
                     ("⌘0", "Reset the view"),
                     ("⇧⌘D", "Toggle light or dark theme"),
+                    ("⇧⌘L", "Panel beside or under the view"),
                     ("⌘K", "The console"),
                     ("⌘Z  ⇧⌘Z", "Undo, redo"),
                     ("⌘/", "Show keyboard shortcuts"),
@@ -6801,6 +6810,58 @@ impl Viewer {
             .into_any_element()
     }
 
+    /// The search, the status and what is known of the structure: a column
+    /// down the left, or, in the vertical layout, a band under the viewport
+    /// that leaves the masthead out to give the structure the room.
+    fn panel(
+        &self,
+        folding: bool,
+        focused: bool,
+        structure: Option<Arc<Structure>>,
+        vertical: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .id("side")
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap(px(16.))
+            .pt(px(if vertical { 14. } else { 20. }))
+            .bg(theme::surface())
+            .border_color(theme::border())
+            .map(|d| {
+                if vertical {
+                    d.w_full().h(relative(0.4)).border_t_1()
+                } else {
+                    d.w(px(PANEL_WIDTH)).h_full().border_r_1()
+                }
+            })
+            .when(!vertical, |d| d.child(self.masthead()))
+            .child(self.search(focused, cx))
+            // Everything under the field scrolls when the window is
+            // too short for it; the field itself stays put.
+            .child(
+                div()
+                    .id("panel")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.))
+                            .pb(px(20.))
+                            // Model, steps and pLDDT: the settings for Fold and Compare.
+                            .when(folding, |d| d.children(self.plugin_options(cx)))
+                            .child(self.status(cx))
+                            .when(structure.is_none(), |d| d.child(self.examples(cx)))
+                            .when_some(structure, |d, s| d.child(self.info(&s, cx))),
+                    ),
+            )
+    }
+
     fn stage(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_structure = self.structure.is_some();
         let busy: SharedString = self.busy.clone().unwrap_or_default();
@@ -6809,7 +6870,8 @@ impl Viewer {
             .id("stage")
             .relative()
             .flex_1()
-            .h_full()
+            .min_w_0()
+            .min_h_0()
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_viewport_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_viewport_down))
@@ -7752,6 +7814,7 @@ impl Render for Viewer {
         let focused = self.input.read(cx).focus_handle(cx).is_focused(window);
         let folding = self.mode == Mode::Fold;
         let structure = self.structure.clone();
+        let vertical = theme::vertical();
 
         div()
             .flex()
@@ -7768,45 +7831,16 @@ impl Render for Viewer {
             .when(!folding || structure.is_some(), |d| d.child(self.toolbar(cx)))
             .child(
                 div()
-                .flex()
-                .flex_1()
-                .overflow_hidden()
-            .child(
-                div()
-                    .w(px(PANEL_WIDTH))
-                    .h_full()
                     .flex()
-                    .flex_col()
-                    .gap(px(16.))
-                    .pt(px(20.))
-                    .bg(theme::surface())
-                    .border_r_1()
-                    .border_color(theme::border())
-                    .child(self.masthead())
-                    .child(self.search(focused, cx))
-                    // Everything under the field scrolls when the window is
-                    // too short for it; the field itself stays put.
-                    .child(
-                        div()
-                            .id("panel")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(16.))
-                                    .pb(px(20.))
-                                    // Model, steps and pLDDT: the settings for Fold and Compare.
-                                    .when(folding, |d| d.children(self.plugin_options(cx)))
-                                    .child(self.status(cx))
-                                    .when(structure.is_none(), |d| d.child(self.examples(cx)))
-                                    .when_some(structure, |d, s| d.child(self.info(&s, cx))),
-                            ),
-                    ),
-            )
-            .child(self.stage(cx)),
+                    .when(vertical, |d| d.flex_col())
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .children({
+                        let panel = self.panel(folding, focused, structure, vertical, cx).into_any_element();
+                        let stage = self.stage(cx).into_any_element();
+                        if vertical { [stage, panel] } else { [panel, stage] }
+                    }),
             )
     }
 }

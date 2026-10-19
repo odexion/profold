@@ -23,6 +23,8 @@ pub struct Settings {
     pub appearance: Appearance,
     /// Drawn dark rather than light.
     pub dark: bool,
+    /// The panel under the viewport rather than beside it.
+    pub vertical: bool,
 }
 
 impl Default for Settings {
@@ -34,6 +36,7 @@ impl Default for Settings {
             standard_colors: true,
             appearance: Appearance::default(),
             dark: false,
+            vertical: false,
         }
     }
 }
@@ -144,6 +147,9 @@ impl Settings {
         if self.dark {
             v["theme"] = json!("dark");
         }
+        if self.vertical {
+            v["layout"] = json!("vertical");
+        }
         serde_json::to_string_pretty(&v).unwrap_or_default()
     }
 
@@ -158,6 +164,7 @@ impl Settings {
             }
         }
         s.dark = v.get("theme").and_then(Value::as_str) == Some("dark");
+        s.vertical = v.get("layout").and_then(Value::as_str) == Some("vertical");
         // The old "fixed_colours" is not read: it was off unless chosen, and
         // standard colours are now the default.
         if let Some(c) = v.get("element_colours").and_then(Value::as_str) {
@@ -325,6 +332,7 @@ mod tests {
             style: Style::Soft,
             palette: Palette::Viridis,
             standard_colors: false,
+            vertical: true,
             ..Settings::default()
         };
         s.appearance.set(
@@ -349,6 +357,7 @@ mod tests {
         assert!(!back.momentum);
         assert_eq!(back.style, Style::Soft);
         assert!(!back.standard_colors);
+        assert!(back.vertical);
         assert_eq!(back.appearance.get(&Species::Kind("2".into())).alpha, 0.25);
     }
 

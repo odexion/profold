@@ -40,6 +40,37 @@ pub fn set_dark(dark: bool) {
     DARK.with(|d| d.store(dark, Ordering::Relaxed));
 }
 
+/// Whether the panel sits under the viewport rather than beside it, for
+/// tall windows. A layout rather than a colour, but switched and kept the
+/// same way as the page.
+#[cfg(not(test))]
+static VERTICAL: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    static VERTICAL: AtomicBool = const { AtomicBool::new(false) };
+}
+
+#[cfg(not(test))]
+pub fn vertical() -> bool {
+    VERTICAL.load(Ordering::Relaxed)
+}
+
+#[cfg(not(test))]
+pub fn set_vertical(vertical: bool) {
+    VERTICAL.store(vertical, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub fn vertical() -> bool {
+    VERTICAL.with(|d| d.load(Ordering::Relaxed))
+}
+
+#[cfg(test)]
+pub fn set_vertical(vertical: bool) {
+    VERTICAL.with(|d| d.store(vertical, Ordering::Relaxed));
+}
+
 const fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {
     Hsla { h, s, l, a }
 }
