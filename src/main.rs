@@ -65,7 +65,15 @@ fn main() {
         .detach();
         cx.set_menus(ui::workspace::menus());
 
-        let bounds = Bounds::centered(None, size(px(1180.), px(760.)), cx);
+        // With the panel under the view, the window opens phone-shaped.
+        let window_size = if settings::Settings::load().vertical {
+            let screen = cx.primary_display().map(|d| f32::from(d.bounds().size.height)).unwrap_or(900.);
+            let height = (screen - 120.).clamp(600., 900.);
+            size(px(ui::workspace::phone_width(height)), px(height))
+        } else {
+            size(px(1180.), px(760.))
+        };
+        let bounds = Bounds::centered(None, window_size, cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

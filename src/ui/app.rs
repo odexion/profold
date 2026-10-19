@@ -505,6 +505,9 @@ pub struct Viewer {
     scrubbing: bool,
     /// The divider between the panel and the viewport is being dragged.
     resizing: bool,
+    /// The window is too narrow for the panel's sections side by side, the
+    /// angle readout or the hints: as narrow as a phone held upright.
+    narrow: bool,
 
     #[cfg(feature = "simplefold")]
     pub(crate) simplefold: SimpleFold,
@@ -719,6 +722,7 @@ impl Viewer {
             scrubber: Rc::new(Shared::new(Bounds::default())),
             scrubbing: false,
             resizing: false,
+            narrow: false,
             #[cfg(feature = "simplefold")]
             simplefold: SimpleFold::new(),
             copied: false,
@@ -3662,8 +3666,8 @@ impl Viewer {
             })
             .child(div().flex_1())
             .children(self.recording_badge(cx))
-            .when(loaded, |d| d.child(self.angle_readout(cx)))
-            .when_some(badge, |d, badge| {
+            .when(loaded && !self.narrow, |d| d.child(self.angle_readout(cx)))
+            .when_some(badge.filter(|_| !self.narrow), |d, badge| {
                 d.child(
                     div()
                         .font_family(theme::MONO)
@@ -3844,9 +3848,14 @@ impl Viewer {
         // Clear of the trajectory bar when there is one.
         let bottom = if self.frame_count() > 1 { 62. } else { 20. };
 
+        // A group too wide for a phone-shaped window wraps onto a second
+        // line rather than running off both sides.
         let group = |children: Vec<gpui::AnyElement>| {
             div()
                 .flex()
+                .flex_wrap()
+                .justify_center()
+                .max_w_full()
                 .items_center()
                 .gap(px(2.))
                 .p(px(3.))
@@ -6873,18 +6882,25 @@ impl Viewer {
             Some(s) => self.info(s, cx),
             None => vec![self.examples(cx).into_any_element()],
         };
-        if !vertical {
+        // Beside the view, or under it in a window too narrow for columns:
+        // one column, under the masthead when there is room for it.
+        if !vertical || self.narrow {
             return div()
                 .id("side")
                 .flex()
                 .flex_col()
                 .flex_none()
                 .gap(px(16.))
-                .pt(px(20.))
-                .w(px(theme::side_width()))
-                .h_full()
+                .pt(px(if vertical { 14. } else { 20. }))
+                .map(|d| {
+                    if vertical {
+                        d.w_full().h(px(theme::band_height()))
+                    } else {
+                        d.w(px(theme::side_width())).h_full()
+                    }
+                })
                 .bg(theme::surface())
-                .child(self.masthead())
+                .when(!vertical, |d| d.child(self.masthead()))
                 .child(self.search(focused, cx))
                 // Everything under the field scrolls when the window is
                 // too short for it; the field itself stays put.
@@ -7096,7 +7112,7 @@ impl Viewer {
             .when(has_structure && self.busy.is_none() && self.frame_count() > 1, |d| {
                 d.child(self.transport(cx))
             })
-            .when(has_structure && self.busy.is_none() && self.frame_count() <= 1, |d| {
+            .when(has_structure && self.busy.is_none() && self.frame_count() <= 1 && !self.narrow, |d| {
                 d.child(
                     div()
                         .absolute()
@@ -7955,6 +7971,7 @@ impl Render for Viewer {
         let folding = self.mode == Mode::Fold;
         let structure = self.structure.clone();
         let vertical = theme::vertical();
+        self.narrow = window.viewport_size().width < px(2. * PANEL_WIDTH + 40.);
 
         div()
             .flex()

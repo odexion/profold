@@ -84,6 +84,12 @@ actions!(
 
 const REPO: &str = "https://github.com/odexion/profold";
 
+/// How wide a window this tall is when it has the proportions of a phone
+/// held upright, about one to two.
+pub fn phone_width(height: f32) -> f32 {
+    (height * 0.5).clamp(380., 480.)
+}
+
 /// Height of the tab row, which is also the window's title bar.
 const TAB_BAR: f32 = 40.0;
 /// Room for the traffic lights at the left of the bar. Elsewhere the
@@ -287,6 +293,9 @@ pub struct Workspace {
 
     /// Redraws the bar while the updater works.
     update_poll: Option<Task<()>>,
+    /// The window's size before the panel went under the view and the
+    /// window was made phone-shaped, to go back to.
+    landscape: Option<gpui::Size<gpui::Pixels>>,
 }
 
 /// A tab being dragged along the bar, by where it was.
@@ -324,6 +333,7 @@ impl Workspace {
             update: std::sync::Arc::new(std::sync::Mutex::new(Status::Idle)),
             about: false,
             update_poll: None,
+            landscape: None,
         };
         let saved = settings::Settings::load();
         theme::set_dark(saved.dark);
@@ -346,8 +356,28 @@ impl Workspace {
     }
 
     /// Move the panel under the view, or back beside it.
-    fn toggle_layout(&mut self, cx: &mut Context<Self>) {
-        theme::set_vertical(!theme::vertical());
+    ///
+    /// The window goes with it: under the view, it is made the shape of a
+    /// phone held upright, and back beside, the size it was before. Only
+    /// the width changes, as macOS keeps a window's bottom edge where it is
+    /// and a new height would move its title bar. A window filling the
+    /// screen is left as it is.
+    fn toggle_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vertical = !theme::vertical();
+        if !window.is_fullscreen() && !window.is_maximized() {
+            let size = window.bounds().size;
+            if vertical {
+                self.landscape = Some(size);
+                let height = f32::from(size.height);
+                window.resize(gpui::size(px(phone_width(height)), size.height));
+            } else {
+                let back = self.landscape.take().map(|s| s.width).unwrap_or(px(1180.));
+                if back > size.width {
+                    window.resize(gpui::size(back, size.height));
+                }
+            }
+        }
+        theme::set_vertical(vertical);
         cx.set_menus(menus());
         for tab in &self.tabs {
             tab.update(cx, |tab, cx| tab.relayout(cx));
@@ -391,7 +421,7 @@ impl Workspace {
                 let tip = if vertical { "Panel beside the view  ⇧⌘L" } else { "Panel under the view  ⇧⌘L" };
                 cx.new(|_| Tip(tip.into())).into()
             })
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_layout(cx)))
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_layout(window, cx)))
             .child(
                 div()
                     .w(px(14.))
@@ -1207,7 +1237,7 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleDark, _, cx| this.toggle_theme(cx)))
-            .on_action(cx.listener(|this, _: &ToggleLayout, _, cx| this.toggle_layout(cx)))
+            .on_action(cx.listener(|this, _: &ToggleLayout, window, cx| this.toggle_layout(window, cx)))
             .on_action(cx.listener(|this, _: &SaveImage, _, cx| {
                 this.active().update(cx, |tab, cx| tab.save_image(2, cx))
             }))
