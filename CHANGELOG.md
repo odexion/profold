@@ -1,11 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-19
 
 ### Viewing
+- **Roll off the Mac.** Rolling the view in the screen's plane is Ctrl-drag
+  on Linux and Windows, as the hints already said; ⌘-drag on the Mac.
 - **Honest angle readout.** X and Y are now measured from square-on (looking
   down z, with x across and y up), so the three-quarter opening view reads
   14° and 32° rather than 0°. Typing 0 and 0 gives the square-on view.
+
+### Searching
+- **The field says what it holds.** A chip inside the search field names
+  what was typed or pasted (PDB ID, UniProt, PubChem, File, a sequence and
+  its length, or Unrecognised), beside a ↵ button that acts on it.
+- **SAM synthetase (9SV9)** joins the example proteins.
+
+### Look
+- **A new logo:** a ribbon wound into a helix that leaves as a strand,
+  indigo to orange from N- to C-terminus, with a two-turn version for small
+  icons.
 
 ### Films
 - **Export film** (Image menu, ⇧⌘E) replaces the two fixed GIFs with one
