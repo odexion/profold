@@ -8389,6 +8389,7 @@ mod ui_tests {
             view: (120, 90),
             shots,
             options,
+            legend: None,
         };
         let dir = std::env::temp_dir().join(format!("profold-gif-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

@@ -16,17 +16,20 @@
 - **Image.** Window size, 720p, 1080p, 4K, square or custom; 1×, 2× or 4×
   antialiasing; a quality setting for video; the background as shown, a
   colour of your own, or transparent.
-- **Formats.** MP4 (H.264, encoded in the app), GIF, and numbered PNGs with
-  transparency. With ffmpeg installed, also WebM (VP9) and ProRes 4444, both
+- **Formats.** GIF and numbered PNGs with transparency, made in the app.
+  With ffmpeg installed: MP4 (H.264), and WebM (VP9) and ProRes 4444, both
   with transparency.
 - **Overlays.** A frame counter, the simulation step and time (LAMMPS
   timesteps are now read; give the timestep in fs, ps or τ), a scale bar,
-  and a caption.
+  a caption, and the colour legend (hydrophobicity, charge, B-factor,
+  sequence, secondary structure, pLDDT, chains, or elements and atom types)
+  in a corner of your choice.
 - **Preview** plays a small version in the dialog first. While a film is
   being made it shows a progress bar with Cancel, and the settings are
   remembered.
 - **Console.** `movie` opens the dialog; `movie out.mp4 frames=1:500:2 fps=30
-  turn=360 smooth=3 bg=transparent counter scalebar caption="…"` makes a
+  turn=360 smooth=3 bg=transparent counter scalebar legend=bottom-left
+  caption="…"` makes a
   film without it. `record` and `record stop` capture a path for
   `movie … recorded`.
 

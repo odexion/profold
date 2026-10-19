@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use gpui::{div, prelude::*, px, relative, Context, MouseButton, SharedString, Task};
 
 use super::{pill_keyed, spaced, swallow, Field, Viewer};
-use crate::movie::{self, Axis, Background, Format, Motion, Options, Sample, Size, TimeUnit};
+use crate::movie::{self, Axis, Background, Corner, Format, Legend, Motion, Options, Sample, Size, TimeUnit};
 use crate::protein::Structure;
-use crate::render::{self, Scene};
+use crate::render::{self, Coloring, Repr, Scene, Species};
 use crate::settings;
 use crate::theme;
 
@@ -150,6 +150,10 @@ impl Viewer {
             }
             self.movie.options = Some(o);
         }
+        // Without ffmpeg, a GIF is the film that can be made.
+        if let Some(o) = self.movie.options.as_mut().filter(|o| o.format.needs_ffmpeg() && movie::ffmpeg().is_none()) {
+            o.format = Format::Gif;
+        }
         self.movie.open = true;
         self.refresh_preview(Duration::ZERO, cx);
         cx.notify();
@@ -222,6 +226,96 @@ impl Viewer {
             view: self.cache.borrow().size,
             shots,
             options: o.clone(),
+            legend: self.film_legend(),
+        })
+    }
+
+    /// What the colours on screen mean, as the panel's key says it.
+    fn film_legend(&self) -> Option<Legend> {
+        let s = self.shown(0).or(self.shown(1))?;
+        let palette = self.palette;
+        let ramp = |f: &dyn Fn(f32) -> [f32; 3]| (0..24).map(|i| f(i as f32 / 23.0)).collect::<Vec<_>>();
+        // No more than this many swatches; the rest are counted.
+        const MOST: usize = 8;
+        let swatches = |title: &str, all: Vec<([f32; 3], String)>| {
+            let more = all.len().saturating_sub(MOST);
+            Legend::Swatches { title: title.into(), items: all.into_iter().take(MOST).collect(), more }
+        };
+        Some(match self.coloring {
+            Coloring::Hydrophobic => Legend::Ramp {
+                title: "Hydrophobicity".into(),
+                colors: ramp(&|t| render::diverging(t * 2.0 - 1.0, render::HYDROPHILIC, render::HYDROPHOBIC)),
+                low: "hydrophilic".into(),
+                high: "hydrophobic".into(),
+            },
+            Coloring::Charge => {
+                let surface = self.repr == Repr::Surface;
+                Legend::Ramp {
+                    title: if surface { "Electrostatic potential" } else { "Charge" }.into(),
+                    colors: ramp(&|t| render::diverging(t * 2.0 - 1.0, render::NEGATIVE, render::POSITIVE)),
+                    low: if surface { "−" } else { "acidic" }.into(),
+                    high: if surface { "+" } else { "basic" }.into(),
+                }
+            }
+            Coloring::BFactor => {
+                let (lo, hi) = s.b_span()?;
+                Legend::Ramp {
+                    title: "B-factor".into(),
+                    colors: ramp(&|t| palette.ramp(t)),
+                    low: format!("{lo:.0} Å²"),
+                    high: format!("{hi:.0} Å²"),
+                }
+            }
+            Coloring::Rainbow if s.has_polymer() => Legend::Ramp {
+                title: "Sequence".into(),
+                colors: ramp(&|t| palette.ramp(t)),
+                low: "N-terminus".into(),
+                high: "C-terminus".into(),
+            },
+            Coloring::Structure => swatches(
+                "Secondary structure",
+                render::SS_COLORS.iter().map(|(_, name, c)| (*c, name.to_string())).collect(),
+            ),
+            Coloring::Confidence if s.has_confidence => swatches(
+                "pLDDT",
+                render::PLDDT_BANDS.iter().map(|(name, v)| (render::plddt_band_color(*v), name.to_string())).collect(),
+            ),
+            Coloring::Chain if s.has_polymer() => swatches(
+                "Chains",
+                s.chains
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let name = if c.id.trim().is_empty() { format!("Chain {}", i + 1) } else { format!("Chain {}", c.id) };
+                        (s.chain_color(i, palette), name)
+                    })
+                    .collect(),
+            ),
+            _ => {
+                // Elements and atom types, as the atoms list colours them.
+                let colors = render::element_colors(s, palette, self.standard_colors);
+                let own = |species: Species, fallback: [f32; 3]| self.appearance.get(&species).color.unwrap_or(fallback);
+                let mut rows: Vec<([f32; 3], String)> = s
+                    .composition()
+                    .into_iter()
+                    .filter(|(e, _)| e.is_known())
+                    .map(|(e, _)| (own(Species::Element(e.0), colors[e.0 as usize]), e.symbol().to_string()))
+                    .collect();
+                let mut by_kind = vec![0usize; s.kinds.len()];
+                for a in s.atoms.iter().filter(|a| !a.element.is_known()) {
+                    if let Some(n) = by_kind.get_mut(a.kind as usize) {
+                        *n += 1;
+                    }
+                }
+                rows.extend(by_kind.iter().enumerate().filter(|(_, n)| **n > 0).map(|(k, _)| {
+                    let name = s.kinds[k].clone();
+                    (own(Species::Kind(name.clone()), palette.chain(k)), format!("Type {name}"))
+                }));
+                if rows.is_empty() {
+                    return None;
+                }
+                swatches(if by_kind.iter().any(|n| *n > 0) { "Atoms" } else { "Elements" }, rows)
+            }
         })
     }
 
@@ -693,14 +787,22 @@ impl Viewer {
             Format::WebM => "VP9 with soft transparency, for the web",
             Format::Mov => "ProRes 4444 with transparency, for Final Cut, Premiere, Keynote",
         };
-        let ffmpeg_note = (!ffmpeg).then(|| note("WebM and ProRes need ffmpeg installed".to_string()));
+        let ffmpeg_note = (!ffmpeg).then(|| note("MP4, WebM and ProRes need ffmpeg installed".to_string()));
 
         // -- Overlays
         let overlays = inline(vec![
             self.switch("movie-counter", "Frame counter", o.counter, |o| o.counter = !o.counter, cx).into_any_element(),
             self.switch("movie-time", "Time", o.time, |o| o.time = !o.time, cx).into_any_element(),
             self.switch("movie-scale", "Scale bar", o.scale_bar, |o| o.scale_bar = !o.scale_bar, cx).into_any_element(),
+            self.switch("movie-legend", "Legend", o.legend, |o| o.legend = !o.legend, cx).into_any_element(),
         ]);
+        let legend = o.legend.then(|| match self.film_legend() {
+            Some(_) => {
+                let corners: Vec<_> = Corner::ALL.iter().map(|c| (*c, c.label(), true)).collect();
+                self.choices("movie-corner", &corners, o.corner, |o, v| o.corner = v, cx).into_any_element()
+            }
+            None => note("This colouring has no key to show".to_string()).into_any_element(),
+        });
         let steps = self.structure.as_ref().is_some_and(|s| s.frames.iter().any(|f| f.step.is_some()));
         let time = (o.time).then(|| {
             if !steps {
@@ -768,6 +870,7 @@ impl Viewer {
             .children(ffmpeg_note)
             .child(heading("Overlays"))
             .child(row("Show", overlays))
+            .children(legend.map(|l| row("Legend", l)))
             .children(time.map(|t| row("", t)))
             .child(row("Caption", caption));
 

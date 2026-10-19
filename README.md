@@ -107,9 +107,9 @@ Settings, the folding environment and its weights live in `~/.profold` (and
   superimpose it with Kabsch, and read off the Cα RMSD, coloured by deviation.
 - **Publication images.** Save the viewport as a PNG at one to three times the screen size.
 - **Films.** Play a trajectory while the camera turns, rocks, or follows a path
-  you recorded by hand, with smoothing between frames. Export as MP4, GIF, PNG
-  frames, or (with ffmpeg) transparent WebM or ProRes, at up to 4K, with a frame
-  counter, simulation time, a scale bar and a caption.
+  you recorded by hand, with smoothing between frames. Export as GIF or PNG
+  frames, or with ffmpeg as MP4 or transparent WebM or ProRes, at up to 4K, with
+  a frame counter, simulation time, a scale bar, the colour legend and a caption.
 
 ## Gallery
 

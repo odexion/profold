@@ -60,7 +60,7 @@ pub enum Background {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Format {
-    /// H.264, encoded here.
+    /// H.264, through ffmpeg.
     Mp4,
     Gif,
     /// Numbered PNGs in a folder, lossless and with transparency.
@@ -113,7 +113,7 @@ impl Format {
 
     /// Made with ffmpeg rather than here.
     pub fn needs_ffmpeg(self) -> bool {
-        matches!(self, Format::WebM | Format::Mov)
+        matches!(self, Format::Mp4 | Format::WebM | Format::Mov)
     }
 
     /// Whether a quality setting means anything to it.
@@ -147,6 +147,50 @@ impl Size {
             Size::Custom => "Custom",
         }
     }
+}
+
+/// A corner of the picture, for the legend.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl Corner {
+    pub const ALL: [Corner; 4] = [Corner::BottomRight, Corner::BottomLeft, Corner::TopRight, Corner::TopLeft];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Corner::TopLeft => "Top left",
+            Corner::TopRight => "Top right",
+            Corner::BottomLeft => "Bottom left",
+            Corner::BottomRight => "Bottom right",
+        }
+    }
+
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    fn right(self) -> bool {
+        matches!(self, Corner::TopRight | Corner::BottomRight)
+    }
+
+    fn bottom(self) -> bool {
+        matches!(self, Corner::BottomLeft | Corner::BottomRight)
+    }
+}
+
+/// What the colours mean, as the panel's key shows it, for writing into a
+/// film.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Legend {
+    /// A continuous scale, with what each end means.
+    Ramp { title: String, colors: Vec<[f32; 3]>, low: String, high: String },
+    /// A colour each, and how many more were left out.
+    Swatches { title: String, items: Vec<([f32; 3], String)>, more: usize },
 }
 
 /// The unit a simulation's timestep is given in.
@@ -199,6 +243,9 @@ pub struct Options {
     pub dt: f32,
     pub unit: TimeUnit,
     pub scale_bar: bool,
+    /// The colour key, in a corner of its own.
+    pub legend: bool,
+    pub corner: Corner,
     pub caption: String,
 }
 
@@ -229,6 +276,8 @@ impl Default for Options {
             dt: 1.0,
             unit: TimeUnit::Fs,
             scale_bar: false,
+            legend: false,
+            corner: Corner::BottomRight,
             caption: String::new(),
         }
     }
@@ -254,6 +303,12 @@ const SIZES: [(Size, &str); 6] = [
     (Size::Uhd, "4k"),
     (Size::Square, "square"),
     (Size::Custom, "custom"),
+];
+const CORNERS: [(Corner, &str); 4] = [
+    (Corner::TopLeft, "top-left"),
+    (Corner::TopRight, "top-right"),
+    (Corner::BottomLeft, "bottom-left"),
+    (Corner::BottomRight, "bottom-right"),
 ];
 const UNITS: [(TimeUnit, &str); 3] = [(TimeUnit::Fs, "fs"), (TimeUnit::Ps, "ps"), (TimeUnit::Tau, "tau")];
 
@@ -287,6 +342,8 @@ impl Options {
             "dt": self.dt,
             "unit": name(&UNITS, self.unit),
             "scale_bar": self.scale_bar,
+            "legend": self.legend,
+            "corner": name(&CORNERS, self.corner),
             "caption": self.caption,
         }))
         .unwrap_or_default()
@@ -327,6 +384,8 @@ impl Options {
         o.dt = f("dt", o.dt);
         o.unit = named(&UNITS, s("unit")).unwrap_or(o.unit);
         o.scale_bar = b("scale_bar", o.scale_bar);
+        o.legend = b("legend", o.legend);
+        o.corner = named(&CORNERS, s("corner")).unwrap_or(o.corner);
         o.caption = s("caption").to_string();
         o.clamped()
     }
@@ -349,6 +408,10 @@ impl Options {
         self.quality = self.quality.clamp(1, 100);
         if !self.dt.is_finite() || self.dt <= 0.0 {
             self.dt = 1.0;
+        }
+        // A film with no transparency in it is drawn on the page.
+        if !self.format.keeps_alpha() && self.background == Background::Transparent {
+            self.background = Background::Theme;
         }
         self
     }
@@ -655,6 +718,8 @@ pub struct Job {
     pub view: (usize, usize),
     pub shots: Vec<Shot>,
     pub options: Options,
+    /// The colour key, drawn when the options ask for it.
+    pub legend: Option<Legend>,
 }
 
 /// A drawn frame, as straight (not premultiplied) RGBA.
@@ -735,7 +800,8 @@ impl<'a> Drawer<'a> {
         pic
     }
 
-    /// The text and the scale bar, over the frame.
+    /// The text, the scale bar and the legend, over the frame. Each keeps
+    /// to a corner, and what shares a corner is stacked inwards from it.
     fn overlay(&self, pic: &mut Picture, shot: &Shot, cam: &Camera, ss: usize) {
         let o = &self.job.options;
         let Some(font) = &self.font else { return };
@@ -743,11 +809,15 @@ impl<'a> Drawer<'a> {
         let short = w.min(h);
         let margin = (short * 0.035).max(6.0);
         let small = (short * 0.032).max(10.0);
+        let gap = small * 0.9;
         let ink = self.ink();
+        // How far in from its edge each corner is filled.
+        let mut used = [0.0f32; 4];
 
         if !o.caption.trim().is_empty() {
             let size = (short * 0.05).max(12.0);
             text(pic, font, o.caption.trim(), margin, margin + size * 0.8, size, ink);
+            used[Corner::TopLeft.index()] += size + gap;
         }
 
         let mut info = Vec::new();
@@ -763,6 +833,7 @@ impl<'a> Drawer<'a> {
         }
         if !info.is_empty() {
             text(pic, font, &info.join("   ·   "), margin, h - margin, small, ink);
+            used[Corner::BottomLeft.index()] += small + gap;
         }
 
         if o.scale_bar {
@@ -777,7 +848,16 @@ impl<'a> Drawer<'a> {
                 rect(pic, x1 - bar, y - thick, bar, thick, ink);
                 let tw = text_width(font, &label, small);
                 text(pic, font, &label, x1 - bar / 2.0 - tw / 2.0, y - thick - small * 0.45, small, ink);
+                used[Corner::BottomRight.index()] += thick + small * 1.3 + gap;
             }
+        }
+
+        if let (true, Some(legend)) = (o.legend, &self.job.legend) {
+            let c = o.corner;
+            let (lw, lh) = legend_size(font, legend, small, short);
+            let x = if c.right() { w - margin - lw } else { margin };
+            let y = if c.bottom() { h - margin - used[c.index()] - lh } else { margin + used[c.index()] };
+            draw_legend(pic, font, legend, x, y, small, short, ink);
         }
     }
 
@@ -869,6 +949,81 @@ fn time_label(t: f64, unit: TimeUnit) -> String {
         (fs, "fs")
     };
     format!("t = {v:.2} {u}")
+}
+
+/// The legend's sizes, from the size of its writing: the title's, the
+/// labels', a ramp's length and thickness, and a row of swatches' height.
+fn legend_metrics(small: f32, short: f32) -> (f32, f32, f32, f32, f32) {
+    (small * 0.95, small * 0.9, (short * 0.26).max(80.0), (small * 0.55).max(4.0), small * 1.45)
+}
+
+fn legend_size(font: &ab_glyph::FontRef<'static>, legend: &Legend, small: f32, short: f32) -> (f32, f32) {
+    let (title, label, length, thick, row) = legend_metrics(small, short);
+    match legend {
+        Legend::Ramp { title: t, low, high, .. } => {
+            let ends = text_width(font, low, label) + text_width(font, high, label) + label;
+            (length.max(ends).max(text_width(font, t, title)), title * 1.5 + thick + label * 1.5)
+        }
+        Legend::Swatches { title: t, items, more } => {
+            let dot = label * 1.3;
+            let widest = items.iter().map(|(_, n)| text_width(font, n, label)).fold(0.0, f32::max);
+            let rows = items.len() + usize::from(*more > 0);
+            (text_width(font, t, title).max(dot + widest), title * 1.5 + rows as f32 * row)
+        }
+    }
+}
+
+/// The legend with its top left corner at `x`, `y`.
+#[allow(clippy::too_many_arguments)]
+fn draw_legend(pic: &mut Picture, font: &ab_glyph::FontRef<'static>, legend: &Legend, x: f32, y: f32, small: f32, short: f32, ink: [f32; 3]) {
+    let (title_size, label, _, thick, row) = legend_metrics(small, short);
+    let faint = ink.map(|v| v * 0.75 + 0.125);
+    match legend {
+        Legend::Ramp { title, colors, low, high } => {
+            text(pic, font, title, x, y + title_size * 0.85, title_size, ink);
+            let (w, _) = legend_size(font, legend, small, short);
+            let top = y + title_size * 1.5;
+            let n = colors.len().max(1);
+            // Each colour its share of the bar, blended into the next.
+            for px in 0..w.ceil() as usize {
+                let t = (px as f32 + 0.5) / w * (n - 1) as f32;
+                let (i, f) = (t.floor() as usize, t.fract());
+                let a = colors[i.min(n - 1)];
+                let b = colors[(i + 1).min(n - 1)];
+                let c = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+                rect(pic, x + px as f32, top, 1.0, thick, c);
+            }
+            let base = top + thick + label * 1.15;
+            text(pic, font, low, x, base, label, faint);
+            text(pic, font, high, x + w - text_width(font, high, label), base, label, faint);
+        }
+        Legend::Swatches { title, items, more } => {
+            text(pic, font, title, x, y + title_size * 0.85, title_size, ink);
+            let mut top = y + title_size * 1.5;
+            let r = label * 0.36;
+            for (color, name) in items {
+                let mid = top + row * 0.45;
+                disc(pic, x + r, mid, r, *color);
+                text(pic, font, name, x + label * 1.3, mid + label * 0.35, label, ink);
+                top += row;
+            }
+            if *more > 0 {
+                text(pic, font, &format!("and {more} more"), x + label * 1.3, top + row * 0.45 + label * 0.35, label, faint);
+            }
+        }
+    }
+}
+
+/// A filled circle, its edge smoothed.
+fn disc(pic: &mut Picture, cx: f32, cy: f32, r: f32, color: [f32; 3]) {
+    let (x0, x1) = ((cx - r - 1.0).floor() as i64, (cx + r + 1.0).ceil() as i64);
+    let (y0, y1) = ((cy - r - 1.0).floor() as i64, (cy + r + 1.0).ceil() as i64);
+    for py in y0..y1 {
+        for px in x0..x1 {
+            let d = ((px as f32 + 0.5 - cx).powi(2) + (py as f32 + 0.5 - cy).powi(2)).sqrt();
+            blend(pic, px, py, (r - d + 0.5).clamp(0.0, 1.0), color);
+        }
+    }
 }
 
 /// Scale an RGBA picture down by `k`, each pixel the average of the block
@@ -1002,145 +1157,24 @@ pub fn ffmpeg() -> Option<PathBuf> {
         .clone()
 }
 
-fn sink(o: &Options, path: &Path, width: usize, height: usize) -> Result<Box<dyn Sink>> {
-    Ok(match o.format {
-        Format::Mp4 => Box::new(Mp4::new(path, width, height, o.fps, o.quality)?),
-        Format::Gif => Box::new(Gif::new(path, o.fps)?),
-        Format::Png => Box::new(Pngs::new(path)?),
-        Format::WebM | Format::Mov => Box::new(Ffmpeg::new(o, path, width, height)?),
+/// The H.264 encoder ffmpeg has, best first.
+fn h264_encoder() -> Option<&'static str> {
+    static FOUND: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| {
+        let out = std::process::Command::new(ffmpeg()?).args(["-hide_banner", "-encoders"]).output().ok()?;
+        let list = String::from_utf8_lossy(&out.stdout).to_string();
+        ["libx264", "h264_videotoolbox", "h264_mf", "h264_nvenc", "h264_qsv", "h264_vaapi"]
+            .into_iter()
+            .find(|e| list.split_whitespace().any(|w| w == *e))
     })
 }
 
-/// Bits a pixel of each frame gets at a quality of 1 to 100: about 9 Mbit/s
-/// for 1080p at 30 frames a second at 75.
-fn bits_per_pixel(quality: u32) -> f32 {
-    let q = quality.clamp(1, 100) as f32 / 100.0;
-    0.02 + 0.22 * q * q
-}
-
-struct Mp4 {
-    encoder: openh264::encoder::Encoder,
-    writer: Option<mp4::Mp4Writer<std::io::BufWriter<std::fs::File>>>,
-    file: Option<std::io::BufWriter<std::fs::File>>,
-    width: usize,
-    height: usize,
-    fps: u32,
-    frames: u64,
-    rgb: Vec<u8>,
-}
-
-/// Each frame lasts this many ticks of the film's clock.
-const TICKS: u32 = 1000;
-
-impl Mp4 {
-    fn new(path: &Path, width: usize, height: usize, fps: u32, quality: u32) -> Result<Self> {
-        use openh264::encoder::{
-            BitRate, Complexity, EncoderConfig, FrameRate, IntraFramePeriod, Level, RateControlMode, VuiConfig,
-        };
-        let bps = (bits_per_pixel(quality) * width as f32 * height as f32 * fps as f32).clamp(2e5, 2e8) as u32;
-        let level = match width * height {
-            0..=921_600 => Level::Level_3_1,
-            921_601..=2_228_224 => Level::Level_4_2,
-            _ => Level::Level_5_2,
-        };
-        let config = EncoderConfig::new()
-            .bitrate(BitRate::from_bps(bps))
-            .max_frame_rate(FrameRate::from_hz(fps as f32))
-            .rate_control_mode(RateControlMode::Bitrate)
-            .skip_frames(false)
-            .complexity(Complexity::High)
-            .level(level)
-            .intra_frame_period(IntraFramePeriod::from_num_frames(fps * 2))
-            .vui(VuiConfig::bt601());
-        let encoder = openh264::encoder::Encoder::with_api_config(openh264::OpenH264API::from_source(), config)
-            .map_err(|e| anyhow!("could not start the H.264 encoder: {e}"))?;
-        let file = std::io::BufWriter::new(std::fs::File::create(path).with_context(|| format!("could not write {}", path.display()))?);
-        Ok(Mp4 { encoder, writer: None, file: Some(file), width, height, fps, frames: 0, rgb: Vec::new() })
-    }
-}
-
-impl Sink for Mp4 {
-    fn push(&mut self, pic: &Picture) -> Result<()> {
-        // A film has no transparency; what is see-through sits on black.
-        self.rgb.clear();
-        for p in pic.rgba.chunks_exact(4) {
-            let a = p[3] as u32;
-            self.rgb.extend([0, 1, 2].map(|c| ((p[c] as u32 * a + 127) / 255) as u8));
-        }
-        let yuv = openh264::formats::YUVBuffer::from_rgb8_source(openh264::formats::RgbSliceU8::new(&self.rgb, (self.width, self.height)));
-        let stream = self.encoder.encode(&yuv).map_err(|e| anyhow!("encoding failed: {e}"))?;
-        let mut sample = Vec::new();
-        let mut sync = false;
-        let (mut sps, mut pps) = (None, None);
-        for l in 0..stream.num_layers() {
-            let layer = stream.layer(l).expect("in range");
-            for n in 0..layer.nal_count() {
-                let nal = layer.nal_unit(n).expect("in range");
-                // Annex B start codes off; MP4 counts each unit's length instead.
-                let body = nal.strip_prefix(&[0, 0, 0, 1][..]).or_else(|| nal.strip_prefix(&[0, 0, 1][..])).unwrap_or(nal);
-                let Some(&head) = body.first() else { continue };
-                match head & 0x1f {
-                    7 => sps = Some(body.to_vec()),
-                    8 => pps = Some(body.to_vec()),
-                    kind => {
-                        sync |= kind == 5;
-                        sample.extend((body.len() as u32).to_be_bytes());
-                        sample.extend_from_slice(body);
-                    }
-                }
-            }
-        }
-        if self.writer.is_none() {
-            let (Some(sps), Some(pps)) = (sps, pps) else {
-                bail!("the encoder gave no stream header");
-            };
-            let config = mp4::Mp4Config {
-                major_brand: str::parse("isom").expect("four letters"),
-                minor_version: 512,
-                compatible_brands: ["isom", "iso2", "avc1", "mp41"].map(|b| str::parse(b).expect("four letters")).to_vec(),
-                timescale: TICKS,
-            };
-            let mut writer = mp4::Mp4Writer::write_start(self.file.take().expect("written once"), &config)?;
-            writer.add_track(&mp4::TrackConfig {
-                track_type: mp4::TrackType::Video,
-                timescale: self.fps * TICKS,
-                language: "und".into(),
-                media_conf: mp4::MediaConfig::AvcConfig(mp4::AvcConfig {
-                    width: self.width as u16,
-                    height: self.height as u16,
-                    seq_param_set: sps,
-                    pic_param_set: pps,
-                }),
-            })?;
-            self.writer = Some(writer);
-        }
-        if sample.is_empty() {
-            return Ok(());
-        }
-        let writer = self.writer.as_mut().expect("started above");
-        writer.write_sample(
-            1,
-            &mp4::Mp4Sample {
-                start_time: self.frames * TICKS as u64,
-                duration: TICKS,
-                rendering_offset: 0,
-                is_sync: sync,
-                bytes: bytes::Bytes::from(sample),
-            },
-        )?;
-        self.frames += 1;
-        Ok(())
-    }
-
-    fn finish(mut self: Box<Self>) -> Result<()> {
-        let Some(mut writer) = self.writer.take() else {
-            bail!("no frames were drawn");
-        };
-        writer.write_end()?;
-        use std::io::Write;
-        writer.into_writer().flush()?;
-        Ok(())
-    }
+fn sink(o: &Options, path: &Path, width: usize, height: usize) -> Result<Box<dyn Sink>> {
+    Ok(match o.format {
+        Format::Gif => Box::new(Gif::new(path, o.fps)?),
+        Format::Png => Box::new(Pngs::new(path)?),
+        Format::Mp4 | Format::WebM | Format::Mov => Box::new(Ffmpeg::new(o, path, width, height)?),
+    })
 }
 
 struct Gif {
@@ -1220,6 +1254,26 @@ impl Ffmpeg {
         cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba"])
             .args(["-s", &format!("{width}x{height}"), "-r", &o.fps.to_string(), "-i", "-"]);
         match o.format {
+            Format::Mp4 => {
+                // x264 where ffmpeg has it, as most builds do; else the
+                // system's own encoder.
+                let q = o.quality as f32;
+                match h264_encoder() {
+                    Some("libx264") => {
+                        let crf = (36.0 - q * 0.2).round().clamp(12.0, 40.0) as u32;
+                        cmd.args(["-c:v", "libx264", "-preset", "slow", "-crf", &crf.to_string()]);
+                    }
+                    Some("h264_videotoolbox") => {
+                        cmd.args(["-c:v", "h264_videotoolbox", "-q:v", &((q * 0.9 + 10.0) as u32).to_string()]);
+                    }
+                    Some(other) => {
+                        let bps = (0.02 + 0.22 * (q / 100.0).powi(2)) * (width * height) as f32 * o.fps as f32;
+                        cmd.args(["-c:v", other, "-b:v", &format!("{}", bps as u64)]);
+                    }
+                    None => bail!("this ffmpeg has no H.264 encoder; choose WebM, GIF or PNG frames"),
+                }
+                cmd.args(["-pix_fmt", "yuv420p", "-movflags", "+faststart"]);
+            }
             Format::WebM => {
                 let crf = (52.0 - o.quality as f32 * 0.37).round().clamp(4.0, 63.0) as u32;
                 cmd.args(["-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", &crf.to_string()])
@@ -1428,6 +1482,14 @@ pub fn parse_args(base: Options, path: &Path, words: &[String]) -> Result<Option
                 }
             }
             "scalebar" | "scale" => o.scale_bar = on(v)?,
+            "legend" => {
+                o.legend = true;
+                if let Some(c) = named(&CORNERS, v) {
+                    o.corner = c;
+                } else {
+                    o.legend = on(v).map_err(|_| anyhow!("legend is on, off, top-left, top-right, bottom-left or bottom-right"))?;
+                }
+            }
             "caption" | "title" => o.caption = v.to_string(),
             _ => bail!("{k} is not something a film takes"),
         }
@@ -1573,7 +1635,7 @@ mod tests {
 
     #[test]
     fn the_console_says_it_in_words() {
-        let w = words(r#"frames=1:500:2 fps=24 turn=360 bg=transparent size=1280x720 caption="Melting LJ crystal" dt=0.005tau"#);
+        let w = words(r#"frames=1:500:2 fps=24 turn=360 bg=transparent size=1280x720 caption="Melting LJ crystal" dt=0.005tau legend=bottom-left"#);
         let o = parse_args(Options::default(), Path::new("out.webm"), &w).unwrap();
         assert_eq!((o.first, o.last, o.every), (1, 500, 2));
         assert_eq!(o.fps, 24);
@@ -1583,6 +1645,8 @@ mod tests {
         assert_eq!(o.caption, "Melting LJ crystal");
         assert_eq!(o.unit, TimeUnit::Tau);
         assert_eq!(o.format, Format::WebM);
+        assert!(o.legend);
+        assert_eq!(o.corner, Corner::BottomLeft);
         assert!(parse_args(Options::default(), Path::new("out.avi"), &[]).is_err());
     }
 
@@ -1601,23 +1665,49 @@ mod tests {
     }
 
     #[test]
-    fn an_mp4_is_written_and_reads_back() {
+    fn an_mp4_is_written_through_ffmpeg() {
+        let Some(exe) = ffmpeg() else { return };
         let dir = std::env::temp_dir().join(format!("profold-movie-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.mp4");
-        let mut sink = Mp4::new(&path, 64, 48, 10, 60).unwrap();
+        let o = Options { fps: 10, ..Options::default() };
+        let mut sink = Ffmpeg::new(&o, &path, 64, 48).unwrap();
         for i in 0..12u8 {
             let rgba: Vec<u8> = (0..64 * 48).flat_map(|p| [i * 20, (p % 64) as u8 * 4, 128, 255]).collect();
             sink.push(&Picture { width: 64, height: 48, rgba }).unwrap();
         }
         Box::new(sink).finish().unwrap();
-        let bytes = std::fs::read(&path).unwrap();
-        let reader = mp4::Mp4Reader::read_header(std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
-        let track = reader.tracks().values().next().unwrap();
-        assert_eq!(track.sample_count(), 12);
-        assert_eq!((track.width(), track.height()), (64, 48));
+        // Decoded back, it has every frame.
+        let out = std::process::Command::new(exe)
+            .args(["-hide_banner", "-i"])
+            .arg(&path)
+            .args(["-f", "null", "-"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&out.stderr);
+        assert!(log.contains("h264"), "{log}");
+        assert!(log.contains("frame=   12") || log.contains("frame=12"), "{log}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn a_legend_sits_in_its_corner() {
+        let font = ab_glyph::FontRef::try_from_slice(FONT).unwrap();
+        let legend = Legend::Ramp {
+            title: "Hydrophobicity".into(),
+            colors: vec![[0.2, 0.5, 0.8], [1.0, 1.0, 1.0], [0.9, 0.5, 0.1]],
+            low: "hydrophilic".into(),
+            high: "hydrophobic".into(),
+        };
+        let mut pic = Picture { width: 400, height: 300, rgba: vec![0; 400 * 300 * 4] };
+        let (lw, lh) = legend_size(&font, &legend, 12.0, 300.0);
+        draw_legend(&mut pic, &font, &legend, 400.0 - 10.0 - lw, 300.0 - 10.0 - lh, 12.0, 300.0, [0.0; 3]);
+        let alpha = |x: usize, y: usize| pic.rgba[(y * 400 + x) * 4 + 3];
+        let ink_in = |x0: usize, x1: usize, y0: usize, y1: usize| (y0..y1).any(|y| (x0..x1).any(|x| alpha(x, y) > 0));
+        assert!(ink_in(200, 400, 150, 300), "nothing in the bottom right");
+        assert!(!ink_in(0, 200, 0, 300) && !ink_in(200, 400, 0, 150), "drawn outside its corner");
+    }
+
 }
 
 /// Films of the melting crystal in every format, for looking at:
@@ -1651,6 +1741,8 @@ fn film_samples() {
             dt: 0.005,
             unit: TimeUnit::Tau,
             scale_bar: true,
+            legend: true,
+            corner: Corner::TopRight,
             caption: "Lennard-Jones crystal melting".into(),
             ..Options::default()
         };
@@ -1665,6 +1757,11 @@ fn film_samples() {
             view: (1280, 720),
             shots,
             options,
+            legend: Some(Legend::Swatches {
+                title: "Atoms".into(),
+                items: vec![([0.13, 0.45, 0.85], "Type 1".into()), ([0.90, 0.35, 0.15], "Type 2".into())],
+                more: 0,
+            }),
         };
         let t = std::time::Instant::now();
         let progress = Progress::default();

@@ -25,10 +25,7 @@ tar = "0.4"
 sha2 = "0.10"
 # Finds `uv` for the folding plugin, with PATHEXT on Windows.
 which = "7"
-openh264 = "0.9"
-mp4 = "0.14"
 ab_glyph = "0.2.32"
-bytes = "1"
 
 [features]
 default = ["simplefold"]
