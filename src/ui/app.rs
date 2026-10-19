@@ -7295,38 +7295,31 @@ impl Viewer {
             && s.has_polymer()
             && s.residues[residue].outside_polymer()
             && !crate::protein::is_solvent(&s.residues[residue].name);
+        let on_ink = theme::on_ink();
+        let soft = |a: f32| gpui::Hsla { a, ..on_ink };
         let action = |id: &'static str, label: &'static str| {
             div()
                 .id(id)
                 .debug_selector(move || id.into())
-                .px(px(7.))
-                .py(px(2.))
-                .rounded(px(4.))
+                .px(px(8.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .border_1()
+                .border_color(soft(0.18))
+                .bg(soft(0.06))
                 .text_size(px(10.))
-                .text_color(theme::muted())
+                .text_color(soft(0.85))
                 .cursor_pointer()
-                .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
+                .hover(|d| d.bg(soft(0.14)).border_color(soft(0.3)).text_color(on_ink))
                 .child(label)
         };
         Some(
-            div()
-                .flex()
-                .flex_col()
-                .items_end()
-                .gap(px(3.))
-                .child(card)
+            card.child(div().h(px(1.)).w_full().bg(soft(0.12)))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(2.))
-                        .child(
-                            div()
-                                .pr(px(4.))
-                                .text_size(px(9.5))
-                                .text_color(theme::faint())
-                                .child("click again to deselect"),
-                        )
+                        .gap(px(5.))
                         .child(
                             action("focus-selected", "Focus")
                                 .on_click(cx.listener(|this, _, _, cx| this.focus_selected(cx))),
