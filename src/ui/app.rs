@@ -2886,7 +2886,7 @@ impl Viewer {
         } else {
             self.drag = Some(if e.modifiers.shift || e.button == MouseButton::Right {
                 Drag::Pan
-            } else if e.modifiers.platform {
+            } else if e.modifiers.secondary() {
                 Drag::Roll
             } else {
                 Drag::Orbit
