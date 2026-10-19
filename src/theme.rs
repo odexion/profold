@@ -149,7 +149,8 @@ pub const MONO: &str = "Consolas";
 #[cfg(not(any(target_os = "macos", windows)))]
 pub const MONO: &str = "DejaVu Sans Mono";
 
-/// Display serif, used only for the name of the structure on screen.
+/// Display serif, used only for the wordmark and the name of the structure
+/// on screen.
 #[cfg(target_os = "macos")]
 pub const SERIF: &str = "Charter";
 #[cfg(windows)]

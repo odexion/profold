@@ -211,6 +211,24 @@ struct PlotCache {
 /// The side of each plot, in pixels: the panel's width inside its margins.
 const PLOT: f32 = PANEL_WIDTH - 40.0;
 
+/// The structure's name in bold serif, as large as fits on one line across
+/// the panel: short names at 30px, longer ones smaller, down to 20px, past
+/// which it wraps.
+fn display_name(name: impl Into<SharedString>) -> gpui::Div {
+    let name: SharedString = name.into();
+    // Charter Bold averages a little over half an em per character.
+    let chars = name.chars().count().max(1) as f32;
+    let size = (PLOT / (chars * 0.56)).clamp(20., 30.);
+    div()
+        .font_family(theme::SERIF)
+        .font_weight(gpui::FontWeight::BOLD)
+        .text_size(px(size))
+        .line_height(px((size * 1.15).round()))
+        .text_color(theme::ink())
+        .overflow_hidden()
+        .child(name)
+}
+
 /// A small picture from colours row by row, as GPUI takes them.
 fn picture(width: usize, height: usize, rgb: impl Fn(usize, usize) -> [f32; 3]) -> Arc<gpui::RenderImage> {
     let mut bgra = vec![0u8; width * height * 4];
@@ -4319,26 +4337,38 @@ impl Viewer {
 
     /// The logo and what the tab is for, at the head of the panel.
     fn masthead(&self) -> impl IntoElement {
-        let (name, purpose) = match self.mode {
-            Mode::View => ("profold", "Proteins, molecules and crystals"),
-            Mode::Fold => ("Fold a protein", "Structure prediction with Apple's SimpleFold"),
+        // Each name at the size that spans the panel beside the logo.
+        let (name, size, purpose) = match self.mode {
+            Mode::View => ("profold", 68., "Proteins, molecules and crystals"),
+            Mode::Fold => ("Fold a protein", 35., "Structure prediction with Apple's SimpleFold"),
         };
         div()
             .flex()
             .items_center()
-            .gap(px(10.))
+            .gap(px(12.))
             .px(px(20.))
-            .child(gpui::img(self.mark.clone()).size(px(32.)).flex_none())
+            .child(gpui::img(self.mark.clone()).size(px(88.)).flex_none())
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
-                    .child(div().text_size(px(16.)).text_color(theme::ink()).child(name))
+                    .gap(px(8.))
                     .child(
                         div()
-                            .text_size(px(11.))
-                            .text_color(theme::muted())
+                            .font_family(theme::SERIF)
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_size(px(size))
+                            .line_height(px(size + 2.))
+                            .text_color(theme::ink())
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme::text())
                             .child(purpose),
                     ),
             )
@@ -6502,15 +6532,7 @@ impl Viewer {
                     .text_color(theme::faint())
                     .child(spaced(&category.to_uppercase())),
             )
-            .child(
-                div()
-                    .font_family(theme::SERIF)
-                    .text_size(px(27.))
-                    .line_height(px(31.))
-                    .text_color(theme::ink())
-                    .overflow_hidden()
-                    .child(name),
-            )
+            .child(display_name(name))
             .when_some(blurb, |d, blurb| {
                 d.child(
                     div()
@@ -6706,14 +6728,7 @@ impl Viewer {
                         .to_uppercase()
                     ))),
             )
-            .child(
-                div()
-                    .font_family(theme::SERIF)
-                    .text_size(px(27.))
-                    .line_height(px(31.))
-                    .text_color(theme::ink())
-                    .child(name),
-            )
+            .child(display_name(name))
             .when_some(blurb, |d, blurb| {
                 d.child(
                     div()

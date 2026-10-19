@@ -23,7 +23,7 @@ swiftc -O "$root/scripts/raster.swift" -o "$work/raster"
 r="$work/raster"
 
 "$r" logo.svg icon.png 1024
-"$r" mark.svg mark.png 64      # twice the masthead's 32 points, so it is drawn 1:1
+"$r" mark.svg mark.png 176     # twice the masthead's 88 points, so it is drawn 1:1
 
 set="$work/profold.iconset"
 mkdir "$set"
