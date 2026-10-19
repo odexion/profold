@@ -7,6 +7,8 @@
   residue and flies the view to it, as the card's Focus button does.
 
 ### Menus
+- **The recording light** sits in the top bar, beside the angles, rather
+  than over the style pills it used to cover.
 - **The bar along the top** is now Open · Samples · Camera · Image · Film ·
   Save. Overlaying a second structure moved into Open; recording a camera
   path and exporting a film have a Film menu of their own; Image is for

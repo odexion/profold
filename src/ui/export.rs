@@ -520,41 +520,34 @@ impl Viewer {
         self.movie.recording.is_some()
     }
 
-    /// The red light over the viewport while recording, with its stop.
+    /// The red light in the top bar while recording, with its stop. Up
+    /// there it covers nothing in the viewport.
     pub(super) fn recording_badge(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let rec = self.movie.recording.as_ref()?;
         let t = rec.started.elapsed().as_secs_f32();
         Some(
             div()
-                .absolute()
-                .top(px(14.))
-                .left_0()
-                .right_0()
+                .id("recording")
+                .debug_selector(|| "recording".into())
                 .flex()
-                .justify_center()
-                .child(
-                    div()
-                        .id("recording")
-                        .debug_selector(|| "recording".into())
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .px(px(12.))
-                        .py(px(5.))
-                        .rounded(px(14.))
-                        .bg(theme::surface())
-                        .border_1()
-                        .border_color(theme::border())
-                        .shadow_md()
-                        .cursor_pointer()
-                        .on_mouse_down(MouseButton::Left, swallow)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.stop_recording(cx);
-                        }))
-                        .child(div().size(px(9.)).rounded_full().bg(gpui::rgb(0xe5484d)))
-                        .child(div().font_family(theme::MONO).text_size(px(11.)).text_color(theme::text()).child(clock(t)))
-                        .child(div().text_size(px(11.)).text_color(theme::muted()).child("Stop recording")),
-                )
+                .flex_none()
+                .items_center()
+                .gap(px(7.))
+                .mr(px(14.))
+                .px(px(10.))
+                .py(px(2.))
+                .rounded(px(12.))
+                .bg(theme::sunken())
+                .border_1()
+                .border_color(theme::border())
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, swallow)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.stop_recording(cx);
+                }))
+                .child(div().size(px(8.)).rounded_full().bg(gpui::rgb(0xe5484d)))
+                .child(div().font_family(theme::MONO).text_size(px(10.5)).text_color(theme::text()).child(clock(t)))
+                .child(div().text_size(px(10.5)).text_color(theme::muted()).child("Stop recording"))
                 .into_any_element(),
         )
     }

@@ -3615,6 +3615,7 @@ impl Viewer {
                 })
             })
             .child(div().flex_1())
+            .children(self.recording_badge(cx))
             .when(loaded, |d| d.child(self.angle_readout(cx)))
             .when_some(badge, |d, badge| {
                 d.child(
@@ -3828,6 +3829,7 @@ impl Viewer {
         // Up top, how it is drawn; at the foot, what it is coloured by
         // beside the palette it is coloured from.
         let top = bar()
+            .debug_selector(|| "top-controls".into())
             .top(px(12.))
             .child(group(
                 Repr::ALL
@@ -4246,6 +4248,7 @@ impl Viewer {
             if self.recording() { "Stop recording".into() } else { "Record a camera path".into() },
             false,
         )
+        .debug_selector(|| "movie-record-menu".into())
         .on_click(cx.listener(|this, _, _, cx| this.toggle_recording(cx)));
         menu(200.)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -6910,7 +6913,6 @@ impl Viewer {
                 )
             })
             .children(self.console_view())
-            .children(self.recording_badge(cx))
             .children(self.movie_dialog(cx))
             .children(self.shortcut_sheet(cx))
     }
@@ -7915,6 +7917,19 @@ mod ui_tests {
         cx.simulate_click(at, Modifiers::secondary_key());
         cx.run_until_parked();
         assert!(view.update(cx, |this, _| this.selected.is_some()));
+    }
+
+    #[gpui::test]
+    fn the_recording_light_covers_none_of_the_controls(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        click(cx, "tab-film");
+        click(cx, "movie-record-menu");
+        assert!(view.update(cx, |this, _| this.recording()));
+        let light = cx.debug_bounds("recording").expect("no recording light");
+        let controls = cx.debug_bounds("top-controls").expect("no controls");
+        assert!(!light.intersects(&controls), "the light {light:?} sits on the controls {controls:?}");
+        click(cx, "recording");
+        assert!(!view.update(cx, |this, _| this.recording()));
     }
 
     #[gpui::test]
