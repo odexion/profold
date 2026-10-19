@@ -25,6 +25,9 @@ pub struct Settings {
     pub dark: bool,
     /// The panel under the viewport rather than beside it.
     pub vertical: bool,
+    /// The panel's width beside the viewport, and its height under it.
+    pub side_width: f32,
+    pub band_height: f32,
 }
 
 impl Default for Settings {
@@ -37,6 +40,8 @@ impl Default for Settings {
             appearance: Appearance::default(),
             dark: false,
             vertical: false,
+            side_width: crate::theme::SIDE_WIDTH,
+            band_height: crate::theme::BAND_HEIGHT,
         }
     }
 }
@@ -150,6 +155,12 @@ impl Settings {
         if self.vertical {
             v["layout"] = json!("vertical");
         }
+        if self.side_width != crate::theme::SIDE_WIDTH {
+            v["panel_width"] = json!(self.side_width.round());
+        }
+        if self.band_height != crate::theme::BAND_HEIGHT {
+            v["panel_height"] = json!(self.band_height.round());
+        }
         serde_json::to_string_pretty(&v).unwrap_or_default()
     }
 
@@ -165,6 +176,12 @@ impl Settings {
         }
         s.dark = v.get("theme").and_then(Value::as_str) == Some("dark");
         s.vertical = v.get("layout").and_then(Value::as_str) == Some("vertical");
+        if let Some(w) = v.get("panel_width").and_then(Value::as_f64) {
+            s.side_width = w as f32;
+        }
+        if let Some(h) = v.get("panel_height").and_then(Value::as_f64) {
+            s.band_height = h as f32;
+        }
         // The old "fixed_colours" is not read: it was off unless chosen, and
         // standard colours are now the default.
         if let Some(c) = v.get("element_colours").and_then(Value::as_str) {
@@ -333,6 +350,7 @@ mod tests {
             palette: Palette::Viridis,
             standard_colors: false,
             vertical: true,
+            band_height: 420.0,
             ..Settings::default()
         };
         s.appearance.set(
@@ -358,6 +376,7 @@ mod tests {
         assert_eq!(back.style, Style::Soft);
         assert!(!back.standard_colors);
         assert!(back.vertical);
+        assert_eq!(back.band_height, 420.0);
         assert_eq!(back.appearance.get(&Species::Kind("2".into())).alpha, 0.25);
     }
 

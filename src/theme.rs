@@ -3,7 +3,7 @@
 //! Paper white, ink black, one weight of hairline; or, dark, the same turned
 //! over. The only saturated colour in the app is the molecule itself.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use gpui::Hsla;
 
@@ -69,6 +69,29 @@ pub fn vertical() -> bool {
 #[cfg(test)]
 pub fn set_vertical(vertical: bool) {
     VERTICAL.with(|d| d.store(vertical, Ordering::Relaxed));
+}
+
+/// How wide the panel is beside the viewport, and how tall its band is
+/// under it, as dragged by the divider. Shared by every tab.
+pub const SIDE_WIDTH: f32 = 372.0;
+pub const BAND_HEIGHT: f32 = 300.0;
+static SIDE: AtomicU32 = AtomicU32::new(SIDE_WIDTH.to_bits());
+static BAND: AtomicU32 = AtomicU32::new(BAND_HEIGHT.to_bits());
+
+pub fn side_width() -> f32 {
+    f32::from_bits(SIDE.load(Ordering::Relaxed))
+}
+
+pub fn set_side_width(w: f32) {
+    SIDE.store(w.clamp(SIDE_WIDTH, 640.0).to_bits(), Ordering::Relaxed);
+}
+
+pub fn band_height() -> f32 {
+    f32::from_bits(BAND.load(Ordering::Relaxed))
+}
+
+pub fn set_band_height(h: f32) {
+    BAND.store(h.clamp(140.0, 1200.0).to_bits(), Ordering::Relaxed);
 }
 
 const fn hsla(h: f32, s: f32, l: f32, a: f32) -> Hsla {

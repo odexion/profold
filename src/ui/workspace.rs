@@ -328,6 +328,8 @@ impl Workspace {
         let saved = settings::Settings::load();
         theme::set_dark(saved.dark);
         theme::set_vertical(saved.vertical);
+        theme::set_side_width(saved.side_width);
+        theme::set_band_height(saved.band_height);
         cx.set_menus(menus());
         this.add(Mode::View, window, cx);
         if update::due() {
@@ -367,6 +369,49 @@ impl Workspace {
             tab.update(cx, |tab, cx| tab.retheme(cx));
         }
         cx.notify();
+    }
+
+    /// The panel beside the view or under it, drawn as a little window with
+    /// the panel's side of it filled in.
+    fn layout_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let vertical = theme::vertical();
+        div()
+            .id("layout")
+            .debug_selector(|| "layout".into())
+            .group("layout")
+            .flex_none()
+            .mb(px(6.))
+            .px(px(7.))
+            .py(px(6.))
+            .rounded(px(5.))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::border()))
+            .on_mouse_down(MouseButton::Left, swallow)
+            .tooltip(move |_, cx| {
+                let tip = if vertical { "Panel beside the view  ⇧⌘L" } else { "Panel under the view  ⇧⌘L" };
+                cx.new(|_| Tip(tip.into())).into()
+            })
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_layout(cx)))
+            .child(
+                div()
+                    .w(px(14.))
+                    .h(px(11.))
+                    .flex()
+                    .when(vertical, |d| d.flex_col_reverse())
+                    .rounded(px(2.))
+                    .border_1()
+                    .border_color(theme::faint())
+                    .group_hover("layout", |s| s.border_color(theme::ink()))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex_none()
+                            .when(vertical, |d| d.w_full().h(px(4.)))
+                            .when(!vertical, |d| d.h_full().w(px(5.)))
+                            .bg(theme::faint())
+                            .group_hover("layout", |s| s.bg(theme::ink())),
+                    ),
+            )
     }
 
     fn theme_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -667,6 +712,7 @@ impl Workspace {
                     .h_full()
                     .window_control_area(gpui::WindowControlArea::Drag),
             )
+            .child(self.layout_button(cx))
             .child(self.theme_button(cx))
             .child(self.version_button(cx))
             .when(cfg!(not(target_os = "macos")), |d| d.children(window_buttons(window)))
@@ -1308,6 +1354,20 @@ mod tests {
         assert!(theme::dark());
         cx.simulate_keystrokes("secondary-shift-d");
         assert!(!theme::dark());
+    }
+
+    #[gpui::test]
+    fn the_layout_button_puts_the_panel_under_the_view_and_back(cx: &mut TestAppContext) {
+        let (_view, cx) = open(cx);
+        assert!(!theme::vertical());
+        click(cx, "layout");
+        assert!(theme::vertical());
+        click(cx, "layout");
+        assert!(!theme::vertical());
+        cx.simulate_keystrokes("secondary-shift-l");
+        assert!(theme::vertical());
+        cx.simulate_keystrokes("secondary-shift-l");
+        assert!(!theme::vertical());
     }
 
     fn tabs(view: &Entity<Workspace>, cx: &mut VisualTestContext) -> (usize, usize) {

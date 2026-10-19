@@ -503,6 +503,8 @@ pub struct Viewer {
     /// Where the scrubber was last laid out, for turning a click into a frame.
     scrubber: Rc<Shared<Bounds<Pixels>>>,
     scrubbing: bool,
+    /// The divider between the panel and the viewport is being dragged.
+    resizing: bool,
 
     #[cfg(feature = "simplefold")]
     pub(crate) simplefold: SimpleFold,
@@ -716,6 +718,7 @@ impl Viewer {
             play_task: None,
             scrubber: Rc::new(Shared::new(Bounds::default())),
             scrubbing: false,
+            resizing: false,
             #[cfg(feature = "simplefold")]
             simplefold: SimpleFold::new(),
             copied: false,
@@ -2081,6 +2084,8 @@ impl Viewer {
             appearance: self.appearance.clone(),
             dark: theme::dark(),
             vertical: theme::vertical(),
+            side_width: theme::side_width(),
+            band_height: theme::band_height(),
         }
         .to_json();
         if json != self.saved {
@@ -2973,7 +2978,18 @@ impl Viewer {
         cx.notify();
     }
 
-    fn on_mouse_move(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(&mut self, e: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.resizing {
+            if theme::vertical() {
+                let bottom = window.viewport_size().height;
+                theme::set_band_height(f32::from(bottom - e.position.y).min(f32::from(bottom) - 240.));
+            } else {
+                let right = f32::from(window.viewport_size().width);
+                theme::set_side_width(f32::from(e.position.x).min(right - 320.));
+            }
+            cx.notify();
+            return;
+        }
         if let Some((species, knob)) = self.sliding.clone() {
             self.slide(species, knob, e.position.x, cx);
             return;
@@ -3024,6 +3040,9 @@ impl Viewer {
     }
 
     fn on_mouse_up(&mut self, e: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.resizing) {
+            self.persist();
+        }
         self.scrubbing = false;
         self.sliding = None;
         let was = self.drag.take();
@@ -6475,7 +6494,7 @@ impl Viewer {
         )
     }
 
-    fn info_atoms(&self, structure: &Structure, cx: &mut Context<Self>) -> impl IntoElement {
+    fn info_atoms(&self, structure: &Structure, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
         let name = if structure.title.trim().is_empty() {
             structure.id.clone()
         } else {
@@ -6519,12 +6538,9 @@ impl Viewer {
             None => structure.source.label().to_string(),
         };
 
-        div()
+        let head = div()
             .flex()
             .flex_col()
-            .px(px(20.))
-            .pb(px(20.))
-            .child(rule())
             .child(
                 div()
                     .pt(px(15.))
@@ -6543,8 +6559,11 @@ impl Viewer {
                         .text_color(theme::text())
                         .child(blurb),
                 )
-            })
-            .child(self.species_table(structure, cx))
+            });
+        let atoms = self.species_table(structure, cx);
+        let facts = div()
+            .flex()
+            .flex_col()
             .child(
                 div()
                     .pt(px(16.))
@@ -6571,7 +6590,8 @@ impl Viewer {
                         d.child(spec("frames", thousands(structure.frame_count()), false))
                     }),
             )
-            .children(self.source_line(structure))
+            .children(self.source_line(structure));
+        vec![head.into_any_element(), atoms.into_any_element(), facts.into_any_element()]
     }
 
     /// What is on screen, set like the opening of an article: the category in
@@ -6673,9 +6693,11 @@ impl Viewer {
             }))
     }
 
-    fn info(&self, structure: &Structure, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// What is known of the structure, in sections the panel stacks in one
+    /// column or the vertical layout's band sets side by side.
+    fn info(&self, structure: &Structure, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
         if !structure.has_polymer() {
-            return self.info_atoms(structure, cx).into_any_element();
+            return self.info_atoms(structure, cx);
         }
         let sequence = structure.sequence();
         let (name, blurb) = headline(structure);
@@ -6705,12 +6727,9 @@ impl Viewer {
             structure.chains.len().to_string()
         };
 
-        div()
+        let head = div()
             .flex()
             .flex_col()
-            .px(px(20.))
-            .pb(px(20.))
-            .child(rule())
             .child(
                 div()
                     .pt(px(15.))
@@ -6744,8 +6763,11 @@ impl Viewer {
             .child(self.legend(structure, cx))
             .children(self.colour_key(structure))
             .child(self.ligand_list(structure, cx))
-            .child(self.layer_list(cx))
-            .child(self.species_table(structure, cx))
+            .child(self.layer_list(cx));
+        let atoms = self.species_table(structure, cx);
+        let facts = div()
+            .flex()
+            .flex_col()
             .child(
                 div()
                     .pt(px(16.))
@@ -6803,8 +6825,11 @@ impl Viewer {
                             ),
                     ),
             )
-            .child(self.sequence_view(structure, cx))
-            // The plots, each closed under a row of its own like the facts.
+            .child(self.sequence_view(structure, cx));
+        // The plots, each closed under a row of its own like the facts.
+        let plots = div()
+            .flex()
+            .flex_col()
             .child(
                 div()
                     .pt(px(8.))
@@ -6822,13 +6847,20 @@ impl Viewer {
                         .child(format!("{} frames", thousands(structure.frame_count()))),
                 )
             })
-            .children(self.source_line(structure))
-            .into_any_element()
+            .children(self.source_line(structure));
+        vec![
+            head.into_any_element(),
+            atoms.into_any_element(),
+            facts.into_any_element(),
+            plots.into_any_element(),
+        ]
     }
 
     /// The search, the status and what is known of the structure: a column
     /// down the left, or, in the vertical layout, a band under the viewport
-    /// that leaves the masthead out to give the structure the room.
+    /// with the search at its left and the sections side by side beside it,
+    /// each as wide as the column would be. The masthead is left out of the
+    /// band to give the structure the room.
     fn panel(
         &self,
         folding: bool,
@@ -6837,45 +6869,137 @@ impl Viewer {
         vertical: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let sections: Vec<gpui::AnyElement> = match &structure {
+            Some(s) => self.info(s, cx),
+            None => vec![self.examples(cx).into_any_element()],
+        };
+        if !vertical {
+            return div()
+                .id("side")
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap(px(16.))
+                .pt(px(20.))
+                .w(px(theme::side_width()))
+                .h_full()
+                .bg(theme::surface())
+                .child(self.masthead())
+                .child(self.search(focused, cx))
+                // Everything under the field scrolls when the window is
+                // too short for it; the field itself stays put.
+                .child(
+                    div()
+                        .id("panel")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(16.))
+                                .pb(px(20.))
+                                // Model, steps and pLDDT: the settings for Fold and Compare.
+                                .when(folding, |d| d.children(self.plugin_options(cx)))
+                                .child(self.status(cx))
+                                .map(|d| match structure {
+                                    Some(_) => d.child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .px(px(20.))
+                                            .pb(px(20.))
+                                            .child(rule())
+                                            .children(sections),
+                                    ),
+                                    None => d.children(sections),
+                                }),
+                        ),
+                );
+        }
+        let has_structure = structure.is_some();
         div()
             .id("side")
             .flex()
-            .flex_col()
             .flex_none()
-            .gap(px(16.))
-            .pt(px(if vertical { 14. } else { 20. }))
+            .w_full()
+            .h(px(theme::band_height()))
             .bg(theme::surface())
-            .border_color(theme::border())
-            .map(|d| {
-                if vertical {
-                    d.w_full().h(relative(0.4)).border_t_1()
-                } else {
-                    d.w(px(PANEL_WIDTH)).h_full().border_r_1()
-                }
-            })
-            .when(!vertical, |d| d.child(self.masthead()))
-            .child(self.search(focused, cx))
-            // Everything under the field scrolls when the window is
-            // too short for it; the field itself stays put.
+            .child(
+                div()
+                    .id("band-search")
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .gap(px(14.))
+                    .w(px(PANEL_WIDTH))
+                    .h_full()
+                    .pt(px(18.))
+                    .pb(px(16.))
+                    .border_r_1()
+                    .border_color(theme::border())
+                    .overflow_y_scroll()
+                    .child(self.search(focused, cx))
+                    .when(folding, |d| d.children(self.plugin_options(cx)))
+                    .child(self.status(cx)),
+            )
             .child(
                 div()
                     .id("panel")
                     .flex_1()
-                    .min_h_0()
+                    .min_w_0()
+                    .h_full()
                     .overflow_y_scroll()
                     .child(
                         div()
                             .flex()
-                            .flex_col()
-                            .gap(px(16.))
+                            .flex_wrap()
                             .pb(px(20.))
-                            // Model, steps and pLDDT: the settings for Fold and Compare.
-                            .when(folding, |d| d.children(self.plugin_options(cx)))
-                            .child(self.status(cx))
-                            .when(structure.is_none(), |d| d.child(self.examples(cx)))
-                            .when_some(structure, |d, s| d.child(self.info(&s, cx))),
+                            .children(sections.into_iter().map(|section| {
+                                div()
+                                    .flex_grow()
+                                    .flex_basis(px(PANEL_WIDTH))
+                                    .max_w(px(PANEL_WIDTH + 120.))
+                                    .min_w(px(PANEL_WIDTH))
+                                    .when(has_structure, |d| d.px(px(20.)).pt(px(4.)))
+                                    .when(!has_structure, |d| d.pt(px(18.)))
+                                    .child(section)
+                            })),
                     ),
             )
+    }
+
+    /// The line between the panel and the viewport, which can be dragged to
+    /// give one more room and the other less. A double-click puts it back.
+    fn divider(&self, vertical: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let grip = div()
+            .id("divider")
+            .absolute()
+            .when(vertical, |d| d.left_0().right_0().top(px(-3.)).h(px(7.)).cursor_row_resize())
+            .when(!vertical, |d| d.top_0().bottom_0().left(px(-3.)).w(px(7.)).cursor_col_resize())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    if e.click_count >= 2 {
+                        theme::set_side_width(theme::SIDE_WIDTH);
+                        theme::set_band_height(theme::BAND_HEIGHT);
+                        this.persist();
+                        cx.notify();
+                        return;
+                    }
+                    this.resizing = true;
+                }),
+            );
+        div()
+            .relative()
+            .flex_none()
+            .bg(theme::border())
+            .when(vertical, |d| d.w_full().h(px(1.)))
+            .when(!vertical, |d| d.h_full().w(px(1.)))
+            .when(self.resizing, |d| d.bg(theme::faint()))
+            .child(grip)
     }
 
     fn stage(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -7854,8 +7978,9 @@ impl Render for Viewer {
                     .overflow_hidden()
                     .children({
                         let panel = self.panel(folding, focused, structure, vertical, cx).into_any_element();
+                        let divider = self.divider(vertical, cx).into_any_element();
                         let stage = self.stage(cx).into_any_element();
-                        if vertical { [stage, panel] } else { [panel, stage] }
+                        if vertical { [stage, divider, panel] } else { [panel, divider, stage] }
                     }),
             )
     }
