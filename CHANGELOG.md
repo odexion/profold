@@ -23,6 +23,13 @@
   whole trajectory, with the columns to pick from and the range in the side
   panel and in a film's legend. `color property c_pe -5 -2` sets a range by
   hand.
+- **Periodic boundaries.** Under the cell's size: *Wrap* puts every atom
+  back in the cell, *Make whole* mends molecules its walls cut (along a
+  polymer's chains, and otherwise along bonds), *Unwrap in time* follows a
+  trajectory through the walls rather than letting atoms jump back, and
+  *Replicate 2×2×2* repeats the cell, frames and properties included.
+  *Original* undoes them. In the console: `wrap`, `whole`, `unwrap`,
+  `replicate 3 3 1` and `original`.
 - **Selecting by value.** Selections compare: `c_pe < -3`, `vx >= 0.5 and
   z > 10`, `b < 30`, with `x`, `y`, `z` and `b` always there.
 

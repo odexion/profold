@@ -431,6 +431,9 @@ pub struct Viewer {
     /// is shown in its place; and which.
     deposited: Option<Arc<Structure>>,
     assembly: Option<usize>,
+    /// The structure as opened, while it is shown wrapped, unwrapped or
+    /// replicated across its periodic boundaries.
+    unwrapped_from: Option<Arc<Structure>>,
     /// Whether what is opened next is laid over the structure shown rather
     /// than taking its place.
     overlay_next: bool,
@@ -688,6 +691,7 @@ impl Viewer {
             fly_task: None,
             deposited: None,
             assembly: None,
+            unwrapped_from: None,
             overlay_next: false,
             turning: None,
             turn_task: None,
@@ -920,6 +924,7 @@ impl Viewer {
         self.structure = Some(Arc::new(structure));
         self.compare = None;
         self.fit = None;
+        self.unwrapped_from = None;
         self.deposited = None;
         self.assembly = None;
         self.layers.clear();
@@ -2203,6 +2208,90 @@ impl Viewer {
 
     /// Paint a kind of ligand, or `None` to give it back its elements'
     /// colours. It shows under any scheme, so the scheme is left alone.
+    /// Change the structure across its periodic boundaries; `Periodic::Original`
+    /// puts back what was opened. What it did, to say so.
+    pub(super) fn periodic(&mut self, op: Periodic, cx: &mut Context<Self>) -> anyhow::Result<String> {
+        let Some(shown) = self.structure.clone() else { anyhow::bail!("nothing is open") };
+        let (next, said) = match op {
+            Periodic::Original => {
+                let Some(base) = self.unwrapped_from.take() else { anyhow::bail!("nothing to undo") };
+                (base, "as opened".to_string())
+            }
+            Periodic::Replicate(n) => {
+                (Arc::new(crate::pbc::replicate(&shown, n)?), format!("replicated {} × {} × {}", n[0], n[1], n[2]))
+            }
+            Periodic::Wrap | Periodic::Whole | Periodic::InTime => {
+                let mut s = (*shown).clone();
+                let said = match op {
+                    Periodic::Wrap => {
+                        crate::pbc::wrap(&mut s)?;
+                        "wrapped into the cell"
+                    }
+                    Periodic::Whole => {
+                        crate::pbc::make_whole(&mut s)?;
+                        "molecules made whole"
+                    }
+                    _ => {
+                        crate::pbc::unwrap_in_time(&mut s)?;
+                        "unwrapped through time"
+                    }
+                };
+                (Arc::new(s), said.to_string())
+            }
+        };
+        if op != Periodic::Original && self.unwrapped_from.is_none() {
+            self.unwrapped_from = Some(shown);
+        }
+        let reframe = matches!(op, Periodic::Replicate(_) | Periodic::Original);
+        if reframe {
+            self.camera = Camera { perspective: self.camera.perspective, ..Camera::frame(&next) };
+        }
+        self.structure = Some(next);
+        self.selected = None;
+        self.hover = None;
+        self.measurements.clear();
+        self.rebuild(cx);
+        Ok(said)
+    }
+
+    /// Buttons under the cell's size for what can be done across its walls.
+    fn periodic_tools(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        structure.cell?;
+        let chip = |id: &'static str, label: &'static str, op: Periodic| {
+            div()
+                .id(id)
+                .px(px(7.))
+                .py(px(2.))
+                .rounded(px(4.))
+                .text_size(px(10.))
+                .text_color(theme::muted())
+                .cursor_pointer()
+                .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Err(e) = this.periodic(op, cx) {
+                        this.error = Some(format!("{e}").into());
+                    }
+                    cx.notify();
+                }))
+        };
+        Some(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(2.))
+                .py(px(6.))
+                .border_b_1()
+                .border_color(theme::border())
+                .child(chip("pbc-wrap", "Wrap", Periodic::Wrap))
+                .child(chip("pbc-whole", "Make whole", Periodic::Whole))
+                .when(structure.frame_count() > 1, |d| d.child(chip("pbc-time", "Unwrap in time", Periodic::InTime)))
+                .child(chip("pbc-replicate", "Replicate 2×2×2", Periodic::Replicate([2, 2, 2])))
+                .when(self.unwrapped_from.is_some(), |d| d.child(chip("pbc-original", "Original", Periodic::Original)))
+                .into_any_element(),
+        )
+    }
+
     /// Colour by `c`; by property, the one chosen before or else the first.
     pub(super) fn set_coloring(&mut self, c: Coloring, cx: &mut Context<Self>) {
         if c == Coloring::Property {
@@ -3211,6 +3300,16 @@ const FOLD_EXAMPLES: [(&str, &str); 3] = [
 ];
 #[cfg(not(feature = "simplefold"))]
 const FOLD_EXAMPLES: [(&str, &str); 0] = [];
+
+/// What can be done to a structure across its periodic boundaries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Periodic {
+    Wrap,
+    Whole,
+    InTime,
+    Replicate([usize; 3]),
+    Original,
+}
 
 /// A value as a key shows it: no more figures than it needs.
 pub(crate) fn figure(v: f32) -> String {
@@ -6872,6 +6971,7 @@ impl Viewer {
                         let [a, b, c] = cell.lengths();
                         d.child(spec("cell", format!("{a:.2} × {b:.2} × {c:.2} Å"), false))
                     })
+                    .children(self.periodic_tools(structure, cx))
                     .when(structure.frame_count() > 1, |d| {
                         d.child(spec("frames", thousands(structure.frame_count()), false))
                     }),
@@ -7076,6 +7176,11 @@ impl Viewer {
                         format!("{:.1} kDa", structure.mass_kda()),
                         false,
                     ))
+                    .when_some(structure.cell, |d, cell| {
+                        let [a, b, c] = cell.lengths();
+                        d.child(spec("cell", format!("{a:.2} × {b:.2} × {c:.2} Å"), false))
+                    })
+                    .children(self.periodic_tools(structure, cx))
                     .when_some(structure.mean_confidence(), |d, c| {
                         d.child(spec("pLDDT", format!("{c:.0}"), false))
                     })
@@ -8404,6 +8509,31 @@ mod ui_tests {
         assert!(!light.intersects(&controls), "the light {light:?} sits on the controls {controls:?}");
         click(cx, "recording");
         assert!(!view.update(cx, |this, _| this.recording()));
+    }
+
+    #[gpui::test]
+    fn a_box_is_replicated_wrapped_and_put_back_from_the_console(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        let melt = SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap();
+            this.show(s, cx);
+        });
+        cx.run_until_parked();
+        let atoms = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.structure.as_ref().map_or(0, |s| s.atoms.len()))
+        };
+        let n = atoms(&view, cx);
+        view.update(cx, |this, cx| this.run_command("replicate 2 1 1", cx)).unwrap();
+        assert_eq!(atoms(&view, cx), 2 * n);
+        view.update(cx, |this, cx| this.run_command("unwrap", cx)).unwrap();
+        view.update(cx, |this, cx| this.run_command("wrap", cx)).unwrap();
+        view.update(cx, |this, cx| this.run_command("original", cx)).unwrap();
+        assert_eq!(atoms(&view, cx), n);
+        assert!(view.update(cx, |this, cx| this.run_command("original", cx)).is_err());
+        assert!(view.update(cx, |this, cx| this.run_command("replicate 2 2", cx)).is_err());
+        // A box of plain beads has no properties to colour by.
+        assert!(view.update(cx, |this, cx| this.run_command("color property", cx)).is_err());
     }
 
     #[gpui::test]

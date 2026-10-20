@@ -32,6 +32,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("turn x|y <degrees>, zoom <factor>, reset", "move the camera"),
     ("spin, rock, stop", "toggle auto-rotation"),
     ("perspective on|off, slab on|off", "projection mode and clipping slab"),
+    ("wrap, whole, unwrap, original", "put atoms in the cell, mend molecules cut by its walls, follow a trajectory through them, or undo"),
+    ("replicate <a> <b> <c>", "repeat the cell, as in replicate 2 2 1"),
     ("trace on|off", "ray trace the still view and saved images: shadows and ambient occlusion"),
     ("water on|off, hydrogens on|off", "toggle display"),
     ("frame <n>, play", "step a trajectory"),
@@ -301,6 +303,19 @@ impl Viewer {
                 self.camera.perspective = on_off(rest)?;
                 cx.notify();
                 format!("perspective {}", if self.camera.perspective { "on" } else { "off" })
+            }
+            "wrap" => self.periodic(crate::ui::app::Periodic::Wrap, cx)?,
+            "whole" => self.periodic(crate::ui::app::Periodic::Whole, cx)?,
+            "unwrap" => self.periodic(crate::ui::app::Periodic::InTime, cx)?,
+            "original" => self.periodic(crate::ui::app::Periodic::Original, cx)?,
+            "replicate" => {
+                let n: Vec<usize> = rest.split([' ', 'x', '×']).filter(|w| !w.is_empty()).map(str::parse).collect::<Result<_, _>>().context("replicate takes three counts, as in replicate 2 2 1")?;
+                let n = match n[..] {
+                    [k] => [k; 3],
+                    [a, b, c] => [a, b, c],
+                    _ => bail!("replicate takes three counts, as in replicate 2 2 1"),
+                };
+                self.periodic(crate::ui::app::Periodic::Replicate(n), cx)?
             }
             "trace" | "raytrace" => {
                 self.traced = on_off(rest)?;

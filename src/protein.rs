@@ -384,6 +384,14 @@ impl Structure {
     /// percentile, so that a floppy tail or two does not wash the rest out.
     /// `None` where there are none worth colouring by: a predicted model's
     /// column is pLDDT, and a flat column says nothing.
+    /// Let go of what was worked out from the atoms and residues, after
+    /// they have been changed wholesale.
+    pub fn forget_derived(&mut self) {
+        self.b_span = std::sync::OnceLock::new();
+        self.rank = std::sync::OnceLock::new();
+        self.prop_spans = std::sync::OnceLock::new();
+    }
+
     /// A property by name, without regard to case.
     pub fn prop(&self, name: &str) -> Option<usize> {
         self.props.iter().position(|p| p.name.eq_ignore_ascii_case(name))
