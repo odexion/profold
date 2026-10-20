@@ -2594,13 +2594,22 @@ pub struct Frame {
 }
 
 /// Light from the upper left, slightly in front of the viewer.
-const LIGHT: [f32; 3] = [-0.4082, 0.5585, 0.7226];
+pub(crate) const LIGHT: [f32; 3] = [-0.4082, 0.5585, 0.7226];
 /// Halfway between the light and the view direction, for the highlight.
 const HALF: [f32; 3] = [-0.2225, 0.3044, 0.9262];
 
 #[inline]
 fn shade(n: [f32; 3], base: [f32; 3], style: Style) -> [f32; 3] {
-    let diff = (n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2]).max(0.0);
+    shade_lit(n, base, style, 1.0, 1.0)
+}
+
+/// Shading with only `lit` of the light reaching the point, the rest in
+/// shadow, and the whole of it dimmed to `open` where the point is shut in:
+/// what the ray tracer knows and the rasterizer does not. Both at one, it is
+/// `shade` exactly.
+#[inline]
+pub(crate) fn shade_lit(n: [f32; 3], base: [f32; 3], style: Style, lit: f32, open: f32) -> [f32; 3] {
+    let diff = (n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2]).max(0.0) * lit;
     let nh = (n[0] * HALF[0] + n[1] * HALF[1] + n[2] * HALF[2]).max(0.0);
     let n2 = nh * nh;
     let n8 = n2 * n2 * n2 * n2;
@@ -2625,6 +2634,7 @@ fn shade(n: [f32; 3], base: [f32; 3], style: Style) -> [f32; 3] {
             (0.26 + 0.80 * diff, n32 * 0.5 + n8 * 0.04)
         }
     };
+    let (k, spec) = (k * open, spec * lit);
     [base[0] * k + spec, base[1] * k + spec, base[2] * k + spec]
 }
 
@@ -2633,8 +2643,8 @@ fn shade(n: [f32; 3], base: [f32; 3], style: Style) -> [f32; 3] {
 /// primitives that reach into it.
 /// The face a slab cuts, looking straight back at the viewer, and how much
 /// darker it is than the outside, so a cut reads as one.
-const CAP: [f32; 3] = [0.0, 0.0, 1.0];
-const CAP_SHADE: f32 = 0.82;
+pub(crate) const CAP: [f32; 3] = [0.0, 0.0, 1.0];
+pub(crate) const CAP_SHADE: f32 = 0.82;
 
 struct Band<'a> {
     /// Index of the band's first pixel in the frame.
@@ -2760,6 +2770,12 @@ pub fn render(
 pub fn render_transparent(scene: &Scene, cam: &Camera, width: usize, height: usize, style: Style) -> Vec<u8> {
     let white = render(scene, cam, width, height, [1.0; 3], style);
     let black = render(scene, cam, width, height, [0.0; 3], style);
+    unmix(&white, &black)
+}
+
+/// Straight RGBA from the same frame drawn on white and on black.
+pub(crate) fn unmix(white: &Frame, black: &Frame) -> Vec<u8> {
+    let (width, height) = (white.width, white.height);
     let mut out = vec![0u8; width * height * 4];
     for ((o, w), b) in out.chunks_exact_mut(4).zip(white.bgra.chunks_exact(4)).zip(black.bgra.chunks_exact(4)) {
         // BGRA in, RGBA out.
@@ -2955,150 +2971,8 @@ pub fn render_cpu(
         });
 
     let span = (zmax - zmin).max(1e-3);
-
-    // Depth cue: wash distant geometry toward the paper. A drawn figure does
-    // not fade with distance, so the outlines carry the depth instead.
+    finish(&mut color, &depth, width, height, page, style, zmin, span, scale, true, 1);
     let fog_strength = style.fog();
-    if fog_strength > 0.0 {
-        color
-            .par_chunks_mut(3)
-            .zip(&depth)
-            .filter(|(_, z)| **z != f32::NEG_INFINITY)
-            .for_each(|(c, z)| {
-                let d = ((z - zmin) / span).clamp(0.0, 1.0);
-                let fog = (1.0 - d) * fog_strength;
-                for k in 0..3 {
-                    c[k] += (page[k] - c[k]) * fog;
-                }
-            });
-    }
-
-    // Shadow where atoms crowd together, for the studio style.
-    if style == Style::Studio {
-        let radius = ao_radius(width, height);
-        let reach = radius / scale;
-        color
-            .par_chunks_mut(width * 3)
-            .enumerate()
-            .for_each(|(y, row)| {
-                for x in 0..width {
-                    let z = depth[y * width + x];
-                    if z == f32::NEG_INFINITY {
-                        continue;
-                    }
-                    let mut occ = 0.0;
-                    for o in AO {
-                        let qx = x as i32 + (o[0] * radius + 0.5).floor() as i32;
-                        let qy = y as i32 + (o[1] * radius + 0.5).floor() as i32;
-                        if qx < 0 || qy < 0 || qx >= width as i32 || qy >= height as i32 {
-                            continue;
-                        }
-                        let nz = depth[qy as usize * width + qx as usize];
-                        if nz != f32::NEG_INFINITY {
-                            occ += occluding(nz - z, reach);
-                        }
-                    }
-                    let k = 1.0 - AO_STRENGTH * occ / AO.len() as f32;
-                    // The card keeps colour in eight bits, so a highlight is
-                    // white before it is shaded; shaded here the same way.
-                    for c in &mut row[x * 3..x * 3 + 3] {
-                        *c = c.min(1.0) * k;
-                    }
-                }
-            });
-    }
-
-    // Outline. Soft darkens what sits behind a depth jump and the rim of the
-    // silhouette; illustrative lays down real ink, on both sides of the
-    // silhouette, thickened so it holds at any resolution.
-    let jump = (span * 0.012).max(0.45);
-    match style {
-        Style::Soft => {
-            let src = color.clone();
-            color
-                .par_chunks_mut(width * 3)
-                .enumerate()
-                .for_each(|(y, row)| {
-                    for x in 0..width {
-                        let idx = y * width + x;
-                        let z = depth[idx];
-                        if z == f32::NEG_INFINITY {
-                            continue;
-                        }
-                        let mut behind = false;
-                        let mut open = false;
-                        for nb in neighbours(idx, x, y, width, height).into_iter().flatten() {
-                            let nz = depth[nb];
-                            if nz == f32::NEG_INFINITY {
-                                open = true;
-                            } else if nz - z > jump {
-                                behind = true;
-                            }
-                        }
-                        let k = if behind {
-                            0.62
-                        } else if open {
-                            0.80
-                        } else {
-                            continue;
-                        };
-                        for i in 0..3 {
-                            row[x * 3 + i] = src[idx * 3 + i] * k;
-                        }
-                    }
-                });
-        }
-        Style::Illustrative | Style::Flat => {
-            const INK: [f32; 3] = [0.07, 0.07, 0.09];
-            let mut edge = vec![false; n];
-            edge.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
-                for (x, e) in row.iter_mut().enumerate() {
-                    let idx = y * width + x;
-                    let z = depth[idx];
-                    *e = neighbours(idx, x, y, width, height)
-                        .into_iter()
-                        .flatten()
-                        .any(|nb| {
-                            let nz = depth[nb];
-                            // The silhouette is inked from both sides, so the
-                            // line reads the same against the page and
-                            // against the body.
-                            let silhouette =
-                                (z == f32::NEG_INFINITY) != (nz == f32::NEG_INFINITY);
-                            let overlap = z != f32::NEG_INFINITY
-                                && nz != f32::NEG_INFINITY
-                                && nz - z > jump;
-                            silhouette || overlap
-                        });
-                }
-            });
-
-            // One pixel of line per ~700 of frame, so the weight is the same
-            // whether or not the display is retina.
-            let weight = (width.min(height) / 700).max(1);
-            for _ in 1..weight {
-                let src = edge.clone();
-                edge.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
-                    for (x, e) in row.iter_mut().enumerate() {
-                        let idx = y * width + x;
-                        if !src[idx] {
-                            *e = neighbours(idx, x, y, width, height)
-                                .into_iter()
-                                .flatten()
-                                .any(|nb| src[nb]);
-                        }
-                    }
-                });
-            }
-
-            color
-                .par_chunks_mut(3)
-                .zip(&edge)
-                .filter(|(_, e)| **e)
-                .for_each(|(c, _)| c.copy_from_slice(&INK));
-        }
-        Style::Studio => {}
-    }
 
     // -- translucent atoms and bonds ----------------------------------------
     // Painter's order, farthest first, each blended where it is in front of
@@ -3164,6 +3038,173 @@ pub fn render_cpu(
     }
 
     to_bgra(&color, width, height)
+}
+
+/// What follows the drawing, over its colour and depth: the fog, the studio
+/// style's shadow where atoms crowd together if `crowding`, and the outline,
+/// as wide as `ss` frames' worth. `zmin` and `span` are the depths the scene
+/// runs over, `scale` pixels to the ångström.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finish(
+    color: &mut [f32],
+    depth: &[f32],
+    width: usize,
+    height: usize,
+    page: [f32; 3],
+    style: Style,
+    zmin: f32,
+    span: f32,
+    scale: f32,
+    crowding: bool,
+    ss: usize,
+) {
+    use rayon::prelude::*;
+    let n = width * height;
+    // Depth cue: wash distant geometry toward the paper. A drawn figure does
+    // not fade with distance, so the outlines carry the depth instead.
+    let fog_strength = style.fog();
+    if fog_strength > 0.0 {
+        color
+            .par_chunks_mut(3)
+            .zip(depth)
+            .filter(|(_, z)| **z != f32::NEG_INFINITY)
+            .for_each(|(c, z)| {
+                let d = ((z - zmin) / span).clamp(0.0, 1.0);
+                let fog = (1.0 - d) * fog_strength;
+                for k in 0..3 {
+                    c[k] += (page[k] - c[k]) * fog;
+                }
+            });
+    }
+
+    // Shadow where atoms crowd together, for the studio style.
+    if crowding && style == Style::Studio {
+        let radius = ao_radius(width, height);
+        let reach = radius / scale;
+        color
+            .par_chunks_mut(width * 3)
+            .enumerate()
+            .for_each(|(y, row)| {
+                for x in 0..width {
+                    let z = depth[y * width + x];
+                    if z == f32::NEG_INFINITY {
+                        continue;
+                    }
+                    let mut occ = 0.0;
+                    for o in AO {
+                        let qx = x as i32 + (o[0] * radius + 0.5).floor() as i32;
+                        let qy = y as i32 + (o[1] * radius + 0.5).floor() as i32;
+                        if qx < 0 || qy < 0 || qx >= width as i32 || qy >= height as i32 {
+                            continue;
+                        }
+                        let nz = depth[qy as usize * width + qx as usize];
+                        if nz != f32::NEG_INFINITY {
+                            occ += occluding(nz - z, reach);
+                        }
+                    }
+                    let k = 1.0 - AO_STRENGTH * occ / AO.len() as f32;
+                    // The card keeps colour in eight bits, so a highlight is
+                    // white before it is shaded; shaded here the same way.
+                    for c in &mut row[x * 3..x * 3 + 3] {
+                        *c = c.min(1.0) * k;
+                    }
+                }
+            });
+    }
+
+    // Outline. Soft darkens what sits behind a depth jump and the rim of the
+    // silhouette; illustrative lays down real ink, on both sides of the
+    // silhouette, thickened so it holds at any resolution.
+    let jump = (span * 0.012).max(0.45);
+    match style {
+        Style::Soft => {
+            let src = color.to_vec();
+            color
+                .par_chunks_mut(width * 3)
+                .enumerate()
+                .for_each(|(y, row)| {
+                    for x in 0..width {
+                        let idx = y * width + x;
+                        let z = depth[idx];
+                        if z == f32::NEG_INFINITY {
+                            continue;
+                        }
+                        let mut behind = false;
+                        let mut open = false;
+                        for nb in neighbours(idx, x, y, width, height).into_iter().flatten() {
+                            let nz = depth[nb];
+                            if nz == f32::NEG_INFINITY {
+                                open = true;
+                            } else if nz - z > jump {
+                                behind = true;
+                            }
+                        }
+                        let k = if behind {
+                            0.62
+                        } else if open {
+                            0.80
+                        } else {
+                            continue;
+                        };
+                        for i in 0..3 {
+                            row[x * 3 + i] = src[idx * 3 + i] * k;
+                        }
+                    }
+                });
+        }
+        Style::Illustrative | Style::Flat => {
+            const INK: [f32; 3] = [0.07, 0.07, 0.09];
+            let mut edge = vec![false; n];
+            edge.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
+                for (x, e) in row.iter_mut().enumerate() {
+                    let idx = y * width + x;
+                    let z = depth[idx];
+                    *e = neighbours(idx, x, y, width, height)
+                        .into_iter()
+                        .flatten()
+                        .any(|nb| {
+                            let nz = depth[nb];
+                            // The silhouette is inked from both sides, so the
+                            // line reads the same against the page and
+                            // against the body.
+                            let silhouette =
+                                (z == f32::NEG_INFINITY) != (nz == f32::NEG_INFINITY);
+                            let overlap = z != f32::NEG_INFINITY
+                                && nz != f32::NEG_INFINITY
+                                && nz - z > jump;
+                            silhouette || overlap
+                        });
+                }
+            });
+
+            // One pixel of line per ~700 of frame, so the weight is the same
+            // whether or not the display is retina.
+            // Traced `ss` times over each way, the line is as many times
+            // wider, to be averaged back to the same weight.
+            let weight = (width.min(height) / ss / 700).max(1) * ss;
+            for _ in 1..weight {
+                let src = edge.clone();
+                edge.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
+                    for (x, e) in row.iter_mut().enumerate() {
+                        let idx = y * width + x;
+                        if !src[idx] {
+                            *e = neighbours(idx, x, y, width, height)
+                                .into_iter()
+                                .flatten()
+                                .any(|nb| src[nb]);
+                        }
+                    }
+                });
+            }
+
+            color
+                .par_chunks_mut(3)
+                .zip(&edge)
+                .filter(|(_, e)| **e)
+                .for_each(|(c, _)| c.copy_from_slice(&INK));
+        }
+        Style::Studio => {}
+    }
 }
 
 /// Where the studio style looks for neighbours that shade a pixel: a spiral
@@ -3432,7 +3473,7 @@ fn bbox(
     }
 }
 
-fn to_bgra(color: &[f32], width: usize, height: usize) -> Frame {
+pub(crate) fn to_bgra(color: &[f32], width: usize, height: usize) -> Frame {
     use rayon::prelude::*;
     let mut bgra = vec![0u8; width * height * 4];
     bgra.par_chunks_mut(4).zip(color.par_chunks(3)).for_each(|(q, c)| {

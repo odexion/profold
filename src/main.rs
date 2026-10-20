@@ -25,6 +25,7 @@ mod select;
 mod settings;
 mod surface;
 mod theme;
+mod trace;
 mod ui;
 mod update;
 

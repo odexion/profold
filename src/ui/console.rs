@@ -31,6 +31,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("turn x|y <degrees>, zoom <factor>, reset", "move the camera"),
     ("spin, rock, stop", "toggle auto-rotation"),
     ("perspective on|off, slab on|off", "projection mode and clipping slab"),
+    ("trace on|off", "ray trace the still view and saved images: shadows and ambient occlusion"),
     ("water on|off, hydrogens on|off", "toggle display"),
     ("frame <n>, play", "step a trajectory"),
     ("save <file.png|.pdb|.cif|.profold>", "save to file without prompting"),
@@ -277,6 +278,11 @@ impl Viewer {
                 cx.notify();
                 format!("perspective {}", if self.camera.perspective { "on" } else { "off" })
             }
+            "trace" | "raytrace" => {
+                self.traced = on_off(rest)?;
+                cx.notify();
+                format!("ray tracing {}", if self.traced { "on" } else { "off" })
+            }
             "slab" => {
                 if on_off(rest)? != self.camera.slab.is_some() {
                     self.toggle_slab(cx);
@@ -328,7 +334,12 @@ impl Viewer {
                     "png" => {
                         let (w, h) = self.cache.borrow().size;
                         let (w, h) = (w.max(640), h.max(480));
-                        let frame = render::render(&self.scene, &self.camera, w, h, crate::theme::view(), self.style);
+                        let frame = if self.traced {
+                            crate::trace::render(&self.scene, &self.camera, w, h, crate::theme::view(), self.style, &Default::default())
+                                .expect("not cancelled")
+                        } else {
+                            render::render(&self.scene, &self.camera, w, h, crate::theme::view(), self.style)
+                        };
                         let mut rgba = frame.bgra;
                         for p in rgba.chunks_exact_mut(4) {
                             p.swap(0, 2);

@@ -11,6 +11,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -76,7 +77,24 @@ pub struct Cache {
     settling: bool,
     /// The frame rate over `shown`, while there were two frames to time.
     rate: f32,
+    /// The view the frame up now was ray traced at, if it was.
+    traced: Option<Key>,
+    /// A trace of the still view, under way.
+    tracing: Option<Tracing>,
 }
+
+struct Tracing {
+    key: Key,
+    /// Set to give it up, as soon as the view moves.
+    cancel: Arc<AtomicBool>,
+    /// Rows traced, out of `rows`.
+    done: Arc<AtomicUsize>,
+    rows: usize,
+}
+
+/// How long the view must hold still before it is traced, so a pause in a
+/// drag does not start one.
+const STILL: Duration = Duration::from_millis(250);
 
 /// How far back the frame rate looks, and how long the view must be still
 /// before it is called idle.
@@ -86,6 +104,12 @@ impl Cache {
     /// Frames put up per second, as last measured while the view moved,
     /// and whether it is moving still. Frames are drawn only when the view
     /// changes, so a still view keeps the rate it last had.
+    /// How far along the trace of the still view is, while one is.
+    pub fn tracing(&self) -> Option<f32> {
+        let t = self.tracing.as_ref()?;
+        Some(t.done.load(Ordering::Relaxed) as f32 / t.rows.max(1) as f32)
+    }
+
     pub fn fps(&self) -> (f32, bool) {
         let live = self.shown.back().is_some_and(|t| t.elapsed() <= WINDOW);
         (self.rate, live)
@@ -136,6 +160,7 @@ pub fn viewport(
     cache: Rc<RefCell<Cache>>,
     interactive: bool,
     style: Style,
+    traced: bool,
 ) -> impl IntoElement {
     canvas(
         |_, _, _| {},
@@ -163,12 +188,12 @@ pub fn viewport(
                 if let Some(old) = current.image.replace(image) {
                     let _ = window.drop_image(old);
                 }
-                current.key = Some(k);
+                current.key = Some(k.clone());
                 drop(current);
                 Cache::shown(&cache, window, cx);
                 current = cache.borrow_mut();
             } else if current.key.as_ref() != Some(&k) && current.drawing.is_none() {
-                current.drawing = Some(k);
+                current.drawing = Some(k.clone());
                 let (scene, cache) = (scene.clone(), cache.clone());
                 let drawn = cx
                     .background_executor()
@@ -201,6 +226,76 @@ pub fn viewport(
                     .detach();
             }
 
+            // Ray traced once the view holds still: the quick frame stays up
+            // until the trace replaces it, and any move gives the trace up.
+            if let Some(t) = current.tracing.as_ref().filter(|t| !traced || t.key != k) {
+                t.cancel.store(true, Ordering::Relaxed);
+                current.tracing = None;
+            }
+            if !traced && current.traced.take().is_some_and(|t| t == k) {
+                // The traced frame is up for this very view; draw it plainly.
+                let image = draw(&scene, &cam, width, height, style);
+                if let Some(old) = current.image.replace(image) {
+                    let _ = window.drop_image(old);
+                }
+            }
+            let quick_is_up = current.key.as_ref() == Some(&k) && current.drawing.is_none();
+            if traced && quick_is_up && current.traced.as_ref() != Some(&k) && current.tracing.is_none() {
+                let cancel = Arc::new(AtomicBool::new(false));
+                let done = Arc::new(AtomicUsize::new(0));
+                current.tracing = Some(Tracing {
+                    key: k.clone(),
+                    cancel: cancel.clone(),
+                    done: done.clone(),
+                    rows: crate::trace::rows(height, width),
+                });
+                let (scene, cache) = (scene.clone(), cache.clone());
+                window
+                    .spawn(cx, async move |cx| {
+                        cx.background_executor().timer(STILL).await;
+                        if cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let finished = Arc::new(AtomicBool::new(false));
+                        let drawn = cx.background_executor().spawn({
+                            let (cancel, done, finished) = (cancel.clone(), done.clone(), finished.clone());
+                            async move {
+                                let control = crate::trace::Control { cancel: Some(&cancel), done: Some(&done) };
+                                let frame = crate::trace::render(&scene, &cam, width, height, theme::view(), style, &control);
+                                finished.store(true, Ordering::Relaxed);
+                                frame.map(image_of)
+                            }
+                        });
+                        // Painted again now and then, so the progress shows.
+                        while !finished.load(Ordering::Relaxed) {
+                            let _ = cx.update(|window, _| window.refresh());
+                            cx.background_executor().timer(Duration::from_millis(150)).await;
+                        }
+                        let image = drawn.await;
+                        let _ = cx.update(|window, _| {
+                            let mut cache = cache.borrow_mut();
+                            let current = cache.tracing.as_ref().is_some_and(|t| Arc::ptr_eq(&t.cancel, &cancel));
+                            match image {
+                                Some(image) if current && !cancel.load(Ordering::Relaxed) => {
+                                    if let Some(old) = cache.image.replace(image) {
+                                        let _ = window.drop_image(old);
+                                    }
+                                    cache.traced = cache.tracing.take().map(|t| t.key);
+                                }
+                                Some(image) => {
+                                    let _ = window.drop_image(image);
+                                }
+                                None => {}
+                            }
+                            if current {
+                                cache.tracing = None;
+                            }
+                            window.refresh();
+                        });
+                    })
+                    .detach();
+            }
+
             if let Some(image) = current.image.clone() {
                 let _ = window.paint_image(bounds, Corners::all(px(0.)), image, 0, false);
             }
@@ -214,6 +309,10 @@ fn draw(scene: &Scene, cam: &Camera, width: usize, height: usize, style: Style) 
         let _timer = Phase::Draw.timer();
         render::render(scene, cam, width, height, theme::view(), style)
     };
+    image_of(frame)
+}
+
+fn image_of(frame: render::Frame) -> Arc<RenderImage> {
     let buffer = RgbaImage::from_raw(frame.width as u32, frame.height as u32, frame.bgra)
         .expect("frame buffer is width * height * 4");
     Arc::new(RenderImage::new(smallvec![Frame::new(buffer)]))

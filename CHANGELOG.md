@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Rendering
+- **Ray traced.** *Image › Ray traced* lights the molecule with rays: soft
+  shadows from the light, ambient occlusion that darkens pockets and clefts,
+  and edges smoothed by tracing each pixel up to nine times over. The view is
+  traced once it holds still (a quarter of a second), with its progress in
+  the corner, and any move goes back to the quick frame; saved PNGs are
+  traced too, transparent ones included. Every style keeps its own look, ink
+  and fog and all, and slabs, perspective and see-through atoms are traced as
+  they are drawn. A protein at 1200 × 900 takes about a second. The console
+  has `trace on|off`, and `save x.png` follows it.
+
 ### Viewing
 - **⌘-click to focus** (Ctrl-click on Linux and Windows) picks an atom or
   residue and flies the view to it, as the card's Focus button does.

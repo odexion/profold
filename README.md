@@ -105,7 +105,8 @@ Settings, the folding environment and its weights live in `~/.profold` (and
 - **Folding in its own tab** (plugin). Opt in from the + menu.
 - **Prediction vs. experiment** (plugin). Fold a PDB entry's own sequence,
   superimpose it with Kabsch, and read off the Cα RMSD, coloured by deviation.
-- **Publication images.** Save the viewport as a PNG at one to three times the screen size.
+- **Publication images.** Save the viewport as a PNG at one to three times the screen size,
+  ray traced if you like, with soft shadows and ambient occlusion.
 - **Films.** Play a trajectory while the camera turns, rocks, or follows a path
   you recorded by hand, with smoothing between frames. Export as GIF or PNG
   frames, or with ffmpeg as MP4 or transparent WebM or ProRes, at up to 4K, with
@@ -190,7 +191,8 @@ to reframe. The molecule follows the pointer, so dragging right brings the near
 face right. The angle and zoom readouts in the title bar can be clicked and
 typed into. **Camera** turns momentum on or off and resets the view, and
 **Image** saves the molecule alone as a PNG at up to three times the viewport
-size. **Export film…** (⇧⌘E) makes an animation of it: the trajectory played
+size. **Image › Ray traced** lights the still view with rays, for soft
+shadows, ambient occlusion and smooth edges, and saved images with it. **Export film…** (⇧⌘E) makes an animation of it: the trajectory played
 through, the camera turning, rocking or replaying a path recorded with
 **Record a camera path**, at any size, antialiased, on the page, a colour or
 nothing, with a preview first. The console's `movie` does the same from a

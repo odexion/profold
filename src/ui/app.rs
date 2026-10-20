@@ -439,6 +439,11 @@ pub struct Viewer {
     turn_task: Option<Task<()>>,
     /// Images are saved with nothing behind the molecule.
     transparent: bool,
+    /// The still view, and saved images, are ray traced: shadows, ambient
+    /// occlusion and smooth edges.
+    pub(super) traced: bool,
+    /// How far a traced image being saved has got: rows done, of how many.
+    saving: Option<(Arc<std::sync::atomic::AtomicUsize>, usize)>,
     /// The keyboard shortcuts, laid over the viewport.
     shortcuts: bool,
     /// Selections drawn their own way, in the order made.
@@ -687,6 +692,8 @@ impl Viewer {
             turning: None,
             turn_task: None,
             transparent: false,
+            traced: false,
+            saving: None,
             shortcuts: false,
             layers: Vec::new(),
             select_input,
@@ -2387,6 +2394,10 @@ impl Viewer {
         let camera = self.camera;
         let style = self.style;
         let transparent = self.transparent;
+        let traced = self.traced.then(|| {
+            let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            (done, crate::trace::rows(height, width))
+        });
         let stem = self
             .structure
             .as_ref()
@@ -2402,10 +2413,29 @@ impl Viewer {
             let Ok(Ok(Some(path))) = chosen.await else {
                 return;
             };
-            let drawn = cx
-                .background_executor()
-                .spawn(async move {
-                    let rgba = if transparent {
+            let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let _ = this.update(cx, |this, cx| {
+                this.saving = traced.clone();
+                cx.notify();
+            });
+            let following = traced.is_some();
+            let drawn = cx.background_executor().spawn({
+                let finished = finished.clone();
+                async move {
+                    let rgba = if let Some((done, _)) = &traced {
+                        let control = crate::trace::Control { cancel: None, done: Some(done) };
+                        let t = crate::trace::trace(&scene, &camera, width, height, style, &control)
+                            .expect("not cancelled");
+                        if transparent {
+                            t.transparent()
+                        } else {
+                            let mut rgba = t.develop(theme::view()).bgra;
+                            for p in rgba.chunks_exact_mut(4) {
+                                p.swap(0, 2);
+                            }
+                            rgba
+                        }
+                    } else if transparent {
                         render::render_transparent(&scene, &camera, width, height, style)
                     } else {
                         let frame =
@@ -2418,17 +2448,26 @@ impl Viewer {
                         }
                         rgba
                     };
-                    image::save_buffer(
+                    let saved = image::save_buffer(
                         &path,
                         &rgba,
                         width as u32,
                         height as u32,
                         image::ColorType::Rgba8,
                     )
-                    .map(|()| path)
-                })
-                .await;
+                    .map(|()| path);
+                    finished.store(true, std::sync::atomic::Ordering::Relaxed);
+                    saved
+                }
+            });
+            // Shown again now and then while it is traced, so the progress moves.
+            while following && !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }
+            let drawn = drawn.await;
             let _ = this.update(cx, |this, cx| {
+                this.saving = None;
                 match drawn {
                     Ok(path) => {
                         this.note(format!("Saved {}", path.display()));
@@ -4447,6 +4486,33 @@ impl Viewer {
             .child(record)
     }
 
+    /// How far a ray trace has got, the view's or a saved image's, in the
+    /// corner of the viewport while one runs.
+    fn tracing_label(&self) -> Option<impl IntoElement> {
+        let (what, part) = match &self.saving {
+            Some((done, rows)) => {
+                ("Ray tracing the image", done.load(std::sync::atomic::Ordering::Relaxed) as f32 / (*rows).max(1) as f32)
+            }
+            None => ("Ray tracing", self.cache.borrow().tracing()?),
+        };
+        Some(
+            div()
+                .absolute()
+                .bottom(px(24.))
+                .right(px(20.))
+                .px(px(8.))
+                .py(px(3.))
+                .rounded(px(5.))
+                .bg(theme::surface())
+                .border_1()
+                .border_color(theme::border())
+                .font_family(theme::MONO)
+                .text_size(px(10.))
+                .text_color(theme::muted())
+                .child(format!("{what} · {}%", (part * 100.0).floor() as u32)),
+        )
+    }
+
     /// Write the viewport out as a picture, at a multiple of its size.
     fn image_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (w, h) = self.cache.borrow().size;
@@ -4456,11 +4522,25 @@ impl Viewer {
                 this.transparent = !this.transparent;
                 cx.notify();
             }));
+        let traced = item("traced", "Ray traced".into(), self.traced)
+            .debug_selector(|| "traced".into())
+            .tooltip(|_, cx| {
+                cx.new(|_| {
+                    Tip("Shadows, ambient occlusion and smooth edges: in the view once it holds still, and in saved images".into())
+                })
+                .into()
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.traced = !this.traced;
+                cx.notify();
+            }));
         menu(200.)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.open = None;
                 cx.notify();
             }))
+            .child(traced)
+            .child(divide())
             .children([1usize, 2, 3].into_iter().map(move |scale| {
                 let size = format!("{} × {}", w * scale, h * scale);
                 div()
@@ -7171,6 +7251,7 @@ impl Viewer {
                 self.cache.clone(),
                 self.drag.is_some(),
                 self.style,
+                self.traced,
             ))
             .children(self.comparison(cx))
             .when(self.busy.is_none(), |d| {
@@ -7223,6 +7304,7 @@ impl Viewer {
                 )
             })
             .when(self.busy.is_some(), |d| d.child(self.working(busy.clone())))
+            .children(self.tracing_label())
             .when(
                 has_structure && self.busy.is_none() && self.visible().is_empty(),
                 |d| {
@@ -8595,6 +8677,9 @@ mod ui_tests {
         click(cx, "tab-image");
         click(cx, "transparent");
         assert!(view.update(cx, |this, _| this.transparent));
+        click(cx, "tab-image");
+        click(cx, "traced");
+        assert!(view.update(cx, |this, _| this.traced));
     }
 
     #[gpui::test]
