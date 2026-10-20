@@ -208,6 +208,8 @@ struct DumpFrame {
     /// In file order, which LAMMPS does not keep from frame to frame.
     ids: Vec<i64>,
     pos: Vec<[f32; 3]>,
+    /// The other columns' values, a list per column, in file order.
+    extra: Vec<Vec<f32>>,
     /// Types, elements and molecules, read in the first frame only.
     detail: Vec<Detail>,
 }
@@ -227,6 +229,8 @@ struct Columns {
     mol: Option<usize>,
     pos: [usize; 3],
     scaled: bool,
+    /// Every other column, kept as a property: energies, velocities, forces.
+    extra: Vec<(usize, String)>,
 }
 
 impl Columns {
@@ -236,6 +240,7 @@ impl Columns {
             .into_iter()
             .flatten()
             .chain(self.pos)
+            .chain(self.extra.iter().map(|e| e.0))
             .max()
             .unwrap_or(0)
     }
@@ -253,7 +258,18 @@ fn columns(names: &[&str]) -> Result<Columns> {
     } else {
         bail!("the dump has no position columns");
     };
+    // Positions in any form, and image flags, are where an atom is rather
+    // than something about it.
+    const PLACE: [&str; 15] =
+        ["x", "y", "z", "xu", "yu", "zu", "xs", "ys", "zs", "xsu", "ysu", "zsu", "ix", "iy", "iz"];
+    let extra = names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| !PLACE.contains(n) && !["id", "type", "element", "mass", "mol"].contains(n))
+        .map(|(i, n)| (i, n.to_string()))
+        .collect();
     Ok(Columns {
+        extra,
         id: at("id"),
         kind: at("type"),
         element: at("element"),
@@ -332,6 +348,7 @@ fn read_frames(text: &str, mut detail: bool) -> Result<Vec<DumpFrame>> {
                 cell,
                 ids: Vec::with_capacity(natoms),
                 pos: Vec::with_capacity(natoms),
+                extra: vec![Vec::with_capacity(natoms); cols.extra.len()],
                 detail: Vec::new(),
             };
             for (i, line) in lines.by_ref().take(natoms).enumerate() {
@@ -343,6 +360,9 @@ fn read_frames(text: &str, mut detail: bool) -> Result<Vec<DumpFrame>> {
                 else {
                     continue;
                 };
+                for (values, (c, _)) in frame.extra.iter_mut().zip(&cols.extra) {
+                    values.push(num(*c).unwrap_or(f32::NAN));
+                }
                 frame.pos.push(if cols.scaled {
                     cell.to_cartesian([x, y, z])
                 } else {
@@ -407,7 +427,17 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
     // A frame in the first frame's file order, as LAMMPS usually writes
     // them, needs no sorting of its own. Atoms lost or gained partway end
     // the trajectory there.
-    let snapshot = |f: DumpFrame| -> Option<Snapshot> {
+    // The extra columns of the first frame name the properties; a frame
+    // without the same ones gives them as not known.
+    let names: Vec<String> = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("ITEM: ATOMS"))
+        .map(|h| {
+            let names: Vec<&str> = h.split_whitespace().collect();
+            columns(&names).map(|c| c.extra.into_iter().map(|e| e.1).collect()).unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let snapshot = |f: DumpFrame| -> Option<(Snapshot, Vec<Vec<f32>>)> {
         let own;
         let order = if f.ids == first.ids {
             &order
@@ -418,21 +448,31 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
             }
             &own
         };
-        Some(Snapshot {
-            step: f.step,
-            pos: order.iter().map(|&i| f.pos[i]).collect(),
-            cell: Some(f.cell),
-        })
+        let extra = (0..names.len())
+            .map(|k| match f.extra.get(k) {
+                Some(v) if v.len() == order.len() => order.iter().map(|&i| v[i]).collect(),
+                _ => vec![f32::NAN; order.len()],
+            })
+            .collect();
+        Some((
+            Snapshot {
+                step: f.step,
+                pos: order.iter().map(|&i| f.pos[i]).collect(),
+                cell: Some(f.cell),
+            },
+            extra,
+        ))
     };
-    let rest: Vec<Vec<Option<Snapshot>>> = pieces[1..]
+    let first_extra: Vec<Vec<f32>> = first.extra.clone();
+    let rest: Vec<Vec<Option<(Snapshot, Vec<Vec<f32>>)>>> = pieces[1..]
         .par_iter()
         .map(|piece| Ok(read_frames(piece, false)?.into_iter().map(snapshot).collect()))
         .collect::<Result<_>>()?;
-    let frames: Vec<Snapshot> = head
+    let (frames, extras): (Vec<Snapshot>, Vec<Vec<Vec<f32>>>) = head
         .map(snapshot)
         .chain(rest.into_iter().flatten())
         .map_while(|s| s)
-        .collect();
+        .unzip();
 
     let mut b = Builder::new("LAMMPS dump");
     b.cell = Some(first.cell);
@@ -453,5 +493,22 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
     if b.len() == 0 {
         bail!("no atoms in LAMMPS dump");
     }
-    Ok(b.finish(id, String::new(), source))
+    let mut s = b.finish(id, String::new(), source);
+    // The first frame was taken off before the rest; its values lead.
+    let many = !extras.is_empty();
+    s.props = names
+        .into_iter()
+        .enumerate()
+        .map(|(k, name)| {
+            let values: Vec<f32> =
+                order.iter().map(|&i| first_extra.get(k).and_then(|v| v.get(i)).copied().unwrap_or(f32::NAN)).collect();
+            let frames = if many {
+                std::iter::once(values.clone()).chain(extras.iter().map(|e| e[k].clone())).collect()
+            } else {
+                Vec::new()
+            };
+            crate::protein::Property { name, values, frames: std::sync::Arc::new(frames) }
+        })
+        .collect();
+    Ok(s)
 }

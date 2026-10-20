@@ -583,3 +583,63 @@ fn time_load() {
     let s = super::load_path(std::path::Path::new(&path)).unwrap();
     println!("{} atoms, {} frames in {:?}", s.atoms.len(), s.frames.len(), t.elapsed());
 }
+
+#[test]
+fn a_dumps_other_columns_are_kept_frame_by_frame_in_id_order() {
+    let text = "\
+ITEM: TIMESTEP
+0
+ITEM: NUMBER OF ATOMS
+2
+ITEM: BOX BOUNDS pp pp pp
+0.0 2.0
+0.0 2.0
+0.0 2.0
+ITEM: ATOMS id type x y z c_pe vx ix
+2 2 0.5 0.5 0.5 -3.5 0.2 1
+1 1 0.0 0.0 0.0 -4.0 0.1 0
+ITEM: TIMESTEP
+100
+ITEM: NUMBER OF ATOMS
+2
+ITEM: BOX BOUNDS pp pp pp
+0.0 2.0
+0.0 2.0
+0.0 2.0
+ITEM: ATOMS id type x y z c_pe vx ix
+1 1 0.1 0.0 0.0 -2.0 0.3 0
+2 2 0.5 0.5 0.5 -1.0 0.4 1
+";
+    let mut s = read(text, Format::LammpsDump);
+    let names: Vec<&str> = s.props.iter().map(|p| p.name.as_str()).collect();
+    // Image flags say where an atom is, not something about it.
+    assert_eq!(names, ["c_pe", "vx"]);
+    let pe = s.prop("C_PE").unwrap();
+    assert_eq!(s.props[pe].values, vec![-4.0, -3.5]);
+    s.set_frame(1);
+    assert_eq!(s.props[pe].values, vec![-2.0, -1.0]);
+    // The span runs across every frame.
+    let (lo, hi) = s.prop_span(pe).unwrap();
+    assert!(lo <= -3.9 && hi >= -1.1, "{lo} {hi}");
+}
+
+#[test]
+fn an_extended_xyzs_numeric_columns_are_kept() {
+    let text = "2
+Properties=species:S:1:pos:R:3:forces:R:3:charge:R:1:fixed:L:1
+Cu 0.0 0.0 0.0 0.1 0.2 0.3 -0.5 T
+Cu 2.0 2.0 0.0 0.4 0.5 0.6 0.5 F
+2
+Properties=species:S:1:pos:R:3:forces:R:3:charge:R:1:fixed:L:1
+Cu 0.1 0.0 0.0 0.0 0.0 0.0 -0.25 T
+Cu 2.0 2.1 0.0 0.0 0.0 0.0 0.25 F
+";
+    let mut s = read(text, Format::Xyz);
+    let names: Vec<&str> = s.props.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["forces_x", "forces_y", "forces_z", "charge", "fixed"]);
+    let q = s.prop("charge").unwrap();
+    assert_eq!(s.props[q].values, vec![-0.5, 0.5]);
+    assert_eq!(s.props[s.prop("fixed").unwrap()].values, vec![1.0, 0.0]);
+    s.set_frame(1);
+    assert_eq!(s.props[q].values, vec![-0.25, 0.25]);
+}

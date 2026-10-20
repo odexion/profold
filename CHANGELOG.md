@@ -15,6 +15,17 @@
 - **Ray-traced films.** The film dialog's *Ray traced* switch, or
   `movie … trace=on`, traces every frame the same way.
 
+### Simulations
+- **Per-atom properties.** A LAMMPS dump keeps every column beyond type and
+  position (`c_pe`, `vx`, `q`, stresses…), and an extended XYZ every numeric
+  column of `Properties=`, frame by frame. *Property* colours atoms by any of
+  them along the palette, from the 1st to the 99th percentile across the
+  whole trajectory, with the columns to pick from and the range in the side
+  panel and in a film's legend. `color property c_pe -5 -2` sets a range by
+  hand.
+- **Selecting by value.** Selections compare: `c_pe < -3`, `vx >= 0.5 and
+  z > 10`, `b < 30`, with `x`, `y`, `z` and `b` always there.
+
 ### Viewing
 - **⌘-click to focus** (Ctrl-click on Linux and Windows) picks an atom or
   residue and flies the view to it, as the card's Focus button does.

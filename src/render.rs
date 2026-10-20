@@ -221,10 +221,13 @@ pub enum Coloring {
     Pair,
     /// Distance between the superimposed counterparts, per residue.
     Deviation,
+    /// A value per atom from the file, such as a simulation's energy or
+    /// velocity, along the palette's ramp.
+    Property,
 }
 
 impl Coloring {
-    pub const ALL: [Coloring; 8] = [
+    pub const ALL: [Coloring; 9] = [
         Coloring::Chain,
         Coloring::Rainbow,
         Coloring::Confidence,
@@ -233,6 +236,7 @@ impl Coloring {
         Coloring::Hydrophobic,
         Coloring::Charge,
         Coloring::Element,
+        Coloring::Property,
     ];
     /// The options that mean something while two structures are overlaid.
     pub const COMPARE: [Coloring; 4] = [
@@ -253,6 +257,7 @@ impl Coloring {
             Coloring::Element => "Element",
             Coloring::Pair => "Pair",
             Coloring::Deviation => "Deviation",
+            Coloring::Property => "Property",
         }
     }
 }
@@ -1122,6 +1127,15 @@ fn residue_color(
 ) -> [f32; 3] {
     let r = &s.residues[residue];
     match coloring {
+        // A residue by its first backbone atom's value, for ribbons and tubes.
+        Coloring::Property => r
+            .ca
+            .or(r.n)
+            .and_then(|atom| {
+                let i = s.prop_color.map_or(0, |p| p.index);
+                s.prop_fraction(i, atom as usize, s.prop_span(i)?)
+            })
+            .map_or([0.74, 0.73, 0.71], |t| palette.ramp(t)),
         Coloring::Pair => s.tint.unwrap_or(s.chain_color(r.chain as usize, palette)),
         Coloring::Deviation => match s.deviation.get(residue) {
             Some(d) if *d >= 0.0 => deviation_color(*d, palette),
@@ -1376,6 +1390,9 @@ impl Paint<'_> {
             };
         }
         match self.coloring {
+            Coloring::Property => Some(self.s.prop_color.map_or(0, |p| p.index))
+                .and_then(|k| self.s.prop_fraction(k, self.source(i), self.s.prop_span(k)?))
+                .map_or([0.74, 0.73, 0.71], |t| self.palette.ramp(t)),
             Coloring::Rainbow if !self.polymer => self
                 .palette
                 .ramp(self.source(i) as f32 / (self.own.max(2) - 1) as f32),
@@ -4260,6 +4277,22 @@ mod gpu_tests {
 
     /// The card draws what the CPU draws: past the odd pixel along an edge,
     /// where the two round a pixel centre differently, the frames agree.
+    #[test]
+    fn atoms_take_the_ramp_by_a_property_from_low_to_high() {
+        let dump = "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n3\nITEM: BOX BOUNDS pp pp pp\n0 4\n0 4\n0 4\n\
+                    ITEM: ATOMS id type x y z c_pe\n1 1 0 0 0 -4.0\n2 1 1.5 1.5 1.5 -2.5\n3 1 3 3 3 -1.0\n";
+        let mut s = crate::formats::load_bytes("t.lammpstrj", dump.as_bytes().to_vec()).unwrap();
+        s.prop_color = Some(crate::protein::PropertyColor { index: 0, range: Some((-4.0, -1.0)) });
+        let p = Palette::Viridis;
+        let scene = build_scene(&s, Repr::Spacefill, Coloring::Property, 1.0, Style::Soft, p, true, false, &Appearance::default());
+        let colour_at = |x: f32| scene.spheres.iter().find(|a| (a.c[0] - x).abs() < 1e-3).unwrap().color;
+        // Each style settles colours a little its own way.
+        let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 0.08);
+        assert!(near(colour_at(0.0), p.ramp(0.0)));
+        assert!(near(colour_at(1.5), p.ramp(0.5)));
+        assert!(near(colour_at(3.0), p.ramp(1.0)));
+    }
+
     #[test]
     fn gpu_matches_cpu() {
         let Some(gpu) = crate::gpu::get() else {

@@ -242,6 +242,16 @@ impl Viewer {
             Legend::Swatches { title: title.into(), items: all.into_iter().take(MOST).collect(), more }
         };
         Some(match self.coloring {
+            Coloring::Property => {
+                let i = s.prop_color.map_or(0, |p| p.index);
+                let (lo, hi) = s.prop_span(i)?;
+                Legend::Ramp {
+                    title: s.props[i].name.clone(),
+                    colors: ramp(&|t| palette.ramp(t)),
+                    low: crate::ui::app::figure(lo),
+                    high: crate::ui::app::figure(hi),
+                }
+            }
             Coloring::Hydrophobic => Legend::Ramp {
                 title: "Hydrophobicity".into(),
                 colors: ramp(&|t| render::diverging(t * 2.0 - 1.0, render::HYDROPHILIC, render::HYDROPHOBIC)),

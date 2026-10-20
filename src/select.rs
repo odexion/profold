@@ -7,7 +7,11 @@
 //! protein  ligand  water  backbone  sidechain  hydrogen
 //! helix  strand  coil  all  none
 //! within 5 of ligand   byres (name CA)       not water and chain A
+//! c_pe < -3            vx >= 0.5             z > 10 and b < 30
 //! ```
+//!
+//! A comparison reads a per-atom property of the file by its name, or `x`,
+//! `y`, `z` and `b` (the B-factor).
 //!
 //! `and` binds tighter than `or`; `not`, `within` and `byres` tighter
 //! still; parentheses group. Words are matched without regard to case.
@@ -38,6 +42,43 @@ enum Expr {
     Or(Box<Expr>, Box<Expr>),
     Within(f32, Box<Expr>),
     Byres(Box<Expr>),
+    /// A value per atom against a number.
+    Compare(String, Op, f32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Op {
+    Less,
+    LessEq,
+    More,
+    MoreEq,
+    Equal,
+    NotEqual,
+}
+
+impl Op {
+    fn parse(t: &str) -> Option<Op> {
+        Some(match t {
+            "<" => Op::Less,
+            "<=" => Op::LessEq,
+            ">" => Op::More,
+            ">=" => Op::MoreEq,
+            "=" | "==" => Op::Equal,
+            "!=" => Op::NotEqual,
+            _ => return None,
+        })
+    }
+
+    fn holds(self, a: f32, b: f32) -> bool {
+        match self {
+            Op::Less => a < b,
+            Op::LessEq => a <= b,
+            Op::More => a > b,
+            Op::MoreEq => a >= b,
+            Op::Equal => a == b,
+            Op::NotEqual => a != b,
+        }
+    }
 }
 
 /// A selection, parsed and ready to be matched against a structure.
@@ -74,8 +115,19 @@ impl Selection {
 fn tokenize(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut word = String::new();
-    for c in text.chars() {
-        if c == '(' || c == ')' {
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if matches!(c, '<' | '>' | '=' | '!') {
+            // An operator, one character or two: `<`, `<=`, `!=`, `!`.
+            if !word.is_empty() {
+                out.push(std::mem::take(&mut word));
+            }
+            let mut op = c.to_string();
+            if chars.peek() == Some(&'=') {
+                op.push(chars.next().unwrap());
+            }
+            out.push(op);
+        } else if c == '(' || c == ')' {
             if !word.is_empty() {
                 out.push(std::mem::take(&mut word));
             }
@@ -169,6 +221,14 @@ impl Parser<'_> {
                     bail!("unmatched parenthesis");
                 }
                 Ok(e)
+            }
+            _ if self.tokens.get(self.at + 1).and_then(|t| Op::parse(t)).is_some() => {
+                let name = self.next().unwrap_or_default().to_string();
+                let op = Op::parse(self.next().unwrap_or_default()).expect("checked above");
+                match self.next().map(str::parse::<f32>) {
+                    Some(Ok(v)) => Ok(Expr::Compare(name, op, v)),
+                    _ => bail!("{name} is compared with a number, as in \"{name} < 3\""),
+                }
             }
             _ => self.term(),
         }
@@ -276,6 +336,22 @@ fn eval(e: &Expr, s: &Structure) -> Vec<bool> {
             each(&|i| taken[s.atoms[i].residue as usize])
         }
         Expr::Within(d, a) => within(s, &eval(a, s), *d),
+        Expr::Compare(name, op, v) => {
+            let value: Box<dyn Fn(usize) -> f32> = match name.to_ascii_lowercase().as_str() {
+                "x" => Box::new(|i| s.atoms[i].pos[0]),
+                "y" => Box::new(|i| s.atoms[i].pos[1]),
+                "z" => Box::new(|i| s.atoms[i].pos[2]),
+                "b" | "bfactor" | "beta" => Box::new(|i| s.atoms[i].b),
+                _ => match s.prop(name) {
+                    Some(k) => {
+                        let values = &s.props[k].values;
+                        Box::new(move |i| values.get(i).copied().unwrap_or(f32::NAN))
+                    }
+                    None => return vec![false; n],
+                },
+            };
+            each(&|i| op.holds(value(i), *v))
+        }
     }
 }
 
@@ -324,6 +400,24 @@ mod tests {
 
     fn count(s: &Structure, q: &str) -> usize {
         Selection::parse(q).unwrap_or_else(|e| panic!("{q}: {e}")).atoms(s).into_iter().filter(|x| *x).count()
+    }
+
+    #[test]
+    fn comparisons_read_properties_positions_and_b_factors() {
+        let dump = "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n3\nITEM: BOX BOUNDS pp pp pp\n0 4\n0 4\n0 4\n\
+                    ITEM: ATOMS id type x y z c_pe\n1 1 0 0 0 -4.0\n2 1 1 1 1 -2.5\n3 2 2 2 3 -1.0\n";
+        let s = crate::formats::load_bytes("t.lammpstrj", dump.as_bytes().to_vec()).unwrap();
+        assert_eq!(count(&s, "c_pe < -3"), 1);
+        assert_eq!(count(&s, "c_pe<=-2.5"), 2);
+        assert_eq!(count(&s, "C_PE >= -2.5 and z > 2"), 1);
+        assert_eq!(count(&s, "c_pe != -1"), 2);
+        assert_eq!(count(&s, "! c_pe = -4"), 2);
+        assert_eq!(count(&s, "nothing_like_it > 0"), 0);
+        assert!(Selection::parse("c_pe < high").is_err());
+        let crambin = sample("1crn.pdb.gz");
+        let all = crambin.atoms.len();
+        assert_eq!(count(&crambin, "b < 1000"), all);
+        assert_eq!(count(&crambin, "x > 1e9"), 0);
     }
 
     #[test]

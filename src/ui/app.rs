@@ -2203,6 +2203,29 @@ impl Viewer {
 
     /// Paint a kind of ligand, or `None` to give it back its elements'
     /// colours. It shows under any scheme, so the scheme is left alone.
+    /// Colour by `c`; by property, the one chosen before or else the first.
+    pub(super) fn set_coloring(&mut self, c: Coloring, cx: &mut Context<Self>) {
+        if c == Coloring::Property {
+            if let Some(s) = self.structure.as_mut() {
+                if s.prop_color.is_none() && !s.props.is_empty() {
+                    Arc::make_mut(s).prop_color = Some(crate::protein::PropertyColor { index: 0, range: None });
+                }
+            }
+        }
+        self.coloring = c;
+        self.rebuild(cx);
+    }
+
+    /// Colour by property `index`, over `range` or its own span.
+    pub(super) fn colour_by_property(&mut self, index: usize, range: Option<(f32, f32)>, cx: &mut Context<Self>) {
+        let Some(s) = self.structure.as_mut() else {
+            return;
+        };
+        Arc::make_mut(s).prop_color = Some(crate::protein::PropertyColor { index, range });
+        self.coloring = Coloring::Property;
+        self.rebuild(cx);
+    }
+
     fn set_ligand_paint(&mut self, name: String, paint: Option<LigandPaint>, cx: &mut Context<Self>) {
         let Some(s) = self.structure.as_mut() else {
             return;
@@ -3189,6 +3212,17 @@ const FOLD_EXAMPLES: [(&str, &str); 3] = [
 #[cfg(not(feature = "simplefold"))]
 const FOLD_EXAMPLES: [(&str, &str); 0] = [];
 
+/// A value as a key shows it: no more figures than it needs.
+pub(crate) fn figure(v: f32) -> String {
+    let a = v.abs();
+    if a == 0.0 || (0.01..1e5).contains(&a) {
+        let digits = if a >= 100.0 { 0 } else if a >= 1.0 { 2 } else { 3 };
+        format!("{v:.digits$}")
+    } else {
+        format!("{v:.2e}")
+    }
+}
+
 pub(crate) fn pill(id: &'static str, label: impl Into<SharedString>, active: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
@@ -3967,13 +4001,13 @@ impl Viewer {
                 .filter(|c| **c != Coloring::Confidence || has_confidence)
                 .filter(|c| **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some()))
                 .filter(|c| **c != Coloring::Structure || polymer)
+                    .filter(|c| **c != Coloring::Property || structure.is_some_and(|s| !s.props.is_empty()))
                 .map(|c| {
                     let c = *c;
                     item(("colour-item", c as usize), colour_name(c).to_string(), c == coloring)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open = None;
-                            this.coloring = c;
-                            this.rebuild(cx);
+                            this.set_coloring(c, cx);
                         }))
                         .into_any_element()
                 })
@@ -4063,6 +4097,7 @@ impl Viewer {
                     .filter(|c| **c != Coloring::Confidence || has_confidence)
                     .filter(|c| **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some()))
                     .filter(|c| **c != Coloring::Structure || polymer)
+                    .filter(|c| **c != Coloring::Property || structure.is_some_and(|s| !s.props.is_empty()))
                     .map(|c| {
                         let c = *c;
                         let name = match c {
@@ -4071,10 +4106,7 @@ impl Viewer {
                         };
                         pill_keyed(("colour", c as usize), name, c == coloring)
                             .cursor_pointer()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.coloring = c;
-                                this.rebuild(cx);
-                            }))
+                            .on_click(cx.listener(move |this, _, _, cx| this.set_coloring(c, cx)))
                             .into_any_element()
                     })
                     .collect(),
@@ -5730,7 +5762,7 @@ impl Viewer {
     /// What the colours mean, for the colourings whose colours are not the
     /// chains': a ramp with its ends for B-factors, a swatch each for
     /// helix, strand and coil, and pLDDT's bands.
-    fn colour_key(&self, structure: &Structure) -> Option<gpui::AnyElement> {
+    fn colour_key(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let row = |color: [f32; 3], label: String| {
             div()
                 .flex()
@@ -5764,6 +5796,36 @@ impl Viewer {
                     )
                     .child(format!("{hi:.0} Å²"))
                     .into_any_element()
+            }
+            Coloring::Property => {
+                let chosen = structure.prop_color.map_or(0, |p| p.index);
+                let (lo, hi) = structure.prop_span(chosen)?;
+                let palette = self.palette;
+                // Which column, as pills that wrap, then its ramp.
+                let names = div().flex().flex_wrap().gap(px(4.)).children(structure.props.iter().enumerate().map(|(i, p)| {
+                    pill_keyed(("prop", i), p.name.clone(), i == chosen)
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| this.colour_by_property(i, None, cx)))
+                }));
+                let ramp = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .font_family(theme::MONO)
+                    .text_size(px(10.))
+                    .text_color(theme::muted())
+                    .child(figure(lo))
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px(8.))
+                            .flex()
+                            .rounded(px(4.))
+                            .overflow_hidden()
+                            .children((0..24).map(move |i| div().flex_1().h_full().bg(swatch(palette.ramp(i as f32 / 23.0))))),
+                    )
+                    .child(figure(hi));
+                div().flex().flex_col().gap(px(8.)).child(names).child(ramp).into_any_element()
             }
             Coloring::Structure => div()
                 .flex()
@@ -5826,6 +5888,7 @@ impl Viewer {
                     Coloring::Hydrophobic => "hydrophobicity",
                     Coloring::Charge if self.repr == Repr::Surface => "electrostatic potential",
                     Coloring::Charge => "charge",
+                    Coloring::Property => "property",
                     _ => "pLDDT",
                 }))
                 .child(body)
@@ -6781,7 +6844,8 @@ impl Viewer {
                         .text_color(theme::text())
                         .child(blurb),
                 )
-            });
+            })
+            .children(self.colour_key(structure, cx));
         let atoms = self.species_table(structure, cx);
         let facts = div()
             .flex()
@@ -6983,7 +7047,7 @@ impl Viewer {
             })
             .children(self.assembly_choice(structure, cx))
             .child(self.legend(structure, cx))
-            .children(self.colour_key(structure))
+            .children(self.colour_key(structure, cx))
             .child(self.ligand_list(structure, cx))
             .child(self.layer_list(cx));
         let atoms = self.species_table(structure, cx);

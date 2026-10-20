@@ -19,6 +19,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("overlay <id or path>", "superimpose another structure onto this one"),
     ("show cartoon|tube|sticks|licorice|spheres|surface", "set the representation"),
     ("color chain|rainbow|plddt|bfactor|secondary|hydrophobic|charge|element", "set the colouring scheme"),
+    ("color property [<name>] [<low> <high>]", "colour by a per-atom value from the file, such as c_pe or vx"),
     ("palette <name>", "set the colour palette (Spectrum, Viridis, Magma, …)"),
     ("style illustrative|flat|soft|studio", "set the rendering style"),
     ("sticks|spheres|hide <selection>", "apply a representation to a selection"),
@@ -115,6 +116,29 @@ impl Viewer {
                 }
                 self.set_repr(repr, cx);
                 format!("drawn as {}", repr.label())
+            }
+            "color" | "colour" if rest.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("property")) => {
+                // color property [name] [low high]
+                let s = shown()?;
+                if s.props.is_empty() {
+                    bail!("this file has no per-atom properties");
+                }
+                let words: Vec<&str> = rest.split_whitespace().skip(1).collect();
+                let (index, numbers) = match words.first() {
+                    Some(w) if w.parse::<f32>().is_err() => {
+                        let names = s.props.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
+                        (s.prop(w).ok_or_else(|| anyhow!("no property {w}; there are {names}"))?, &words[1..])
+                    }
+                    _ => (s.prop_color.map_or(0, |p| p.index), &words[..]),
+                };
+                let range = match numbers {
+                    [] => None,
+                    [lo, hi] => Some((lo.parse::<f32>().context("low end")?, hi.parse::<f32>().context("high end")?)),
+                    _ => bail!("color property takes a name, then a low and a high value"),
+                };
+                let name = s.props[index].name.clone();
+                self.colour_by_property(index, range, cx);
+                format!("coloured by {name}")
             }
             "color" | "colour" => {
                 let want = rest.to_ascii_lowercase();

@@ -255,6 +255,27 @@ impl ResidueAtoms {
     }
 }
 
+/// A number for every atom beyond where it is and what it is, read from a
+/// column of the file: a LAMMPS dump's `c_pe`, `vx` or `q`, or an extended
+/// XYZ's `forces`.
+#[derive(Clone)]
+pub struct Property {
+    pub name: String,
+    /// One per atom, for the frame shown.
+    pub values: Vec<f32>,
+    /// One list per frame of a trajectory; empty when there is one frame.
+    pub frames: Arc<Vec<Vec<f32>>>,
+}
+
+/// Which property atoms are coloured by, and over what range: the low end
+/// takes the ramp's first colour and the high end its last.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PropertyColor {
+    pub index: usize,
+    /// Set by hand; otherwise the span of the values, across every frame.
+    pub range: Option<(f32, f32)>,
+}
+
 #[derive(Clone)]
 pub struct Structure {
     pub id: String,
@@ -294,6 +315,12 @@ pub struct Structure {
     /// A predicted model's expected error between each pair of residues,
     /// where the database that made it says.
     pub pae: Option<Arc<Pae>>,
+    /// Values per atom from the file's other columns.
+    pub props: Vec<Property>,
+    /// Which of them `Coloring::Property` paints by.
+    pub prop_color: Option<PropertyColor>,
+    /// Each property's own span, worked out when first asked.
+    prop_spans: std::sync::OnceLock<Vec<Option<(f32, f32)>>>,
     /// The span of B-factors colouring runs over, worked out when first asked.
     b_span: std::sync::OnceLock<Option<(f32, f32)>>,
     /// Each residue's place among the polymer's, for the rainbow.
@@ -322,6 +349,9 @@ impl Structure {
             unknown_radius: Element::UNKNOWN.vdw(),
             assemblies: Vec::new(),
             pae: None,
+            props: Vec::new(),
+            prop_color: None,
+            prop_spans: std::sync::OnceLock::new(),
             b_span: std::sync::OnceLock::new(),
             rank: std::sync::OnceLock::new(),
         }
@@ -354,6 +384,50 @@ impl Structure {
     /// percentile, so that a floppy tail or two does not wash the rest out.
     /// `None` where there are none worth colouring by: a predicted model's
     /// column is pLDDT, and a flat column says nothing.
+    /// A property by name, without regard to case.
+    pub fn prop(&self, name: &str) -> Option<usize> {
+        self.props.iter().position(|p| p.name.eq_ignore_ascii_case(name))
+    }
+
+    /// The range property `i` is coloured over: the one set, or its values
+    /// from the 1st to the 99th percentile across every frame, so a stray
+    /// atom does not wash the rest out.
+    pub fn prop_span(&self, i: usize) -> Option<(f32, f32)> {
+        if let Some(PropertyColor { index, range: Some(r) }) = self.prop_color {
+            if index == i {
+                return Some(r);
+            }
+        }
+        *self.prop_spans.get_or_init(|| (0..self.props.len()).map(|k| self.own_span(k)).collect()).get(i)?
+    }
+
+    fn own_span(&self, i: usize) -> Option<(f32, f32)> {
+        let p = self.props.get(i)?;
+        let all: Vec<&Vec<f32>> = if p.frames.is_empty() { vec![&p.values] } else { p.frames.iter().collect() };
+        let total: usize = all.iter().map(|v| v.len()).sum();
+        // A sample is enough for percentiles, however long the trajectory.
+        let stride = (total / 400_000).max(1);
+        let mut v: Vec<f32> = all
+            .iter()
+            .flat_map(|f| f.iter().copied())
+            .step_by(stride)
+            .filter(|x| x.is_finite())
+            .collect();
+        if v.is_empty() {
+            return None;
+        }
+        v.sort_by(f32::total_cmp);
+        let at = |q: f32| v[((v.len() - 1) as f32 * q).round() as usize];
+        let (lo, hi) = (at(0.01), at(0.99));
+        Some(if hi > lo { (lo, hi) } else { (v[0], v[v.len() - 1].max(v[0] + 1e-6)) })
+    }
+
+    /// Property `i`'s value at atom `atom`, placed along its range from 0 to 1.
+    pub fn prop_fraction(&self, i: usize, atom: usize, span: (f32, f32)) -> Option<f32> {
+        let v = *self.props.get(i)?.values.get(atom)?;
+        Some(((v - span.0) / (span.1 - span.0).max(1e-12)).clamp(0.0, 1.0))
+    }
+
     pub fn b_span(&self) -> Option<(f32, f32)> {
         *self.b_span.get_or_init(|| {
             if self.has_confidence {
@@ -718,6 +792,11 @@ impl Structure {
         }
         if snap.cell.is_some() {
             self.cell = snap.cell;
+        }
+        for p in &mut self.props {
+            if let Some(v) = p.frames.get(i) {
+                p.values.clone_from(v);
+            }
         }
         self.frame = i;
         if self.has_polymer() {
