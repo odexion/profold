@@ -87,7 +87,7 @@ pub fn superimpose(reference: &mut Structure, prediction: &mut Structure) -> Res
 
 /// The rotation that best lays points `p` over points `q`, after moving
 /// each to its centroid; and the two centroids.
-fn kabsch(p: &[[f64; 3]], q: &[[f64; 3]]) -> ([[f64; 3]; 3], [f64; 3], [f64; 3]) {
+pub(crate) fn kabsch(p: &[[f64; 3]], q: &[[f64; 3]]) -> ([[f64; 3]; 3], [f64; 3], [f64; 3]) {
     let cp = centroid(p);
     let cq = centroid(q);
 

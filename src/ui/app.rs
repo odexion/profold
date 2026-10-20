@@ -249,6 +249,65 @@ fn picture(width: usize, height: usize, rgb: impl Fn(usize, usize) -> [f32; 3]) 
 /// Where protein backbones are found on the Ramachandran plot: the right-
 /// and left-handed helices and the strands, as soft regions to read the
 /// dots against.
+/// One of the analysis's plots as a picture `w` by `h`: a line through a
+/// series or RMSF, on faint rules, or secondary structure, frames across
+/// and residues down.
+fn analysis_picture(a: &crate::analysis::Analysis, pick: usize, frames: usize, w: usize, h: usize, dark: bool) -> Arc<gpui::RenderImage> {
+    let page = theme::view();
+    if pick > a.series.len() {
+        let rows = a.ss_residues.len().max(1);
+        let columns = a.ss.len().max(1);
+        return picture(w, h, |x, y| {
+            let (_, ss) = &a.ss[(x * columns / w).min(columns - 1)];
+            let r = (y * rows / h).min(rows - 1);
+            match ss.get(r) {
+                Some(crate::protein::Ss::Coil) | None => page.map(|c| c * 0.92 + if dark { 0.05 } else { 0.0 }),
+                Some(s) => render::SS_COLORS.iter().find(|c| c.0 == *s).map_or(page, |c| c.2),
+            }
+        });
+    }
+    // The values, across: by frame along time, by residue for RMSF.
+    let (xs, ys): (Vec<f32>, Vec<f32>) = match a.series.get(pick) {
+        Some(s) => s.points.iter().map(|(f, v)| (*f as f32 / (frames - 1).max(1) as f32, *v)).unzip(),
+        None => {
+            let n = a.rmsf.len().max(1);
+            a.rmsf.iter().enumerate().map(|(i, v)| ((i as f32 + 0.5) / n as f32, *v)).unzip()
+        }
+    };
+    let lo = ys.iter().cloned().fold(f32::MAX, f32::min);
+    let hi = ys.iter().cloned().fold(f32::MIN, f32::max);
+    let span = (hi - lo).max(1e-6);
+    let pad = 0.08;
+    let to_y = |v: f32| ((1.0 - pad) - (v - lo) / span * (1.0 - 2.0 * pad)) * (h - 1) as f32;
+    // Each column's height on the line, joined to the next so steep stretches stay unbroken.
+    let column: Vec<f32> = (0..w)
+        .map(|x| {
+            let t = x as f32 / (w - 1).max(1) as f32;
+            let k = xs.partition_point(|&q| q < t);
+            let v = match (k.checked_sub(1).map(|i| (xs[i], ys[i])), xs.get(k).map(|&q| (q, ys[k]))) {
+                (Some((x0, y0)), Some((x1, y1))) if x1 > x0 => y0 + (y1 - y0) * (t - x0) / (x1 - x0),
+                (Some((_, y)), _) | (None, Some((_, y))) => y,
+                _ => lo,
+            };
+            to_y(v)
+        })
+        .collect();
+    let line = if dark { [0.62, 0.74, 0.95] } else { [0.16, 0.36, 0.72] };
+    let rule = page.map(|c| c * 0.9 + if dark { 0.06 } else { 0.0 });
+    picture(w, h, |x, y| {
+        let y = y as f32;
+        let (a, b) = (column[x], column[(x + 1).min(w - 1)]);
+        let (top, bottom) = (a.min(b) - 1.5, a.max(b) + 1.5);
+        if y >= top && y <= bottom {
+            line
+        } else if (y - to_y(lo)).abs() < 1.0 || (y - to_y(hi)).abs() < 1.0 {
+            rule
+        } else {
+            page
+        }
+    })
+}
+
 fn ramachandran_ground() -> Arc<gpui::RenderImage> {
     // One for each page, light and dark, made when first wanted.
     static GROUND: [std::sync::OnceLock<Arc<gpui::RenderImage>>; 2] = [const { std::sync::OnceLock::new() }; 2];
@@ -475,6 +534,17 @@ pub struct Viewer {
     /// it, and what is worked out once per structure.
     rama_bounds: Rc<Shared<Bounds<Pixels>>>,
     rama_hover: Option<usize>,
+    /// The trajectory's analysis: whether its row is open, which plot, what
+    /// was worked out and for which frames, the work under way and how far
+    /// it is, the plot drawn, and where the pointer is along it.
+    pub(super) analysis_open: bool,
+    analysis_pick: usize,
+    analysis: Option<(usize, Arc<crate::analysis::Analysis>)>,
+    analysis_task: Option<Task<()>>,
+    analysis_done: Option<(Arc<std::sync::atomic::AtomicUsize>, usize)>,
+    analysis_image: RefCell<Option<((usize, usize, bool), Arc<gpui::RenderImage>)>>,
+    analysis_bounds: Rc<Shared<Bounds<Pixels>>>,
+    analysis_hover: Option<f32>,
     pae_bounds: Rc<Shared<Bounds<Pixels>>>,
     pae_hover: Option<(usize, usize)>,
     /// Whether each plot is open under its row; both start closed.
@@ -719,6 +789,14 @@ impl Viewer {
             last_change: std::time::Instant::now(),
             rama_bounds: Rc::new(Shared::new(Bounds::default())),
             rama_hover: None,
+            analysis_open: false,
+            analysis_pick: 0,
+            analysis: None,
+            analysis_task: None,
+            analysis_done: None,
+            analysis_image: RefCell::new(None),
+            analysis_bounds: Rc::new(Shared::new(Bounds::default())),
+            analysis_hover: None,
             pae_bounds: Rc::new(Shared::new(Bounds::default())),
             pae_hover: None,
             rama_open: false,
@@ -2245,9 +2323,13 @@ impl Viewer {
             Periodic::Replicate(n) => {
                 (Arc::new(crate::pbc::replicate(&shown, n)?), format!("replicated {} × {} × {}", n[0], n[1], n[2]))
             }
-            Periodic::Wrap | Periodic::Whole | Periodic::InTime => {
+            Periodic::Wrap | Periodic::Whole | Periodic::InTime | Periodic::Fit => {
                 let mut s = (*shown).clone();
                 let said = match op {
+                    Periodic::Fit => {
+                        crate::analysis::fit_frames(&mut s)?;
+                        "every frame fitted onto the first"
+                    }
                     Periodic::Wrap => {
                         crate::pbc::wrap(&mut s)?;
                         "wrapped into the cell"
@@ -2276,6 +2358,10 @@ impl Viewer {
         self.hover = None;
         self.measurements.clear();
         self.rebuild(cx);
+        // The frames have changed, so what was worked out from them has.
+        if self.analysis_open {
+            self.start_analysis(cx);
+        }
         Ok(said)
     }
 
@@ -2327,6 +2413,246 @@ impl Viewer {
         let scene = Arc::new(scene);
         self.iso_cache = Some((self.iso, key, scene.clone()));
         Some(scene)
+    }
+
+    /// The analysis of the trajectory shown, if it is the one worked out.
+    fn analysis_for(&self, s: &Structure) -> Option<Arc<crate::analysis::Analysis>> {
+        let (key, a) = self.analysis.as_ref()?;
+        (*key == Arc::as_ptr(&s.frames) as usize).then(|| a.clone())
+    }
+
+    /// Work out the trajectory's analysis in the background, unless it is
+    /// worked out or being worked out already.
+    pub(super) fn start_analysis(&mut self, cx: &mut Context<Self>) {
+        let Some(s) = self.structure.clone() else { return };
+        if s.frame_count() < 2 || self.analysis_for(&s).is_some() || self.analysis_task.is_some() {
+            return;
+        }
+        let key = Arc::as_ptr(&s.frames) as usize;
+        let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.analysis_done = Some((done.clone(), crate::analysis::total(&s)));
+        let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let work = cx.background_executor().spawn({
+            let (s, finished) = (s.clone(), finished.clone());
+            async move {
+                let a = crate::analysis::analyse(&s, &cancel, &done);
+                finished.store(true, std::sync::atomic::Ordering::Relaxed);
+                a
+            }
+        });
+        self.analysis_task = Some(cx.spawn(async move |this, cx| {
+            while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                cx.background_executor().timer(Duration::from_millis(200)).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    return;
+                }
+            }
+            let a = work.await;
+            let _ = this.update(cx, |this, cx| {
+                this.analysis_task = None;
+                this.analysis_done = None;
+                if let Some(a) = a {
+                    this.analysis = Some((key, Arc::new(a)));
+                    *this.analysis_image.borrow_mut() = None;
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Go to the frame a fraction `t` of the way along the plot.
+    fn go_to_plotted(&mut self, t: f32, cx: &mut Context<Self>) {
+        let n = self.frame_count();
+        self.stop_playing();
+        self.set_frame((t.clamp(0.0, 1.0) * (n.max(1) - 1) as f32).round() as usize, cx);
+    }
+
+    /// What is plotted for pick `i`: a series, then RMSF, then secondary
+    /// structure through time.
+    fn analysis_names(a: &crate::analysis::Analysis) -> Vec<&'static str> {
+        let mut names: Vec<&'static str> = a.series.iter().map(|s| s.name).collect();
+        names.push("RMSF");
+        if !a.ss.is_empty() {
+            names.push("Secondary");
+        }
+        names
+    }
+
+    /// The trajectory's plots: a value through time, how much each residue
+    /// moves, or its helices and strands frame by frame. Clicking a point
+    /// along time goes to that frame.
+    fn trajectory_analysis(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if structure.frame_count() < 2 {
+            return None;
+        }
+        let row = |caption: String, open: bool, cx: &mut Context<Self>| {
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(10.))
+                .py(px(8.))
+                .border_b_1()
+                .border_color(theme::border())
+                .child(key("trajectory analysis"))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().text_size(px(9.5)).text_color(theme::faint()).child(caption))
+                        .child(
+                            div()
+                                .id("open-analysis")
+                                .debug_selector(|| "open-analysis".into())
+                                .px(px(7.))
+                                .py(px(2.))
+                                .rounded(px(4.))
+                                .text_size(px(10.))
+                                .cursor_pointer()
+                                .text_color(theme::muted())
+                                .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
+                                .child(if open { "Hide" } else { "Show" })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.analysis_open = !this.analysis_open;
+                                    if this.analysis_open {
+                                        this.start_analysis(cx);
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+        };
+        if !self.analysis_open {
+            return Some(row(String::new(), false, cx).into_any_element());
+        }
+        let Some(a) = self.analysis_for(structure) else {
+            let part = self.analysis_done.as_ref().map_or(0.0, |(d, n)| {
+                d.load(std::sync::atomic::Ordering::Relaxed) as f32 / (*n).max(1) as f32
+            });
+            return Some(row(format!("working · {}%", (part * 100.0) as u32), true, cx).into_any_element());
+        };
+        let names = Self::analysis_names(&a);
+        let pick = self.analysis_pick.min(names.len() - 1);
+        let frames = structure.frame_count();
+        let dark = theme::dark();
+        let (w, h) = (PLOT as usize * 2, 220usize);
+        let key = (Arc::as_ptr(&a) as usize, pick, dark);
+        let image = {
+            let mut cache = self.analysis_image.borrow_mut();
+            match cache.as_ref().filter(|(k, _)| *k == key) {
+                Some((_, image)) => image.clone(),
+                None => {
+                    let image = analysis_picture(&a, pick, frames, w, h, dark);
+                    *cache = Some((key, image.clone()));
+                    image
+                }
+            }
+        };
+        // Along time, or along the chain for RMSF.
+        let timeline = pick != a.series.len();
+        let value_at = |t: f32| -> Option<String> {
+            if let Some(series) = a.series.get(pick) {
+                let frame = (t * (frames - 1) as f32).round() as usize;
+                let (f, v) = series.points.iter().min_by_key(|(f, _)| f.abs_diff(frame))?;
+                Some(format!("frame {} · {} {}", f + 1, figure(*v), series.unit))
+            } else if pick == a.series.len() {
+                let i = ((t * a.rmsf.len() as f32) as usize).min(a.rmsf.len().checked_sub(1)?);
+                let v = a.rmsf[i];
+                let what = if a.rmsf_by_residue {
+                    let r = structure.residues.iter().filter(|r| r.ca.is_some()).nth(i)?;
+                    format!("{} {}", r.name, r.seq)
+                } else {
+                    format!("atom {}", i + 1)
+                };
+                Some(format!("{what} · {} Å", figure(v)))
+            } else {
+                let (f, _) = a.ss.get(((t * a.ss.len() as f32) as usize).min(a.ss.len() - 1))?;
+                Some(format!("frame {}", f + 1))
+            }
+        };
+        let caption = self
+            .analysis_hover
+            .and_then(value_at)
+            .or_else(|| a.series.get(pick).map(|s| format!("{} through {} frames", s.name, thousands(frames))))
+            .unwrap_or_else(|| if pick == a.series.len() { "RMSF along the chain".into() } else { "helix · strand · coil".into() });
+        let at = structure.frame as f32 / (frames - 1).max(1) as f32;
+        let store = self.analysis_bounds.clone();
+        let pills = div().flex().flex_wrap().gap(px(4.)).children(names.iter().enumerate().map(|(i, n)| {
+            pill_keyed(("analysis", i), *n, i == pick)
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.analysis_pick = i;
+                    this.analysis_hover = None;
+                    cx.notify();
+                }))
+        }));
+        let plot = div()
+            .id("analysis-plot")
+            .debug_selector(|| "analysis-plot".into())
+            .relative()
+            .w(px(PLOT))
+            .h(px(110.))
+            .rounded(px(4.))
+            .overflow_hidden()
+            .border_1()
+            .border_color(theme::border())
+            .child(gpui::img(gpui::ImageSource::Render(image)).absolute().inset_0().size_full())
+            .child(canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {}).absolute().inset_0().size_full())
+            .when(timeline, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px((PLOT - 2.0) * at))
+                        .w(px(1.5))
+                        .bg(gpui::Hsla { a: 0.6, ..theme::ink() }),
+                )
+            })
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                let b = this.analysis_bounds.get();
+                let w = f32::from(b.size.width).max(1.0);
+                let t = (f32::from(e.position.x - b.origin.x) / w).clamp(0.0, 1.0);
+                this.analysis_hover = Some(t);
+                cx.notify();
+            }))
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered {
+                    this.analysis_hover = None;
+                    cx.notify();
+                }
+            }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let (Some(t), true) = (this.analysis_hover, timeline) {
+                    this.go_to_plotted(t, cx);
+                }
+            }));
+        let fit = div()
+            .id("fit-frames")
+            .px(px(7.))
+            .py(px(2.))
+            .rounded(px(4.))
+            .text_size(px(10.))
+            .cursor_pointer()
+            .text_color(theme::muted())
+            .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
+            .child("Fit frames onto the first")
+            .on_click(cx.listener(|this, _, _, cx| {
+                if let Err(e) = this.periodic(Periodic::Fit, cx) {
+                    this.error = Some(format!("{e}").into());
+                }
+            }));
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .child(row(caption, true, cx))
+                .child(div().pt(px(10.)).flex().flex_col().gap(px(8.)).child(pills).child(plot).child(div().flex().child(fit)))
+                .into_any_element(),
+        )
     }
 
     /// The volume's surface as last built, if it is shown.
@@ -3461,6 +3787,8 @@ pub(crate) enum Periodic {
     Whole,
     InTime,
     Replicate([usize; 3]),
+    /// Every frame laid over the first.
+    Fit,
     Original,
 }
 
@@ -7128,7 +7456,8 @@ impl Viewer {
                     .children(self.periodic_tools(structure, cx))
                     .when(structure.frame_count() > 1, |d| {
                         d.child(spec("frames", thousands(structure.frame_count()), false))
-                    }),
+                    })
+                    .children(self.trajectory_analysis(structure, cx)),
             )
             .children(self.source_line(structure));
         vec![head.into_any_element(), atoms.into_any_element(), facts.into_any_element()]
@@ -7384,6 +7713,7 @@ impl Viewer {
                     .children(self.ramachandran(structure, cx))
                     .children(self.pae_plot(structure, cx)),
             )
+            .children(self.trajectory_analysis(structure, cx))
             .when(structure.frame_count() > 1, |d| {
                 d.child(
                     div()
@@ -8762,6 +9092,49 @@ mod ui_tests {
         view.update(cx, |this, cx| this.finish(Ok(alone), cx));
         cx.run_until_parked();
         assert!(view.update(cx, |this, _| !this.base.tris.is_empty()));
+    }
+
+    #[gpui::test]
+    fn a_trajectory_is_analysed_and_its_plot_goes_to_a_frame(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        let crambin = formats::load_bytes(SAMPLES[2].file, SAMPLES[2].bytes.to_vec()).unwrap();
+        let frames: Vec<crate::protein::Snapshot> = (0..6)
+            .map(|k| crate::protein::Snapshot {
+                step: None,
+                pos: crambin.atoms.iter().map(|a| [a.pos[0] * (1.0 + 0.02 * k as f32), a.pos[1], a.pos[2]]).collect(),
+                cell: None,
+            })
+            .collect();
+        let moving = crambin.with_frames(frames).unwrap();
+        view.update(cx, |this, cx| this.show(moving, cx));
+        cx.run_until_parked();
+        view.update(cx, |this, cx| this.run_command("analyse", cx)).unwrap();
+        for _ in 0..20 {
+            cx.executor().advance_clock(Duration::from_millis(300));
+            cx.run_until_parked();
+        }
+        let names = view.update(cx, |this, _| {
+            let s = this.structure.clone().unwrap();
+            this.analysis_for(&s).map(|a| Viewer::analysis_names(&a))
+        });
+        let names = names.expect("worked out");
+        assert_eq!(&names[..2], ["RMSD", "Rg"]);
+        assert!(names.contains(&"RMSF") && names.contains(&"Secondary"));
+        // Stretched further each frame, it drifts further each frame.
+        let rising = view.update(cx, |this, _| {
+            let s = this.structure.clone().unwrap();
+            let a = this.analysis_for(&s).unwrap();
+            a.series[0].points.windows(2).all(|w| w[1].1 > w[0].1)
+        });
+        assert!(rising);
+        // The plot is laid out, and a click near its right end goes to the
+        // last frame.
+        assert!(cx.debug_bounds("analysis-plot").is_some());
+        view.update(cx, |this, cx| this.go_to_plotted(0.98, cx));
+        assert_eq!(view.update(cx, |this, _| this.structure.as_ref().unwrap().frame), 5);
+        // Fitting changes the frames, so the analysis is worked out again.
+        view.update(cx, |this, cx| this.run_command("fit", cx)).unwrap();
+        assert!(view.update(cx, |this, _| this.analysis_task.is_some()));
     }
 
     #[gpui::test]

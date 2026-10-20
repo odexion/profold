@@ -15,6 +15,16 @@
 - **Ray-traced films.** The film dialog's *Ray traced* switch, or
   `movie … trace=on`, traces every frame the same way.
 
+### Trajectories
+- **Analysis.** *Trajectory analysis* in the side panel plots, frame by
+  frame, the RMSD from the first frame (each fitted onto it by Kabsch), the
+  radius of gyration, the solvent-accessible surface (Shrake–Rupley) and the
+  polar contacts between residues; the RMSF along the chain; and helices
+  and strands through time. It is worked out in the background, a line
+  marks the frame shown, and a click on a plot goes to that frame. *Fit
+  frames onto the first* takes out the tumbling. `analyse` and `fit` in the
+  console.
+
 ### Volumes
 - **Isosurfaces.** A Gaussian cube file's grid is read at last, and CCP4,
   MRC and OpenDX maps open too: laid over the structure shown, or on their

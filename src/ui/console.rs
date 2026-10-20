@@ -34,6 +34,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("perspective on|off, slab on|off", "projection mode and clipping slab"),
     ("wrap, whole, unwrap, original", "put atoms in the cell, mend molecules cut by its walls, follow a trajectory through them, or undo"),
     ("replicate <a> <b> <c>", "repeat the cell, as in replicate 2 2 1"),
+    ("analyse, fit", "plot RMSD, Rg, SASA, contacts, RMSF and secondary structure over a trajectory; fit its frames onto the first"),
     ("iso <level>|on|off|mesh|auto", "draw the volume's surface at a level, from a cube file or a map"),
     ("trace on|off", "ray trace the still view and saved images: shadows and ambient occlusion"),
     ("water on|off, hydrogens on|off", "toggle display"),
@@ -309,6 +310,15 @@ impl Viewer {
             "whole" => self.periodic(crate::ui::app::Periodic::Whole, cx)?,
             "unwrap" => self.periodic(crate::ui::app::Periodic::InTime, cx)?,
             "original" => self.periodic(crate::ui::app::Periodic::Original, cx)?,
+            "fit" => self.periodic(crate::ui::app::Periodic::Fit, cx)?,
+            "analyse" | "analyze" | "analysis" => {
+                if shown()?.frame_count() < 2 {
+                    bail!("there is one frame");
+                }
+                self.analysis_open = true;
+                self.start_analysis(cx);
+                "working out the trajectory's analysis; it is in the panel".into()
+            }
             "replicate" => {
                 let n: Vec<usize> = rest.split([' ', 'x', '×']).filter(|w| !w.is_empty()).map(str::parse).collect::<Result<_, _>>().context("replicate takes three counts, as in replicate 2 2 1")?;
                 let n = match n[..] {
