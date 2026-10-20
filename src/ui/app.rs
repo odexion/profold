@@ -2970,9 +2970,9 @@ impl Viewer {
         if width == 0 || height == 0 {
             return;
         }
+        let camera = self.camera.resized((width, height), (width * scale, height * scale));
         let (width, height) = (width * scale, height * scale);
         let scene = self.scene.clone();
-        let camera = self.camera;
         let style = self.style;
         let transparent = self.transparent;
         // The labels where their atoms are, set at the picture's scale.

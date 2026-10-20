@@ -59,6 +59,11 @@
 - **Selecting by value.** Selections compare: `c_pe < -3`, `vx >= 0.5 and
   z > 10`, `b < 30`, with `x`, `y`, `z` and `b` always there.
 
+### Fixes
+- **Panned pictures.** A PNG saved at 2× or 3×, or from the console, kept the
+  view's pan at the screen's size, so a view panned off centre came out
+  shifted. The pan now grows with the picture, as it already did in films.
+
 ### Viewing
 - **⌘-click to focus** (Ctrl-click on Linux and Windows) picks an atom or
   residue and flies the view to it, as the card's Focus button does.

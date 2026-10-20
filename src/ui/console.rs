@@ -426,13 +426,14 @@ impl Viewer {
                     "cif" | "mmcif" => std::fs::write(path, write::mmcif(&s, |_| true))?,
                     "profold" => std::fs::write(path, self.session_json().unwrap_or_default())?,
                     "png" => {
-                        let (w, h) = self.cache.borrow().size;
-                        let (w, h) = (w.max(640), h.max(480));
+                        let shown = self.cache.borrow().size;
+                        let (w, h) = (shown.0.max(640), shown.1.max(480));
+                        let camera = self.camera.resized(shown, (w, h));
                         let frame = if self.traced {
-                            crate::trace::render(&self.scene, &self.camera, w, h, crate::theme::view(), self.style, &Default::default())
+                            crate::trace::render(&self.scene, &camera, w, h, crate::theme::view(), self.style, &Default::default())
                                 .expect("not cancelled")
                         } else {
-                            render::render(&self.scene, &self.camera, w, h, crate::theme::view(), self.style)
+                            render::render(&self.scene, &camera, w, h, crate::theme::view(), self.style)
                         };
                         let mut rgba = frame.bgra;
                         for p in rgba.chunks_exact_mut(4) {

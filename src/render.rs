@@ -747,6 +747,14 @@ impl Camera {
         self.orientation = mul(tilt(x.to_radians()), spin(y.to_radians()));
     }
 
+    /// The same view drawn `to` pixels in size rather than `from`: the pan,
+    /// counted in pixels, grows with the frame's shorter side, as the scale
+    /// does, so the molecule sits where it did.
+    pub fn resized(&self, from: (usize, usize), to: (usize, usize)) -> Self {
+        let k = to.0.min(to.1) as f32 / from.0.min(from.1).max(1) as f32;
+        Camera { pan: [self.pan[0] * k, self.pan[1] * k], ..*self }
+    }
+
     pub fn frame(structure: &Structure) -> Self {
         Self::frame_all(&[structure])
     }
@@ -4277,6 +4285,31 @@ mod gpu_tests {
 
     /// The card draws what the CPU draws: past the odd pixel along an edge,
     /// where the two round a pixel centre differently, the frames agree.
+    #[test]
+    fn a_panned_view_saved_larger_keeps_the_molecule_where_it_was() {
+        let s = crate::formats::load_bytes("1crn.pdb.gz", include_bytes!("../samples/1crn.pdb.gz").to_vec()).unwrap();
+        let scene = build_scene(&s, Repr::Spacefill, Coloring::Chain, 1.0, Style::Flat, Palette::Spectrum, false, false, &Appearance::default());
+        let mut cam = Camera::frame(&s);
+        cam.zoom = 0.5;
+        cam.pan = [60.0, -30.0];
+        let page = [1.0, 1.0, 1.0];
+        // Where the molecule's middle is, as a share of the frame.
+        let middle = |f: &Frame| {
+            let (mut x, mut y, mut n) = (0.0, 0.0, 0.0);
+            for (i, p) in f.bgra.chunks_exact(4).enumerate() {
+                if p[..3] != [255, 255, 255] {
+                    x += (i % f.width) as f32;
+                    y += (i / f.width) as f32;
+                    n += 1.0;
+                }
+            }
+            (x / n / f.width as f32, y / n / f.height as f32)
+        };
+        let small = middle(&render_cpu(&scene, &cam, 300, 200, page, Style::Flat));
+        let big = middle(&render_cpu(&scene, &cam.resized((300, 200), (900, 600)), 900, 600, page, Style::Flat));
+        assert!((small.0 - big.0).abs() < 0.01 && (small.1 - big.1).abs() < 0.01, "{small:?} against {big:?}");
+    }
+
     #[test]
     fn atoms_take_the_ramp_by_a_property_from_low_to_high() {
         let dump = "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n3\nITEM: BOX BOUNDS pp pp pp\n0 4\n0 4\n0 4\n\
