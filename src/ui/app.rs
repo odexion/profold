@@ -211,24 +211,6 @@ struct PlotCache {
 /// The side of each plot, in pixels: the panel's width inside its margins.
 const PLOT: f32 = PANEL_WIDTH - 40.0;
 
-/// The structure's name in bold serif, as large as fits on one line across
-/// the panel: short names at 30px, longer ones smaller, down to 20px, past
-/// which it wraps.
-fn display_name(name: impl Into<SharedString>) -> gpui::Div {
-    let name: SharedString = name.into();
-    // Charter Bold averages a little over half an em per character.
-    let chars = name.chars().count().max(1) as f32;
-    let size = (PLOT / (chars * 0.56)).clamp(20., 30.);
-    div()
-        .font_family(theme::SERIF)
-        .font_weight(gpui::FontWeight::BOLD)
-        .text_size(px(size))
-        .line_height(px((size * 1.15).round()))
-        .text_color(theme::ink())
-        .overflow_hidden()
-        .child(name)
-}
-
 /// A small picture from colours row by row, as GPUI takes them.
 fn picture(
     width: usize,
@@ -8743,7 +8725,15 @@ impl Viewer {
                     .text_color(theme::faint())
                     .child(spaced(&category.to_uppercase())),
             )
-            .child(display_name(name))
+            .child(
+                div()
+                    .font_family(theme::SERIF)
+                    .text_size(px(27.))
+                    .line_height(px(31.))
+                    .text_color(theme::ink())
+                    .overflow_hidden()
+                    .child(name),
+            )
             .when_some(blurb, |d, blurb| {
                 d.child(
                     div()
@@ -8961,7 +8951,14 @@ impl Viewer {
                         .to_uppercase()
                     ))),
             )
-            .child(display_name(name))
+            .child(
+                div()
+                    .font_family(theme::SERIF)
+                    .text_size(px(27.))
+                    .line_height(px(31.))
+                    .text_color(theme::ink())
+                    .child(name),
+            )
             .when_some(blurb, |d, blurb| {
                 d.child(
                     div()

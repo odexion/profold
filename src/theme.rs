@@ -172,18 +172,19 @@ pub const MONO: &str = "Consolas";
 #[cfg(not(any(target_os = "macos", windows)))]
 pub const MONO: &str = "DejaVu Sans Mono";
 
-/// Display serif, used only for the wordmark and the name of the structure
-/// on screen: Charis SIL Bold, Charter's open twin, shipped inside the app so
-/// it is the same on every system.
+/// Display serif, used only for the wordmark (bold) and the name of the
+/// structure on screen (regular): Charis SIL, Charter's open twin, shipped
+/// inside the app so it is the same on every system.
 pub const SERIF: &str = "Charis SIL";
 
 /// Registers the fonts the app carries, before any window draws.
 pub fn add_fonts(cx: &mut gpui::App) {
+    static CHARIS_REGULAR: &[u8] = include_bytes!("../assets/fonts/CharisSIL-Regular.ttf");
     static CHARIS_BOLD: &[u8] = include_bytes!("../assets/fonts/CharisSIL-Bold.ttf");
-    if let Err(e) = cx
-        .text_system()
-        .add_fonts(vec![std::borrow::Cow::Borrowed(CHARIS_BOLD)])
-    {
+    if let Err(e) = cx.text_system().add_fonts(vec![
+        std::borrow::Cow::Borrowed(CHARIS_REGULAR),
+        std::borrow::Cow::Borrowed(CHARIS_BOLD),
+    ]) {
         eprintln!("profold: couldn't load the display font: {e}");
     }
 }
