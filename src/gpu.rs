@@ -422,7 +422,16 @@ impl Gpu {
                 [m[2][0], m[2][1], m[2][2], 0.0],
             ],
             center: [cam.center[0], cam.center[1], cam.center[2], 0.0],
-            view: [cx, cy, scale, if cam.perspective { 1.0 / (crate::render::Camera::EYE * cam.radius) } else { 0.0 }],
+            view: [
+                cx,
+                cy,
+                scale,
+                if cam.perspective {
+                    1.0 / (crate::render::Camera::EYE * cam.radius)
+                } else {
+                    0.0
+                },
+            ],
             size: [
                 width as f32,
                 height as f32,
@@ -430,12 +439,7 @@ impl Gpu {
                 crate::render::ao_radius(width, height),
             ],
             depth: [zmax + 1.0, span + 2.0, zmin, span],
-            page: [
-                page[0],
-                page[1],
-                page[2],
-                style.fog(),
-            ],
+            page: [page[0], page[1], page[2], style.fog()],
             params: [
                 (span * 0.012).max(0.45),
                 style.code(),

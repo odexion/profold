@@ -119,10 +119,17 @@ pub fn parse_data(text: &str, id: String, source: Source) -> Result<Structure> {
                 _ => {}
             },
             "Masses" if f.len() >= 2 => {
-                masses.push((f[0].to_string(), f[1].parse().unwrap_or(0.0), comment.to_string()));
+                masses.push((
+                    f[0].to_string(),
+                    f[1].parse().unwrap_or(0.0),
+                    comment.to_string(),
+                ));
             }
             "Atoms" => {
-                atom_lines.push((f.iter().map(|s| s.to_string()).collect(), comment.to_string()));
+                atom_lines.push((
+                    f.iter().map(|s| s.to_string()).collect(),
+                    comment.to_string(),
+                ));
             }
             "Bonds" if f.len() >= 4 => {
                 bond_lines.push([f[2].to_string(), f[3].to_string()]);
@@ -143,7 +150,11 @@ pub fn parse_data(text: &str, id: String, source: Source) -> Result<Structure> {
         .iter()
         .map(|(t, m, comment)| {
             let named = Element::from_symbol(comment.split_whitespace().next().unwrap_or(""));
-            let e = if named.is_known() { named } else { Element::from_mass(*m) };
+            let e = if named.is_known() {
+                named
+            } else {
+                Element::from_mass(*m)
+            };
             (t.clone(), e)
         })
         .collect();
@@ -188,12 +199,7 @@ pub fn parse_data(text: &str, id: String, source: Source) -> Result<Structure> {
     }
     b.bonds = bond_lines
         .iter()
-        .filter_map(|[a, c]| {
-            Some([
-                *index.get(&a.parse().ok()?)?,
-                *index.get(&c.parse().ok()?)?,
-            ])
-        })
+        .filter_map(|[a, c]| Some([*index.get(&a.parse().ok()?)?, *index.get(&c.parse().ok()?)?]))
         .collect();
     Ok(b.finish(id, title, source))
 }
@@ -249,7 +255,8 @@ impl Columns {
 fn columns(names: &[&str]) -> Result<Columns> {
     let at = |n: &str| names.iter().position(|c| *c == n);
     let pick = |sets: &[[&str; 3]]| {
-        sets.iter().find_map(|s| Some([at(s[0])?, at(s[1])?, at(s[2])?]))
+        sets.iter()
+            .find_map(|s| Some([at(s[0])?, at(s[1])?, at(s[2])?]))
     };
     let (pos, scaled) = if let Some(p) = pick(&[["x", "y", "z"], ["xu", "yu", "zu"]]) {
         (p, false)
@@ -260,12 +267,15 @@ fn columns(names: &[&str]) -> Result<Columns> {
     };
     // Positions in any form, and image flags, are where an atom is rather
     // than something about it.
-    const PLACE: [&str; 15] =
-        ["x", "y", "z", "xu", "yu", "zu", "xs", "ys", "zs", "xsu", "ysu", "zsu", "ix", "iy", "iz"];
+    const PLACE: [&str; 15] = [
+        "x", "y", "z", "xu", "yu", "zu", "xs", "ys", "zs", "xsu", "ysu", "zsu", "ix", "iy", "iz",
+    ];
     let extra = names
         .iter()
         .enumerate()
-        .filter(|(_, n)| !PLACE.contains(n) && !["id", "type", "element", "mass", "mol"].contains(n))
+        .filter(|(_, n)| {
+            !PLACE.contains(n) && !["id", "type", "element", "mass", "mol"].contains(n)
+        })
         .map(|(i, n)| (i, n.to_string()))
         .collect();
     Ok(Columns {
@@ -434,7 +444,9 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
         .find_map(|l| l.trim().strip_prefix("ITEM: ATOMS"))
         .map(|h| {
             let names: Vec<&str> = h.split_whitespace().collect();
-            columns(&names).map(|c| c.extra.into_iter().map(|e| e.1).collect()).unwrap_or_default()
+            columns(&names)
+                .map(|c| c.extra.into_iter().map(|e| e.1).collect())
+                .unwrap_or_default()
         })
         .unwrap_or_default();
     let snapshot = |f: DumpFrame| -> Option<(Snapshot, Vec<Vec<f32>>)> {
@@ -443,7 +455,8 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
             &order
         } else {
             own = by_id(&f.ids);
-            if own.len() != sorted.len() || own.iter().zip(&sorted).any(|(&i, id)| f.ids[i] != *id) {
+            if own.len() != sorted.len() || own.iter().zip(&sorted).any(|(&i, id)| f.ids[i] != *id)
+            {
                 return None;
             }
             &own
@@ -466,7 +479,12 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
     let first_extra: Vec<Vec<f32>> = first.extra.clone();
     let rest: Vec<Vec<Option<(Snapshot, Vec<Vec<f32>>)>>> = pieces[1..]
         .par_iter()
-        .map(|piece| Ok(read_frames(piece, false)?.into_iter().map(snapshot).collect()))
+        .map(|piece| {
+            Ok(read_frames(piece, false)?
+                .into_iter()
+                .map(snapshot)
+                .collect())
+        })
         .collect::<Result<_>>()?;
     let (frames, extras): (Vec<Snapshot>, Vec<Vec<Vec<f32>>>) = head
         .map(snapshot)
@@ -500,14 +518,28 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
         .into_iter()
         .enumerate()
         .map(|(k, name)| {
-            let values: Vec<f32> =
-                order.iter().map(|&i| first_extra.get(k).and_then(|v| v.get(i)).copied().unwrap_or(f32::NAN)).collect();
+            let values: Vec<f32> = order
+                .iter()
+                .map(|&i| {
+                    first_extra
+                        .get(k)
+                        .and_then(|v| v.get(i))
+                        .copied()
+                        .unwrap_or(f32::NAN)
+                })
+                .collect();
             let frames = if many {
-                std::iter::once(values.clone()).chain(extras.iter().map(|e| e[k].clone())).collect()
+                std::iter::once(values.clone())
+                    .chain(extras.iter().map(|e| e[k].clone()))
+                    .collect()
             } else {
                 Vec::new()
             };
-            crate::protein::Property { name, values, frames: std::sync::Arc::new(frames) }
+            crate::protein::Property {
+                name,
+                values,
+                frames: std::sync::Arc::new(frames),
+            }
         })
         .collect();
     Ok(s)

@@ -224,7 +224,11 @@ fn parse_mmcif(text: &str, id: String, source: Source) -> Result<Structure> {
             });
         }
         if !frame.is_empty() {
-            b.frames.push(Snapshot { step: None, pos: frame, cell: None });
+            b.frames.push(Snapshot {
+                step: None,
+                pos: frame,
+                cell: None,
+            });
         }
         break;
     }
@@ -239,9 +243,16 @@ fn parse_mmcif(text: &str, id: String, source: Source) -> Result<Structure> {
 /// The assemblies an mmCIF file describes, from its `pdbx_struct_assembly`,
 /// `_gen` and `oper_list` categories, which may be loops or single rows.
 /// Only those categories are read, so the atom sites are not tokenised again.
-fn mmcif_assemblies(text: &str, label_to_auth: &std::collections::HashMap<String, String>) -> Vec<crate::assembly::Assembly> {
+fn mmcif_assemblies(
+    text: &str,
+    label_to_auth: &std::collections::HashMap<String, String>,
+) -> Vec<crate::assembly::Assembly> {
     use crate::assembly::{expand, Assembly, Part};
-    const WANTED: [&str; 3] = ["_pdbx_struct_assembly.", "_pdbx_struct_assembly_gen.", "_pdbx_struct_oper_list."];
+    const WANTED: [&str; 3] = [
+        "_pdbx_struct_assembly.",
+        "_pdbx_struct_assembly_gen.",
+        "_pdbx_struct_oper_list.",
+    ];
     // Categories are separated by lines of a lone #.
     let mut picked = String::new();
     let mut block = String::new();
@@ -271,7 +282,10 @@ fn mmcif_assemblies(text: &str, label_to_auth: &std::collections::HashMap<String
     let (items, tables) = read_blocks(&picked);
     // Each category as rows of (column, value), loop or not.
     let rows = |prefix: &str| -> Vec<std::collections::HashMap<String, String>> {
-        if let Some(t) = tables.iter().find(|t| t.cols.first().is_some_and(|c| c.starts_with(prefix))) {
+        if let Some(t) = tables
+            .iter()
+            .find(|t| t.cols.first().is_some_and(|c| c.starts_with(prefix)))
+        {
             return t
                 .rows
                 .iter()
@@ -289,7 +303,11 @@ fn mmcif_assemblies(text: &str, label_to_auth: &std::collections::HashMap<String
             .filter(|(k, _)| k.starts_with(prefix))
             .map(|(k, v)| (k[prefix.len()..].to_string(), unquote(v)))
             .collect();
-        if one.is_empty() { Vec::new() } else { vec![one] }
+        if one.is_empty() {
+            Vec::new()
+        } else {
+            vec![one]
+        }
     };
     let mut ops = std::collections::HashMap::new();
     for r in rows("_pdbx_struct_oper_list.") {
@@ -308,11 +326,20 @@ fn mmcif_assemblies(text: &str, label_to_auth: &std::collections::HashMap<String
     }
     let names: std::collections::HashMap<String, String> = rows("_pdbx_struct_assembly.")
         .into_iter()
-        .filter_map(|r| Some((r.get("id")?.clone(), r.get("oligomeric_details").cloned().unwrap_or_default())))
+        .filter_map(|r| {
+            Some((
+                r.get("id")?.clone(),
+                r.get("oligomeric_details").cloned().unwrap_or_default(),
+            ))
+        })
         .collect();
     let mut out: Vec<Assembly> = Vec::new();
     for r in rows("_pdbx_struct_assembly_gen.") {
-        let (Some(id), Some(expr), Some(asyms)) = (r.get("assembly_id"), r.get("oper_expression"), r.get("asym_id_list")) else {
+        let (Some(id), Some(expr), Some(asyms)) = (
+            r.get("assembly_id"),
+            r.get("oper_expression"),
+            r.get("asym_id_list"),
+        ) else {
             continue;
         };
         let mut chains: Vec<String> = Vec::new();
@@ -323,7 +350,10 @@ fn mmcif_assemblies(text: &str, label_to_auth: &std::collections::HashMap<String
                 }
             }
         }
-        let part = Part { chains, ops: expand(expr, &ops) };
+        let part = Part {
+            chains,
+            ops: expand(expr, &ops),
+        };
         if part.chains.is_empty() || part.ops.is_empty() {
             continue;
         }
@@ -422,7 +452,10 @@ fn read_blocks(text: &str) -> (Vec<(String, String)>, Vec<Table>) {
                 i += 1;
             }
             if !cols.is_empty() {
-                let rows = values.chunks_exact(cols.len()).map(|c| c.to_vec()).collect();
+                let rows = values
+                    .chunks_exact(cols.len())
+                    .map(|c| c.to_vec())
+                    .collect();
                 tables.push(Table { cols, rows });
             }
         } else if t.starts_with('_') {
@@ -473,7 +506,11 @@ fn parse_op(s: &str) -> Option<Op> {
                 'x' | 'y' | 'z' => {
                     let k = (c as u8 - b'x') as usize;
                     // "2x" would be odd, but costs nothing to allow.
-                    let scale = if num.is_empty() { 1.0 } else { num.parse().ok()? };
+                    let scale = if num.is_empty() {
+                        1.0
+                    } else {
+                        num.parse().ok()?
+                    };
                     num.clear();
                     op[row][k] += sign * scale;
                     sign = 1.0;
@@ -513,7 +550,8 @@ fn parse_small(text: &str, id: String, source: Source) -> Result<Structure> {
     };
 
     let Some(sites) = tables.iter().find(|t| {
-        t.col(&["_atom_site_fract_x", "_atom_site_cartn_x"]).is_some()
+        t.col(&["_atom_site_fract_x", "_atom_site_cartn_x"])
+            .is_some()
     }) else {
         bail!("no atom sites in CIF file");
     };
@@ -539,7 +577,13 @@ fn parse_small(text: &str, id: String, source: Source) -> Result<Structure> {
             Some(t.rows.iter().filter_map(|r| parse_op(&r[c])).collect())
         })
         .filter(|ops: &Vec<Op>| !ops.is_empty())
-        .unwrap_or_else(|| vec![[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]]);
+        .unwrap_or_else(|| {
+            vec![[
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+            ]]
+        });
 
     let mut b = Builder::new("CIF");
     b.cell = cell;
@@ -555,7 +599,10 @@ fn parse_small(text: &str, id: String, source: Source) -> Result<Structure> {
         let element = i_symbol
             .map(|i| {
                 // Type symbols carry charges: "O2-", "Fe3+".
-                let sym: String = row[i].chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+                let sym: String = row[i]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphabetic())
+                    .collect();
                 Element::from_symbol(&sym)
             })
             .filter(|e| e.is_known())

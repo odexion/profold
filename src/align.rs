@@ -5,7 +5,6 @@
 //! eigenvalue. That avoids needing a general SVD, and unlike the determinant
 //! fix-up on a rotation matrix it can never fall into a reflection.
 
-
 use anyhow::{bail, Result};
 
 use crate::protein::Structure;
@@ -129,7 +128,9 @@ pub(crate) fn kabsch(p: &[[f64; 3]], q: &[[f64; 3]]) -> ([[f64; 3]; 3], [f64; 3]
     ];
 
     let (values, vectors) = jacobi(f);
-    let best = (0..4).max_by(|a, b| values[*a].total_cmp(&values[*b])).unwrap();
+    let best = (0..4)
+        .max_by(|a, b| values[*a].total_cmp(&values[*b]))
+        .unwrap();
     let quat = [
         vectors[0][best],
         vectors[1][best],
@@ -158,10 +159,14 @@ pub struct Overlay {
 /// is. Every residue paired is given its deviation, kept or not.
 pub fn superpose(reference: &mut Structure, mobile: &mut Structure) -> Result<Overlay> {
     let traced = |s: &Structure| -> Vec<usize> {
-        (0..s.residues.len()).filter(|&r| s.residues[r].ca.is_some()).collect()
+        (0..s.residues.len())
+            .filter(|&r| s.residues[r].ca.is_some())
+            .collect()
     };
     let (ra, rb) = (traced(reference), traced(mobile));
-    let seq = |s: &Structure, r: &[usize]| -> Vec<char> { r.iter().map(|&i| s.residues[i].code).collect() };
+    let seq = |s: &Structure, r: &[usize]| -> Vec<char> {
+        r.iter().map(|&i| s.residues[i].code).collect()
+    };
     let pairs: Vec<(usize, usize)> = align_sequences(&seq(reference, &ra), &seq(mobile, &rb))
         .into_iter()
         .map(|(i, j)| (ra[i], rb[j]))
@@ -169,26 +174,48 @@ pub fn superpose(reference: &mut Structure, mobile: &mut Structure) -> Result<Ov
     if pairs.len() < 3 {
         bail!("sequence identity is too low for superposition");
     }
-    let identical = pairs.iter().filter(|(a, b)| reference.residues[*a].code == mobile.residues[*b].code).count();
-    let ca = |s: &Structure, r: usize| s.atoms[s.residues[r].ca.unwrap() as usize].pos.map(f64::from);
+    let identical = pairs
+        .iter()
+        .filter(|(a, b)| reference.residues[*a].code == mobile.residues[*b].code)
+        .count();
+    let ca = |s: &Structure, r: usize| {
+        s.atoms[s.residues[r].ca.unwrap() as usize]
+            .pos
+            .map(f64::from)
+    };
 
     let mut kept = pairs.clone();
-    let mut fit = ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0; 3], [0.0; 3]);
+    let mut fit = (
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        [0.0; 3],
+        [0.0; 3],
+    );
     let moved = |fit: &([[f64; 3]; 3], [f64; 3], [f64; 3]), p: [f64; 3]| -> [f64; 3] {
         let (r, cp, cq) = fit;
         let v = [p[0] - cp[0], p[1] - cp[1], p[2] - cp[2]];
         std::array::from_fn(|i| r[i][0] * v[0] + r[i][1] * v[1] + r[i][2] * v[2] + cq[i])
     };
-    let distance = |a: [f64; 3], b: [f64; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    let distance = |a: [f64; 3], b: [f64; 3]| {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    };
     for _ in 0..5 {
         let p: Vec<[f64; 3]> = kept.iter().map(|&(_, b)| ca(mobile, b)).collect();
         let q: Vec<[f64; 3]> = kept.iter().map(|&(a, _)| ca(reference, a)).collect();
         fit = kabsch(&p, &q);
-        let d: Vec<f64> = p.iter().zip(&q).map(|(p, q)| distance(moved(&fit, *p), *q)).collect();
+        let d: Vec<f64> = p
+            .iter()
+            .zip(&q)
+            .map(|(p, q)| distance(moved(&fit, *p), *q))
+            .collect();
         let rmsd = (d.iter().map(|d| d * d).sum::<f64>() / d.len() as f64).sqrt();
         // Twice the deviation, or 2 Å for a fit already close.
         let cut = (2.0 * rmsd).max(2.0);
-        let next: Vec<(usize, usize)> = kept.iter().zip(&d).filter(|(_, d)| **d <= cut).map(|(k, _)| *k).collect();
+        let next: Vec<(usize, usize)> = kept
+            .iter()
+            .zip(&d)
+            .filter(|(_, d)| **d <= cut)
+            .map(|(k, _)| *k)
+            .collect();
         if next.len() == kept.len() || next.len() < 3 {
             break;
         }
@@ -204,7 +231,10 @@ pub fn superpose(reference: &mut Structure, mobile: &mut Structure) -> Result<Ov
         reference.deviation[a] = d;
         mobile.deviation[b] = d;
     }
-    let total: f64 = kept.iter().map(|&(a, b)| distance(ca(reference, a), ca(mobile, b)).powi(2)).sum();
+    let total: f64 = kept
+        .iter()
+        .map(|&(a, b)| distance(ca(reference, a), ca(mobile, b)).powi(2))
+        .sum();
     Ok(Overlay {
         rmsd: (total / kept.len() as f64).sqrt() as f32,
         matched: kept.len(),
@@ -396,7 +426,9 @@ mod tests {
     use super::*;
 
     fn sample(name: &str) -> Structure {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(name);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples")
+            .join(name);
         crate::formats::load_bytes(name, std::fs::read(path).unwrap()).unwrap()
     }
 

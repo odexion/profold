@@ -978,9 +978,17 @@ mod tests {
 
     #[test]
     fn glass_blends_over_what_is_behind_it_as_in_the_viewport() {
-        let ball = |c: V, color: V, alpha: f32| render::Sphere { c, r: 1.0, color, alpha };
+        let ball = |c: V, color: V, alpha: f32| render::Sphere {
+            c,
+            r: 1.0,
+            color,
+            alpha,
+        };
         let scene = Scene {
-            spheres: vec![ball([0.0, 0.0, 0.0], [0.2, 0.3, 0.9], 1.0), ball([0.3, 0.2, 2.0], [0.9, 0.3, 0.2], 0.5)],
+            spheres: vec![
+                ball([0.0, 0.0, 0.0], [0.2, 0.3, 0.9], 1.0),
+                ball([0.3, 0.2, 2.0], [0.9, 0.3, 0.2], 0.5),
+            ],
             ..Scene::default()
         };
         let cam = Camera {

@@ -23,7 +23,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
     let mut blocks: Vec<(Vec<(Element, [f32; 3])>, Option<Cell>)> = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        let key = lines[i].split_whitespace().next().unwrap_or("").to_ascii_uppercase();
+        let key = lines[i]
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_uppercase();
         match key.as_str() {
             "PRIMVEC" => {
                 let mut v = [[0.0f32; 3]; 3];
@@ -50,7 +54,12 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
                     .take(n)
                     .filter_map(|l| {
                         let f: Vec<&str> = l.split_whitespace().collect();
-                        let p: Vec<f32> = f.iter().skip(1).take(3).filter_map(|x| x.parse().ok()).collect();
+                        let p: Vec<f32> = f
+                            .iter()
+                            .skip(1)
+                            .take(3)
+                            .filter_map(|x| x.parse().ok())
+                            .collect();
                         (p.len() == 3).then(|| (element_or_number(f[0]), [p[0], p[1], p[2]]))
                     })
                     .collect();
@@ -62,7 +71,12 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
                 i += 1;
                 while i < lines.len() {
                     let f: Vec<&str> = lines[i].split_whitespace().collect();
-                    let p: Vec<f32> = f.iter().skip(1).take(3).filter_map(|x| x.parse().ok()).collect();
+                    let p: Vec<f32> = f
+                        .iter()
+                        .skip(1)
+                        .take(3)
+                        .filter_map(|x| x.parse().ok())
+                        .collect();
                     if p.len() != 3 {
                         break;
                     }

@@ -138,11 +138,14 @@ impl Cache {
             .spawn(cx, async move |cx| {
                 loop {
                     let last = this.borrow().shown.back().copied();
-                    let Some(wait) = last.and_then(|t| (t + WINDOW).checked_duration_since(Instant::now()))
+                    let Some(wait) =
+                        last.and_then(|t| (t + WINDOW).checked_duration_since(Instant::now()))
                     else {
                         break;
                     };
-                    cx.background_executor().timer(wait + Duration::from_millis(10)).await;
+                    cx.background_executor()
+                        .timer(wait + Duration::from_millis(10))
+                        .await;
                 }
                 this.borrow_mut().settling = false;
                 let _ = cx.update(|window, _| window.refresh());
@@ -201,27 +204,30 @@ pub fn viewport(
                 window
                     .spawn(cx, async move |cx| {
                         let image = drawn.await;
-                        let _ = cx.update(|window, cx| {
-                            let this = cache.clone();
-                            let mut cache = cache.borrow_mut();
-                            // A resize may have drawn past it in the meantime.
-                            let Some(k) = cache.drawing.take() else { return };
-                            if cache.key.as_ref().is_some_and(|old| {
-                                (old.width, old.height) != (k.width, k.height)
-                            }) {
-                                let _ = window.drop_image(image);
-                            } else {
-                                if let Some(old) = cache.image.replace(image) {
-                                    let _ = window.drop_image(old);
+                        let _ =
+                            cx.update(|window, cx| {
+                                let this = cache.clone();
+                                let mut cache = cache.borrow_mut();
+                                // A resize may have drawn past it in the meantime.
+                                let Some(k) = cache.drawing.take() else {
+                                    return;
+                                };
+                                if cache.key.as_ref().is_some_and(|old| {
+                                    (old.width, old.height) != (k.width, k.height)
+                                }) {
+                                    let _ = window.drop_image(image);
+                                } else {
+                                    if let Some(old) = cache.image.replace(image) {
+                                        let _ = window.drop_image(old);
+                                    }
+                                    cache.key = Some(k);
+                                    drop(cache);
+                                    Cache::shown(&this, window, cx);
                                 }
-                                cache.key = Some(k);
-                                drop(cache);
-                                Cache::shown(&this, window, cx);
-                            }
-                            // Paint again, which starts on the newest view if
-                            // it has moved on since.
-                            window.refresh();
-                        });
+                                // Paint again, which starts on the newest view if
+                                // it has moved on since.
+                                window.refresh();
+                            });
                     })
                     .detach();
             }
@@ -240,7 +246,11 @@ pub fn viewport(
                 }
             }
             let quick_is_up = current.key.as_ref() == Some(&k) && current.drawing.is_none();
-            if traced && quick_is_up && current.traced.as_ref() != Some(&k) && current.tracing.is_none() {
+            if traced
+                && quick_is_up
+                && current.traced.as_ref() != Some(&k)
+                && current.tracing.is_none()
+            {
                 let cancel = Arc::new(AtomicBool::new(false));
                 let done = Arc::new(AtomicUsize::new(0));
                 current.tracing = Some(Tracing {
@@ -258,10 +268,22 @@ pub fn viewport(
                         }
                         let finished = Arc::new(AtomicBool::new(false));
                         let drawn = cx.background_executor().spawn({
-                            let (cancel, done, finished) = (cancel.clone(), done.clone(), finished.clone());
+                            let (cancel, done, finished) =
+                                (cancel.clone(), done.clone(), finished.clone());
                             async move {
-                                let control = crate::trace::Control { cancel: Some(&cancel), done: Some(&done) };
-                                let frame = crate::trace::render(&scene, &cam, width, height, theme::view(), style, &control);
+                                let control = crate::trace::Control {
+                                    cancel: Some(&cancel),
+                                    done: Some(&done),
+                                };
+                                let frame = crate::trace::render(
+                                    &scene,
+                                    &cam,
+                                    width,
+                                    height,
+                                    theme::view(),
+                                    style,
+                                    &control,
+                                );
                                 finished.store(true, Ordering::Relaxed);
                                 frame.map(image_of)
                             }
@@ -269,12 +291,17 @@ pub fn viewport(
                         // Painted again now and then, so the progress shows.
                         while !finished.load(Ordering::Relaxed) {
                             let _ = cx.update(|window, _| window.refresh());
-                            cx.background_executor().timer(Duration::from_millis(150)).await;
+                            cx.background_executor()
+                                .timer(Duration::from_millis(150))
+                                .await;
                         }
                         let image = drawn.await;
                         let _ = cx.update(|window, _| {
                             let mut cache = cache.borrow_mut();
-                            let current = cache.tracing.as_ref().is_some_and(|t| Arc::ptr_eq(&t.cancel, &cancel));
+                            let current = cache
+                                .tracing
+                                .as_ref()
+                                .is_some_and(|t| Arc::ptr_eq(&t.cancel, &cancel));
                             match image {
                                 Some(image) if current && !cancel.load(Ordering::Relaxed) => {
                                     if let Some(old) = cache.image.replace(image) {
@@ -304,7 +331,13 @@ pub fn viewport(
     .size_full()
 }
 
-fn draw(scene: &Scene, cam: &Camera, width: usize, height: usize, style: Style) -> Arc<RenderImage> {
+fn draw(
+    scene: &Scene,
+    cam: &Camera,
+    width: usize,
+    height: usize,
+    style: Style,
+) -> Arc<RenderImage> {
     let frame = {
         let _timer = Phase::Draw.timer();
         render::render(scene, cam, width, height, theme::view(), style)
@@ -336,7 +369,8 @@ pub enum Phase {
 }
 
 /// Time spent in each phase, in nanoseconds, and frames shown.
-static SPENT: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+static SPENT: [std::sync::atomic::AtomicU64; 3] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 3];
 static DRAWN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 thread_local! {

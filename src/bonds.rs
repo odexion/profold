@@ -111,7 +111,10 @@ pub fn spacing_radius(atoms: &[Atom]) -> f32 {
         }
     }
     // A flat or linear arrangement has no volume; measure what it has.
-    let extents: Vec<f32> = (0..3).map(|k| hi[k] - lo[k]).filter(|e| *e > 1e-3).collect();
+    let extents: Vec<f32> = (0..3)
+        .map(|k| hi[k] - lo[k])
+        .filter(|e| *e > 1e-3)
+        .collect();
     if extents.is_empty() {
         return default;
     }

@@ -85,7 +85,12 @@ impl Hit {
     /// letter save case and spacing. Enter before the list is back opens
     /// only such a hit; anything looser is left for the user to choose.
     pub fn is_named(&self, query: &str) -> bool {
-        let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        let squash = |t: &str| {
+            t.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        };
         let query = squash(query);
         !query.is_empty()
             && (squash(&self.title) == query
@@ -155,8 +160,12 @@ fn search_all(query: &str) -> Result<(Groups, bool)> {
             .filter(|g| g.certain)
             .cloned()
             .map(|g| s.spawn(move || search_pdb_gene(&g)));
-        let mut pdb = pdb.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed")));
-        let mut uniprot = uniprot.join().unwrap_or_else(|_| Err(anyhow!("UniProt search failed")));
+        let mut pdb = pdb
+            .join()
+            .unwrap_or_else(|_| Err(anyhow!("PDB search failed")));
+        let mut uniprot = uniprot
+            .join()
+            .unwrap_or_else(|_| Err(anyhow!("UniProt search failed")));
         // The text search finds whatever mentions the symbol: KRAS's
         // promoter, antibodies against EGFR. The protein's own entries are
         // what a gene symbol asks for.
@@ -172,7 +181,9 @@ fn search_all(query: &str) -> Result<(Groups, bool)> {
         (
             pdb,
             uniprot,
-            pubchem.join().unwrap_or_else(|_| Err(anyhow!("PubChem search failed"))),
+            pubchem
+                .join()
+                .unwrap_or_else(|_| Err(anyhow!("PubChem search failed"))),
             gene,
         )
     });
@@ -180,7 +191,11 @@ fn search_all(query: &str) -> Result<(Groups, bool)> {
         return Err(anyhow!("search failed: {e:#}"));
     }
     Ok((
-        (pdb.unwrap_or_default(), uniprot.unwrap_or_default(), pubchem.unwrap_or_default()),
+        (
+            pdb.unwrap_or_default(),
+            uniprot.unwrap_or_default(),
+            pubchem.unwrap_or_default(),
+        ),
         gene,
     ))
 }
@@ -264,7 +279,11 @@ fn search_pdb(query: &str) -> Result<Vec<Hit>> {
         })
     };
     let pools = |value: &str| {
-        let relevant = request(value, PDB_ROWS, json!({ "sort_by": "score", "direction": "desc" }));
+        let relevant = request(
+            value,
+            PDB_ROWS,
+            json!({ "sort_by": "score", "direction": "desc" }),
+        );
         let earliest = request(
             value,
             PDB_EARLIEST,
@@ -274,8 +293,10 @@ fn search_pdb(query: &str) -> Result<Vec<Hit>> {
             let a = s.spawn(|| rcsb_ids(&relevant));
             let b = s.spawn(|| rcsb_ids(&earliest));
             (
-                a.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed"))),
-                b.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed"))),
+                a.join()
+                    .unwrap_or_else(|_| Err(anyhow!("PDB search failed"))),
+                b.join()
+                    .unwrap_or_else(|_| Err(anyhow!("PDB search failed"))),
             )
         })
     };
@@ -286,7 +307,10 @@ fn search_pdb(query: &str) -> Result<Vec<Hit>> {
     let ((relevant, earliest), (more, first)) = std::thread::scope(|s| {
         let loose = s.spawn(|| pools(&tolerant));
         let strict = pools(query);
-        (strict, loose.join().unwrap_or((Ok(Vec::new()), Ok(Vec::new()))))
+        (
+            strict,
+            loose.join().unwrap_or((Ok(Vec::new()), Ok(Vec::new()))),
+        )
     });
     let mut relevant = relevant?;
     let mut earliest = earliest.unwrap_or_default();
@@ -448,7 +472,12 @@ fn describe_entries(ids: &[String]) -> Result<Vec<Entry>> {
                 let ids = p
                     .pointer("/rcsb_polymer_entity_container_identifiers/uniprot_ids")
                     .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let length = p
                     .pointer("/entity_poly/rcsb_sample_sequence_length")
@@ -637,17 +666,32 @@ fn genes(query: &str) -> Vec<Gene> {
     let reply = agent()
         .get("https://rest.uniprot.org/uniprotkb/search")
         .query("query", format!("gene_exact:\"{query}\" AND reviewed:true"))
-        .query("fields", "accession,protein_name,organism_name,gene_names,length")
+        .query(
+            "fields",
+            "accession,protein_name,organism_name,gene_names,length",
+        )
         .query("size", "8")
         .query("format", "json")
         .header("accept-encoding", "identity")
         .header("user-agent", USER_AGENT)
         .call()
-        .and_then(|mut r| r.body_mut().with_config().limit(8 * 1024 * 1024).read_to_string());
-    let Some(json) = reply.ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
+        .and_then(|mut r| {
+            r.body_mut()
+                .with_config()
+                .limit(8 * 1024 * 1024)
+                .read_to_string()
+        });
+    let Some(json) = reply
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    else {
         return Vec::new();
     };
-    let results = json.get("results").and_then(Value::as_array).cloned().unwrap_or_default();
+    let results = json
+        .get("results")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let n = results.len().max(1) as f32;
     let mut genes: Vec<Gene> = results
         .iter()
@@ -660,18 +704,24 @@ fn genes(query: &str) -> Vec<Gene> {
                 .and_then(Value::as_str)?
                 .to_string();
             let named = |v: &Value| v.as_str().is_some_and(|g| g.eq_ignore_ascii_case(query));
-            let entries = r.get("genes").and_then(Value::as_array).cloned().unwrap_or_default();
+            let entries = r
+                .get("genes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             let primary = entries.iter().find_map(|g| {
                 let name = g.pointer("/geneName/value")?;
                 named(name).then(|| name.as_str().unwrap_or(query).to_string())
             });
             // gene_exact also finds synonyms, ordered locus names and the like.
             let synonym = entries.iter().any(|g| {
-                ["synonyms", "orderedLocusNames", "orfNames"].iter().any(|k| {
-                    g.get(*k)
-                        .and_then(Value::as_array)
-                        .is_some_and(|a| a.iter().any(|s| s.get("value").is_some_and(named)))
-                })
+                ["synonyms", "orderedLocusNames", "orfNames"]
+                    .iter()
+                    .any(|k| {
+                        g.get(*k)
+                            .and_then(Value::as_array)
+                            .is_some_and(|a| a.iter().any(|s| s.get("value").is_some_and(named)))
+                    })
             });
             if primary.is_none() && !synonym {
                 return None;
@@ -744,11 +794,20 @@ fn search_pdb_gene(gene: &Gene) -> Result<Vec<Hit>> {
     let sharpest = request(PDB_ROWS, "rcsb_entry_info.resolution_combined");
     let (earliest, sharpest) = std::thread::scope(|s| {
         let b = s.spawn(|| rcsb_ids(&sharpest));
-        (rcsb_ids(&earliest), b.join().unwrap_or_else(|_| Err(anyhow!("PDB search failed"))))
+        (
+            rcsb_ids(&earliest),
+            b.join()
+                .unwrap_or_else(|_| Err(anyhow!("PDB search failed"))),
+        )
     });
     let earliest = earliest?;
     let mut ids = earliest.clone();
-    ids.extend(sharpest.unwrap_or_default().into_iter().filter(|id| !earliest.contains(id)));
+    ids.extend(
+        sharpest
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| !earliest.contains(id)),
+    );
 
     let protein = words(&gene.protein);
     let mut hits: Vec<Hit> = describe_entries(&ids)?
@@ -767,7 +826,9 @@ fn search_pdb_gene(gene: &Gene) -> Result<Vec<Hit>> {
                 .map(|(_, n)| *n)
                 .max()
                 .unwrap_or(0);
-            let coverage = gene.length.map_or(0.0, |l| (covered as f32 / l.max(1) as f32).min(1.0));
+            let coverage = gene
+                .length
+                .map_or(0.0, |l| (covered as f32 / l.max(1) as f32).min(1.0));
             // Every other chain is a partner the protein was caught with.
             let partners = 0.2 * e.names.len().saturating_sub(1).min(3) as f32;
             let score = 2.0 + 0.3 * named + 1.5 * coverage + classic + e.quality
@@ -793,7 +854,10 @@ const PUG: &str = "https://pubchem.ncbi.nlm.nih.gov/rest/pug";
 fn search_pubchem(query: &str) -> Result<Vec<Hit>> {
     let (named, found) = std::thread::scope(|s| {
         let named = s.spawn(|| {
-            properties(&format!("{PUG}/compound/name/{}/property/{PROPS}/JSON", encode(query)))
+            properties(&format!(
+                "{PUG}/compound/name/{}/property/{PROPS}/JSON",
+                encode(query)
+            ))
         });
         let found = s.spawn(|| -> Result<Vec<Hit>> {
             let esearch = |term: &str| -> Result<Vec<String>> {
@@ -813,7 +877,12 @@ fn search_pubchem(query: &str) -> Result<Vec<Hit>> {
                 Ok(json
                     .pointer("/esearchresult/idlist")
                     .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
                     .unwrap_or_default())
             };
             // As typed, and with the last word left open in case it is
@@ -838,11 +907,18 @@ fn search_pubchem(query: &str) -> Result<Vec<Hit>> {
             if ids.is_empty() {
                 return Ok(Vec::new());
             }
-            properties(&format!("{PUG}/compound/cid/{}/property/{PROPS}/JSON", ids.join(",")))
+            properties(&format!(
+                "{PUG}/compound/cid/{}/property/{PROPS}/JSON",
+                ids.join(",")
+            ))
         });
         (
-            named.join().unwrap_or_else(|_| Err(anyhow!("PubChem failed"))),
-            found.join().unwrap_or_else(|_| Err(anyhow!("PubChem failed"))),
+            named
+                .join()
+                .unwrap_or_else(|_| Err(anyhow!("PubChem failed"))),
+            found
+                .join()
+                .unwrap_or_else(|_| Err(anyhow!("PubChem failed"))),
         )
     });
     if let (Err(e), Err(_)) = (&named, &found) {
@@ -897,12 +973,23 @@ fn properties(url: &str) -> Result<Vec<Hit>> {
         .iter()
         .filter_map(|p| {
             let cid = p.get("CID")?.as_u64()?;
-            let title = p.get("Title").and_then(Value::as_str).unwrap_or("").to_string();
-            let formula = p.get("MolecularFormula").and_then(Value::as_str).unwrap_or("");
+            let title = p
+                .get("Title")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let formula = p
+                .get("MolecularFormula")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             // PubChem gives the weight as a string.
             let weight = p
                 .get("MolecularWeight")
-                .and_then(|w| w.as_str().map(str::to_string).or_else(|| w.as_f64().map(|f| f.to_string())))
+                .and_then(|w| {
+                    w.as_str()
+                        .map(str::to_string)
+                        .or_else(|| w.as_f64().map(|f| f.to_string()))
+                })
                 .unwrap_or_default();
             let mut detail = vec![formula_subscripts(formula)];
             if !weight.is_empty() {
@@ -911,7 +998,11 @@ fn properties(url: &str) -> Result<Vec<Hit>> {
             Some(Hit {
                 kind: Kind::Molecule,
                 id: cid.to_string(),
-                title: if title.is_empty() { format!("CID {cid}") } else { title },
+                title: if title.is_empty() {
+                    format!("CID {cid}")
+                } else {
+                    title
+                },
                 detail: detail.join(" · "),
                 score: 0.0,
                 exact: false,
@@ -937,11 +1028,39 @@ pub fn compound_title(cid: u64) -> Option<String> {
 
 /// Words that say nothing about which molecule is meant.
 const STOP: [&str; 33] = [
-    "a", "an", "the", "of", "in", "from", "with", "and", "for", "by", "to", "at",
-    "structure", "structures", "crystal", "crystallographic", "solution", "nmr",
-    "x", "ray", "chain", "subunit", "refinement", "refined", "resolution",
-    "angstrom", "angstroms", "analysis", "determination", "three", "dimensional",
-    "high", "form",
+    "a",
+    "an",
+    "the",
+    "of",
+    "in",
+    "from",
+    "with",
+    "and",
+    "for",
+    "by",
+    "to",
+    "at",
+    "structure",
+    "structures",
+    "crystal",
+    "crystallographic",
+    "solution",
+    "nmr",
+    "x",
+    "ray",
+    "chain",
+    "subunit",
+    "refinement",
+    "refined",
+    "resolution",
+    "angstrom",
+    "angstroms",
+    "analysis",
+    "determination",
+    "three",
+    "dimensional",
+    "high",
+    "form",
 ];
 
 /// Words that name a chain or a state of the molecule rather than another
@@ -995,8 +1114,18 @@ fn words(text: &str) -> Vec<String> {
 /// the plain one is wanted.
 fn variation(title: &str) -> f32 {
     const MARKS: [&str; 12] = [
-        "mutant", "variant", "complex", "complexed", "inhibitor", "bound",
-        "fragment", "domain", "analog", "analogue", "fusion", "engineered",
+        "mutant",
+        "variant",
+        "complex",
+        "complexed",
+        "inhibitor",
+        "bound",
+        "fragment",
+        "domain",
+        "analog",
+        "analogue",
+        "fusion",
+        "engineered",
     ];
     let lower = title.to_lowercase();
     let found = lower
@@ -1010,11 +1139,18 @@ fn variation(title: &str) -> f32 {
 /// taken off: "Crystal structure of X in complex with Y at 2 Å" is about X.
 fn subject_words(title: &str) -> Vec<String> {
     let lower = title.to_lowercase();
-    let cut = [" in complex", " complexed", " bound to", " with ", " at ", ", "]
-        .iter()
-        .filter_map(|m| lower.find(m))
-        .min()
-        .unwrap_or(lower.len());
+    let cut = [
+        " in complex",
+        " complexed",
+        " bound to",
+        " with ",
+        " at ",
+        ", ",
+    ]
+    .iter()
+    .filter_map(|m| lower.find(m))
+    .min()
+    .unwrap_or(lower.len());
     words(&title[..cut.min(title.len())])
 }
 
@@ -1043,7 +1179,11 @@ fn matching(wanted: &[String], name: &[String]) -> (f32, bool) {
         })
         .count();
     let slack: f32 = found.iter().map(|c| 1.0 - c).sum();
-    let base = if extra == 0 { 3.0 } else { 2.0 - 0.08 * extra.min(10) as f32 };
+    let base = if extra == 0 {
+        3.0
+    } else {
+        2.0 - 0.08 * extra.min(10) as f32
+    };
     ((base - slack).max(1.1), extra == 0 && slack == 0.0)
 }
 
@@ -1093,7 +1233,9 @@ fn slips_between(a: &str, b: &str) -> usize {
     for i in 1..=a.len() {
         for j in 1..=b.len() {
             let cost = usize::from(a[i - 1] != b[j - 1]);
-            d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
                 d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
             }
@@ -1196,7 +1338,11 @@ fn tidy_title(title: &str) -> String {
 
 /// "HOMO SAPIENS" as "Homo sapiens".
 fn sentence_organism(name: &str) -> String {
-    if name.chars().filter(|c| c.is_alphabetic()).all(|c| c.is_uppercase()) {
+    if name
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .all(|c| c.is_uppercase())
+    {
         let lower = name.to_lowercase();
         let mut chars = lower.chars();
         match chars.next() {
@@ -1274,7 +1420,11 @@ fn post_json(url: &str, body: &Value) -> Result<Value> {
     if resp.status() == 204 {
         return Ok(Value::Null);
     }
-    let text = resp.body_mut().with_config().limit(8 * 1024 * 1024).read_to_string()?;
+    let text = resp
+        .body_mut()
+        .with_config()
+        .limit(8 * 1024 * 1024)
+        .read_to_string()?;
     if text.trim().is_empty() {
         return Ok(Value::Null);
     }
@@ -1286,7 +1436,9 @@ pub fn encode(text: &str) -> String {
     let mut out = String::with_capacity(text.len() * 3);
     for b in text.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -1318,7 +1470,10 @@ mod tests {
         // Short words are not stretched to fit.
         assert_eq!(closeness("cat", "car"), 0.0);
         assert_eq!(slips_between("flourescent", "fluorescent"), 1);
-        assert_eq!(forgiving("green flou"), "green (flou* | lfou* | folu* | fluo*)");
+        assert_eq!(
+            forgiving("green flou"),
+            "green (flou* | lfou* | folu* | fluo*)"
+        );
         assert_eq!(open_ended("green fluo").as_deref(), Some("green fluo*"));
         assert_eq!(open_ended("vitamin c"), None);
     }
@@ -1340,9 +1495,13 @@ mod tests {
     #[test]
     fn names_match_through_the_boilerplate() {
         let q = w("green fluorescent protein");
-        assert_eq!(matching(&q, &subject_words("STRUCTURE OF GREEN FLUORESCENT PROTEIN")), (3.0, true));
+        assert_eq!(
+            matching(&q, &subject_words("STRUCTURE OF GREEN FLUORESCENT PROTEIN")),
+            (3.0, true)
+        );
         assert!(!matching(&q, &subject_words("Extra-superfolder GFP")).1);
-        let (contained, exact) = matching(&q, &w("Green fluorescent protein from Aequorea victoria"));
+        let (contained, exact) =
+            matching(&q, &w("Green fluorescent protein from Aequorea victoria"));
         assert!(!exact && contained > 1.0 && contained < 2.0);
         assert!(matching(&w("haemoglobin"), &w("Hemoglobin")).1);
         assert!(matching(&w("insulin"), &w("Insulin A chain")).1);
@@ -1399,26 +1558,72 @@ mod tests {
     #[test]
     #[ignore]
     fn search_live() {
-        for q in ["green fluorescent protein", "caffeine", "haemoglobin", "hemoglobin", "ubiquitin", "ATP", "heme", "myoglobin", "spike protein", "hiv protease", "kinase", "insulin", "aspirin", "lysozyme", "vitamin c", "green fluo", "green flou", "green flourescent protein", "caffe", "hemoglobn", "ubiquit", "asprin", "TP53", "brca1", "EGFR", "kras", "GFP", "gfp"] {
+        for q in [
+            "green fluorescent protein",
+            "caffeine",
+            "haemoglobin",
+            "hemoglobin",
+            "ubiquitin",
+            "ATP",
+            "heme",
+            "myoglobin",
+            "spike protein",
+            "hiv protease",
+            "kinase",
+            "insulin",
+            "aspirin",
+            "lysozyme",
+            "vitamin c",
+            "green fluo",
+            "green flou",
+            "green flourescent protein",
+            "caffe",
+            "hemoglobn",
+            "ubiquit",
+            "asprin",
+            "TP53",
+            "brca1",
+            "EGFR",
+            "kras",
+            "GFP",
+            "gfp",
+        ] {
             let hits = search(q).unwrap();
             println!("== {q}");
             for h in hits.iter() {
-                println!("  {:?} {} {} | {} | {:.2} {}", h.kind, h.id, h.title, h.detail, h.score, h.exact);
+                println!(
+                    "  {:?} {} {} | {} | {:.2} {}",
+                    h.kind, h.id, h.title, h.detail, h.score, h.exact
+                );
             }
         }
         let hits = search("green fluorescent protein").unwrap();
         assert_eq!(hits[0].kind, Kind::Pdb);
-        assert!(["1GFL", "1EMA"].contains(&hits[0].id.as_str()), "{}", hits[0].id);
+        assert!(
+            ["1GFL", "1EMA"].contains(&hits[0].id.as_str()),
+            "{}",
+            hits[0].id
+        );
         assert_eq!(search("caffeine").unwrap()[0].id, "2519");
         // Half-typed and misspelt: the protein, and no molecule lacking a word.
         for q in ["green fluo", "green flou", "green flourescent protein"] {
             let hits = search(q).unwrap();
-            assert!(hits.iter().any(|h| h.title.to_lowercase().contains("green fluorescent")), "{q}");
-            assert!(hits.iter().all(|h| h.kind != Kind::Molecule || h.title.to_lowercase().contains("green")), "{q}");
+            assert!(
+                hits.iter()
+                    .any(|h| h.title.to_lowercase().contains("green fluorescent")),
+                "{q}"
+            );
+            assert!(
+                hits.iter()
+                    .all(|h| h.kind != Kind::Molecule || h.title.to_lowercase().contains("green")),
+                "{q}"
+            );
         }
         // A gene symbol: the human protein, as a model and as structures.
         let p53 = search("TP53").unwrap();
-        assert!(p53.iter().any(|h| h.kind == Kind::AlphaFold && h.id == "P04637"));
+        assert!(p53
+            .iter()
+            .any(|h| h.kind == Kind::AlphaFold && h.id == "P04637"));
         assert!(p53.iter().any(|h| h.kind == Kind::Pdb));
         assert!(p53[0].is_named("tp53") || p53[0].kind == Kind::Pdb);
         // Lower-case heme is the molecule, whatever E. coli calls a gene.

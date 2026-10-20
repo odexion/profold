@@ -93,9 +93,16 @@ fn charge(s: &Structure, i: usize, bonded: &[Vec<usize>]) -> i8 {
     // An oxygen hung on a phosphorus or sulphur, or one of a carboxylate's
     // two, with no other neighbour. A bond from oxygen to oxygen is a file's
     // slip, which old entries' CONECT records make, and does not count.
-    let heavy: Vec<usize> = bonded[i].iter().copied().filter(|&j| s.atoms[j].element.0 != 8).collect();
+    let heavy: Vec<usize> = bonded[i]
+        .iter()
+        .copied()
+        .filter(|&j| s.atoms[j].element.0 != 8)
+        .collect();
     let [centre] = heavy[..] else { return 0 };
-    let oxygens = bonded[centre].iter().filter(|&&j| s.atoms[j].element.0 == 8).count();
+    let oxygens = bonded[centre]
+        .iter()
+        .filter(|&&j| s.atoms[j].element.0 == 8)
+        .count();
     match s.atoms[centre].element.0 {
         15 | 16 => -1,
         6 if oxygens == 2 => -1,
@@ -112,7 +119,11 @@ pub fn between(s: &Structure, ligand: usize, around: &[usize]) -> Vec<Contact> {
     }
     let atoms_of = s.atoms_by_residue();
     let own: Vec<usize> = atoms_of.of(ligand).iter().map(|&i| i as usize).collect();
-    let others: Vec<usize> = around.iter().flat_map(|&r| atoms_of.of(r)).map(|&i| i as usize).collect();
+    let others: Vec<usize> = around
+        .iter()
+        .flat_map(|&r| atoms_of.of(r))
+        .map(|&i| i as usize)
+        .collect();
     let mut out = Vec::new();
     for &a in &own {
         let (pa, ea) = (s.atoms[a].pos, s.atoms[a].element);
@@ -126,11 +137,14 @@ pub fn between(s: &Structure, ligand: usize, around: &[usize]) -> Vec<Contact> {
             if eb == Element::H || (bonded[a].contains(&b) && !metal(ea) && !metal(eb)) {
                 continue;
             }
-            let d = ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt();
+            let d = ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2))
+                .sqrt();
             if d > SALT {
                 continue;
             }
-            let kind = if (metal(ea) && (polar(eb) || eb.0 == 16)) || (metal(eb) && (polar(ea) || ea.0 == 16)) {
+            let kind = if (metal(ea) && (polar(eb) || eb.0 == 16))
+                || (metal(eb) && (polar(ea) || ea.0 == 16))
+            {
                 (d <= METAL).then_some(Kind::Metal)
             } else if charge(s, a, &bonded) * charge(s, b, &bonded) < 0 {
                 Some(Kind::SaltBridge)
@@ -142,7 +156,12 @@ pub fn between(s: &Structure, ligand: usize, around: &[usize]) -> Vec<Contact> {
                 None
             };
             if let Some(kind) = kind {
-                out.push(Contact { kind, a, b, distance: d });
+                out.push(Contact {
+                    kind,
+                    a,
+                    b,
+                    distance: d,
+                });
             }
         }
     }
@@ -154,7 +173,9 @@ mod tests {
     use super::*;
 
     fn sample(name: &str) -> Structure {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(name);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples")
+            .join(name);
         crate::formats::load_bytes(name, std::fs::read(path).unwrap()).unwrap()
     }
 
@@ -171,10 +192,15 @@ mod tests {
             .expect("the iron is held by nothing");
         let b = &s.atoms[iron.b];
         assert_eq!(s.atoms[iron.a].element.0, 26);
-        assert_eq!((s.residues[b.residue as usize].name.as_str(), b.name()), ("HIS", "NE2"));
+        assert_eq!(
+            (s.residues[b.residue as usize].name.as_str(), b.name()),
+            ("HIS", "NE2")
+        );
         assert!(iron.distance < 2.5);
         // The propionates reach out to the solvent and to basic side chains.
-        assert!(contacts.iter().any(|c| c.kind == Kind::HBond || c.kind == Kind::SaltBridge));
+        assert!(contacts
+            .iter()
+            .any(|c| c.kind == Kind::HBond || c.kind == Kind::SaltBridge));
         assert!(contacts.iter().all(|c| c.distance <= SALT));
     }
 
@@ -188,13 +214,23 @@ mod tests {
         }
         // A haem's propionates end in carboxylates; its ring has no oxygen.
         let haem = s.copies("HEM")[0];
-        let oxygens: Vec<usize> = s.residue_atoms(haem).into_iter().filter(|&i| s.atoms[i].element.0 == 8).collect();
+        let oxygens: Vec<usize> = s
+            .residue_atoms(haem)
+            .into_iter()
+            .filter(|&i| s.atoms[i].element.0 == 8)
+            .collect();
         assert_eq!(oxygens.len(), 4);
         assert!(oxygens.iter().all(|&i| charge(&s, i, &bonded) == -1));
         // And aspartate's side chain, not its backbone.
-        let asp = (0..s.residues.len()).find(|&r| s.residues[r].name == "ASP").unwrap();
+        let asp = (0..s.residues.len())
+            .find(|&r| s.residues[r].name == "ASP")
+            .unwrap();
         for i in s.residue_atoms(asp) {
-            let expected = if matches!(s.atoms[i].name(), "OD1" | "OD2") { -1 } else { 0 };
+            let expected = if matches!(s.atoms[i].name(), "OD1" | "OD2") {
+                -1
+            } else {
+                0
+            };
             assert_eq!(charge(&s, i, &bonded), expected, "{}", s.atoms[i].name());
         }
     }

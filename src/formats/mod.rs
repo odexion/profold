@@ -4,6 +4,7 @@
 //! knows nothing else. The format is chosen from the file name first and from
 //! the content when the name says nothing, and gzip is undone on the way in.
 
+mod bcif;
 mod cif;
 mod cube;
 mod gro;
@@ -12,11 +13,10 @@ mod mol2;
 mod pdb;
 mod poscar;
 mod sdf;
+pub mod traj;
+pub mod write;
 mod xsf;
 mod xyz;
-pub mod write;
-pub mod traj;
-mod bcif;
 
 use std::io::Read;
 use std::path::Path;
@@ -135,7 +135,10 @@ impl Format {
             return Some(Format::Xyz);
         }
         // A GROMACS file has a title, then the atom count.
-        if lines.next().is_some_and(|l| l.trim().parse::<usize>().is_ok()) {
+        if lines
+            .next()
+            .is_some_and(|l| l.trim().parse::<usize>().is_ok())
+        {
             return Some(Format::Gro);
         }
         None
@@ -161,7 +164,10 @@ pub(crate) fn gunzip(bytes: Vec<u8>) -> Result<Vec<u8>> {
 
 /// Whether a file is a binary trajectory, DCD or XTC, by its name; and if so
 /// its atom count and frames.
-pub fn trajectory(name: &str, bytes: &[u8]) -> Option<Result<(usize, Vec<crate::protein::Snapshot>)>> {
+pub fn trajectory(
+    name: &str,
+    bytes: &[u8],
+) -> Option<Result<(usize, Vec<crate::protein::Snapshot>)>> {
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".dcd") {
         Some(traj::dcd(bytes))
@@ -183,7 +189,8 @@ pub fn decode(bytes: Vec<u8>) -> Result<String> {
 
 /// Open a structure or trajectory from disk.
 pub fn load_path(path: &Path) -> Result<Structure> {
-    let bytes = std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
+    let bytes =
+        std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -197,7 +204,8 @@ pub fn load_bytes(name: &str, bytes: Vec<u8>) -> Result<Structure> {
     let lower = name.to_ascii_lowercase();
     if lower.ends_with(".bcif") || lower.ends_with(".bcif.gz") {
         let bytes = gunzip(bytes)?;
-        let text = bcif::to_mmcif(&bytes).with_context(|| format!("reading {name} as BinaryCIF"))?;
+        let text =
+            bcif::to_mmcif(&bytes).with_context(|| format!("reading {name} as BinaryCIF"))?;
         let stem = lower.trim_end_matches(".gz").trim_end_matches(".bcif");
         let mut s = cif::parse(&text, stem.to_string(), Source::File)?;
         if s.atoms.is_empty() {
@@ -323,7 +331,9 @@ pub fn guess_element(atom: &str, residue: &str) -> Element {
     };
     if let Some(sym) = ion {
         if atom.eq_ignore_ascii_case(residue.trim_end_matches(['+', '-', '1', '2', '3']))
-            || atom.to_ascii_uppercase().starts_with(&sym.to_ascii_uppercase())
+            || atom
+                .to_ascii_uppercase()
+                .starts_with(&sym.to_ascii_uppercase())
         {
             return Element::from_symbol(sym);
         }

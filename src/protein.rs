@@ -75,19 +75,13 @@ impl Cell {
     /// Fractional coordinates to Cartesian.
     pub fn to_cartesian(&self, f: [f32; 3]) -> [f32; 3] {
         let v = &self.vectors;
-        std::array::from_fn(|k| {
-            self.origin[k] + f[0] * v[0][k] + f[1] * v[1][k] + f[2] * v[2][k]
-        })
+        std::array::from_fn(|k| self.origin[k] + f[0] * v[0][k] + f[1] * v[1][k] + f[2] * v[2][k])
     }
 
     /// The eight corners.
     pub fn corners(&self) -> [[f32; 3]; 8] {
         std::array::from_fn(|i| {
-            self.to_cartesian([
-                (i & 1) as f32,
-                ((i >> 1) & 1) as f32,
-                ((i >> 2) & 1) as f32,
-            ])
+            self.to_cartesian([(i & 1) as f32, ((i >> 1) & 1) as f32, ((i >> 2) & 1) as f32])
         })
     }
 
@@ -95,9 +89,18 @@ impl Cell {
     pub fn edges(&self) -> [([f32; 3], [f32; 3]); 12] {
         let c = self.corners();
         const E: [(usize, usize); 12] = [
-            (0, 1), (2, 3), (4, 5), (6, 7),
-            (0, 2), (1, 3), (4, 6), (5, 7),
-            (0, 4), (1, 5), (2, 6), (3, 7),
+            (0, 1),
+            (2, 3),
+            (4, 5),
+            (6, 7),
+            (0, 2),
+            (1, 3),
+            (4, 6),
+            (5, 7),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
         ];
         E.map(|(a, b)| (c[a], c[b]))
     }
@@ -380,7 +383,8 @@ impl Structure {
                 .collect();
             (rank, n)
         });
-        rank.get(residue).map_or(0.0, |&k| k as f32 / (total.max(&2) - 1) as f32)
+        rank.get(residue)
+            .map_or(0.0, |&k| k as f32 / (total.max(&2) - 1) as f32)
     }
 
     /// The B-factors of the polymer's residues, from the 5th to the 95th
@@ -397,24 +401,37 @@ impl Structure {
 
     /// A property by name, without regard to case.
     pub fn prop(&self, name: &str) -> Option<usize> {
-        self.props.iter().position(|p| p.name.eq_ignore_ascii_case(name))
+        self.props
+            .iter()
+            .position(|p| p.name.eq_ignore_ascii_case(name))
     }
 
     /// The range property `i` is coloured over: the one set, or its values
     /// from the 1st to the 99th percentile across every frame, so a stray
     /// atom does not wash the rest out.
     pub fn prop_span(&self, i: usize) -> Option<(f32, f32)> {
-        if let Some(PropertyColor { index, range: Some(r) }) = self.prop_color {
+        if let Some(PropertyColor {
+            index,
+            range: Some(r),
+        }) = self.prop_color
+        {
             if index == i {
                 return Some(r);
             }
         }
-        *self.prop_spans.get_or_init(|| (0..self.props.len()).map(|k| self.own_span(k)).collect()).get(i)?
+        *self
+            .prop_spans
+            .get_or_init(|| (0..self.props.len()).map(|k| self.own_span(k)).collect())
+            .get(i)?
     }
 
     fn own_span(&self, i: usize) -> Option<(f32, f32)> {
         let p = self.props.get(i)?;
-        let all: Vec<&Vec<f32>> = if p.frames.is_empty() { vec![&p.values] } else { p.frames.iter().collect() };
+        let all: Vec<&Vec<f32>> = if p.frames.is_empty() {
+            vec![&p.values]
+        } else {
+            p.frames.iter().collect()
+        };
         let total: usize = all.iter().map(|v| v.len()).sum();
         // A sample is enough for percentiles, however long the trajectory.
         let stride = (total / 400_000).max(1);
@@ -430,7 +447,11 @@ impl Structure {
         v.sort_by(f32::total_cmp);
         let at = |q: f32| v[((v.len() - 1) as f32 * q).round() as usize];
         let (lo, hi) = (at(0.01), at(0.99));
-        Some(if hi > lo { (lo, hi) } else { (v[0], v[v.len() - 1].max(v[0] + 1e-6)) })
+        Some(if hi > lo {
+            (lo, hi)
+        } else {
+            (v[0], v[v.len() - 1].max(v[0] + 1e-6))
+        })
     }
 
     /// Property `i`'s value at atom `atom`, placed along its range from 0 to 1.
@@ -486,11 +507,19 @@ impl Structure {
 
     /// The colour chain `i` is painted when colouring by chain.
     pub fn chain_color(&self, i: usize, palette: crate::render::Palette) -> [f32; 3] {
-        self.chains.get(i).and_then(|c| c.color).unwrap_or(palette.chain(i))
+        self.chains
+            .get(i)
+            .and_then(|c| c.color)
+            .unwrap_or(palette.chain(i))
     }
 
     pub fn has_polymer(&self) -> bool {
-        self.residues.iter().filter(|r| r.ca.is_some() || r.nucleic.is_some()).take(3).count() >= 3
+        self.residues
+            .iter()
+            .filter(|r| r.ca.is_some() || r.nucleic.is_some())
+            .take(3)
+            .count()
+            >= 3
     }
 
     /// Find the nucleic acid strands: residues joined O3' to the next one's
@@ -533,9 +562,17 @@ impl Structure {
             }
         }
         for (r, res) in self.residues.iter_mut().enumerate() {
-            res.nucleic = if linked[r] { named[r][0].or(named[r][1]) } else { None };
+            res.nucleic = if linked[r] {
+                named[r][0].or(named[r][1])
+            } else {
+                None
+            };
             // A purine pairs through N1, a pyrimidine through N3.
-            let tip = if named[r][3].is_some() { named[r][4] } else { named[r][5] };
+            let tip = if named[r][3].is_some() {
+                named[r][4]
+            } else {
+                named[r][5]
+            };
             res.base = if linked[r] { tip } else { None };
         }
     }
@@ -547,7 +584,15 @@ impl Structure {
         let first = frames.first().map(|f| f.pos.clone()).unwrap_or_default();
         b.cell = frames.first().and_then(|f| f.cell);
         for (i, p) in first.into_iter().enumerate().take(n) {
-            b.push(Record { chain: "A", res_name: "UNK", res_seq: i as i32 + 1, name: "X", element: Element::UNKNOWN, pos: p, ..Record::default() });
+            b.push(Record {
+                chain: "A",
+                res_name: "UNK",
+                res_seq: i as i32 + 1,
+                name: "X",
+                element: Element::UNKNOWN,
+                pos: p,
+                ..Record::default()
+            });
         }
         b.frames = frames.into_iter().skip(1).collect();
         let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
@@ -578,12 +623,20 @@ impl Structure {
     /// The atoms of a residue. It looks through every atom: anything that
     /// asks for residue after residue takes `atoms_by_residue` instead.
     pub fn residue_atoms(&self, residue: usize) -> Vec<usize> {
-        (0..self.atoms.len()).filter(|&i| self.atoms[i].residue as usize == residue).collect()
+        (0..self.atoms.len())
+            .filter(|&i| self.atoms[i].residue as usize == residue)
+            .collect()
     }
 
     /// Every residue's atoms, in file order, found in one pass over them.
     pub fn atoms_by_residue(&self) -> ResidueAtoms {
-        let n = self.atoms.iter().map(|a| a.residue as usize + 1).max().unwrap_or(0).max(self.residues.len());
+        let n = self
+            .atoms
+            .iter()
+            .map(|a| a.residue as usize + 1)
+            .max()
+            .unwrap_or(0)
+            .max(self.residues.len());
         let mut start = vec![0u32; n + 1];
         for a in &self.atoms {
             start[a.residue as usize + 1] += 1;
@@ -604,7 +657,11 @@ impl Structure {
     /// The binding site of residue `of`: the polymer residues with an atom
     /// within `cutoff` ångström of one of its atoms, in file order.
     pub fn site(&self, of: usize, cutoff: f32) -> Vec<usize> {
-        let own: Vec<[f32; 3]> = self.residue_atoms(of).iter().map(|&i| self.atoms[i].pos).collect();
+        let own: Vec<[f32; 3]> = self
+            .residue_atoms(of)
+            .iter()
+            .map(|&i| self.atoms[i].pos)
+            .collect();
         if own.is_empty() {
             return Vec::new();
         }
@@ -649,7 +706,9 @@ impl Structure {
             return r.ca.map(|ca| self.atoms[ca as usize].pos);
         }
         let n = side.len() as f32;
-        let sum = side.iter().fold([0.0; 3], |s, p| [s[0] + p[0], s[1] + p[1], s[2] + p[2]]);
+        let sum = side
+            .iter()
+            .fold([0.0; 3], |s, p| [s[0] + p[0], s[1] + p[1], s[2] + p[2]]);
         Some([sum[0] / n, sum[1] / n, sum[2] / n])
     }
 
@@ -659,16 +718,24 @@ impl Structure {
         let mut out = vec![None; self.residues.len()];
         let pos = |i: Option<u32>| i.map(|i| self.atoms[i as usize].pos);
         let joined = |c: Option<u32>, n: Option<u32>| match (pos(c), pos(n)) {
-            (Some(a), Some(b)) => (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2) < 2.0 * 2.0,
+            (Some(a), Some(b)) => {
+                (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2) < 2.0 * 2.0
+            }
             _ => false,
         };
         for chain in &self.chains {
             for w in chain.residues.windows(3) {
-                let (p, r, n) = (&self.residues[w[0] as usize], &self.residues[w[1] as usize], &self.residues[w[2] as usize]);
+                let (p, r, n) = (
+                    &self.residues[w[0] as usize],
+                    &self.residues[w[1] as usize],
+                    &self.residues[w[2] as usize],
+                );
                 if r.ca.is_none() || !joined(p.c, r.n) || !joined(r.c, n.n) {
                     continue;
                 }
-                let (Some(c0), Some(n1), Some(ca), Some(c1), Some(n2)) = (pos(p.c), pos(r.n), pos(r.ca), pos(r.c), pos(n.n)) else {
+                let (Some(c0), Some(n1), Some(ca), Some(c1), Some(n2)) =
+                    (pos(p.c), pos(r.n), pos(r.ca), pos(r.c), pos(n.n))
+                else {
                     continue;
                 };
                 let k = crate::measure::Kind::Dihedral;
@@ -703,7 +770,11 @@ impl Structure {
     pub fn card(&self, atom: usize, residue: bool) -> Option<Card> {
         let a = self.atoms.get(atom)?;
         let r = &self.residues[a.residue as usize];
-        let chain = self.chains.get(r.chain as usize).map(|c| c.id.trim()).unwrap_or("");
+        let chain = self
+            .chains
+            .get(r.chain as usize)
+            .map(|c| c.id.trim())
+            .unwrap_or("");
         // A residue is worth naming in a polymer, or beside one; a lone
         // molecule's one residue, or a simulation's, is not.
         let named = !r.outside_polymer() || self.has_polymer();
@@ -769,7 +840,11 @@ impl Structure {
         if !self.has_polymer() {
             return out;
         }
-        for r in self.residues.iter().filter(|r| r.outside_polymer() && !is_solvent(&r.name)) {
+        for r in self
+            .residues
+            .iter()
+            .filter(|r| r.outside_polymer() && !is_solvent(&r.name))
+        {
             match out.iter_mut().find(|(name, _)| *name == r.name) {
                 Some((_, n)) => *n += 1,
                 None => out.push((r.name.clone(), 1)),
@@ -915,7 +990,6 @@ impl Structure {
         let sum: f32 = self.residues.iter().map(|r| r.b).sum();
         Some(sum / self.residues.len() as f32)
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,7 +1143,11 @@ impl Builder {
     pub fn push(&mut self, r: Record) {
         // Ligand records revisit chains that already appeared, so look the
         // chain up by name rather than assuming one contiguous block per chain.
-        let chain = if self.chains.get(self.cur_chain).is_some_and(|c| c.id == r.chain) {
+        let chain = if self
+            .chains
+            .get(self.cur_chain)
+            .is_some_and(|c| c.id == r.chain)
+        {
             self.cur_chain
         } else {
             match self.chains.iter().position(|c| c.id == r.chain) {
@@ -1086,9 +1164,12 @@ impl Builder {
         };
         self.cur_chain = chain;
 
-        let same = self.cur_res_key.as_ref().is_some_and(|(c, name, seq, ins)| {
-            *c == chain && name == r.res_name && *seq == r.res_seq && ins == r.ins
-        });
+        let same = self
+            .cur_res_key
+            .as_ref()
+            .is_some_and(|(c, name, seq, ins)| {
+                *c == chain && name == r.res_name && *seq == r.res_seq && ins == r.ins
+            });
         if !same {
             self.flush_residue();
             self.cur_res_key = Some((chain, r.res_name.to_string(), r.res_seq, r.ins.to_string()));
@@ -1144,10 +1225,9 @@ impl Builder {
         // A predicted model stores pLDDT in the B-factor column, in 0..=100.
         // It has to actually vary: SimpleFold writes a flat 100.00 for every
         // atom when confidence scoring is switched off, which is not a score.
-        let (lo, hi) = self
-            .atoms
-            .iter()
-            .fold((f32::MAX, f32::MIN), |(lo, hi), a| (lo.min(a.b), hi.max(a.b)));
+        let (lo, hi) = self.atoms.iter().fold((f32::MAX, f32::MIN), |(lo, hi), a| {
+            (lo.min(a.b), hi.max(a.b))
+        });
         let has_confidence = matches!(source, Source::AlphaFold | Source::SimpleFold)
             && lo >= 0.0
             && hi <= 100.0
@@ -1217,14 +1297,21 @@ impl Pae {
         let n = rows.len();
         let mut values = Vec::with_capacity(n * n);
         for row in rows {
-            let row = row.as_array().filter(|r| r.len() == n).ok_or_else(|| anyhow::anyhow!("the matrix is not square"))?;
+            let row = row
+                .as_array()
+                .filter(|r| r.len() == n)
+                .ok_or_else(|| anyhow::anyhow!("the matrix is not square"))?;
             values.extend(row.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32));
         }
         let max = v["max_predicted_aligned_error"]
             .as_f64()
             .map(|m| m as f32)
             .unwrap_or_else(|| values.iter().cloned().fold(0.0, f32::max));
-        Ok(Pae { n, values, max: max.max(1.0) })
+        Ok(Pae {
+            n,
+            values,
+            max: max.max(1.0),
+        })
     }
 }
 
@@ -1293,7 +1380,9 @@ fn residue_class(r: &Residue, element: Element) -> (&'static str, String, [f32; 
         "CYS" | "CYX" => Some(("polar, thiol", "Cysteine", POLAR)),
         "LYS" => Some(("positive", "Lysine", POSITIVE)),
         "ARG" => Some(("positive", "Arginine", POSITIVE)),
-        "HIS" | "HID" | "HIE" | "HIP" | "HSD" | "HSE" | "HSP" => Some(("positive", "Histidine", POSITIVE)),
+        "HIS" | "HID" | "HIE" | "HIP" | "HSD" | "HSE" | "HSP" => {
+            Some(("positive", "Histidine", POSITIVE))
+        }
         "ASP" => Some(("negative", "Aspartate", NEGATIVE)),
         "GLU" => Some(("negative", "Glutamate", NEGATIVE)),
         "GLY" => Some(("flexible", "Glycine", SPECIAL)),
@@ -1412,7 +1501,19 @@ fn residue_class(r: &Residue, element: Element) -> (&'static str, String, [f32; 
 pub fn is_solvent(name: &str) -> bool {
     matches!(
         name,
-        "HOH" | "WAT" | "SOL" | "TIP3" | "TIP3P" | "TIP4" | "TIP4P" | "TIP5P" | "SPC" | "SPCE"
-            | "T3P" | "T4P" | "H2O" | "DOD"
+        "HOH"
+            | "WAT"
+            | "SOL"
+            | "TIP3"
+            | "TIP3P"
+            | "TIP4"
+            | "TIP4P"
+            | "TIP5P"
+            | "SPC"
+            | "SPCE"
+            | "T3P"
+            | "T4P"
+            | "H2O"
+            | "DOD"
     )
 }

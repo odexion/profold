@@ -21,12 +21,17 @@ struct Frame {
 impl Frame {
     fn new(cell: Cell) -> Option<Self> {
         let m: [[f32; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| cell.vectors[j][i]));
-        Some(Frame { cell, inv: inverse(m)? })
+        Some(Frame {
+            cell,
+            inv: inverse(m)?,
+        })
     }
 
     fn fractional(&self, p: V) -> V {
         let d = std::array::from_fn::<f32, 3, _>(|k| p[k] - self.cell.origin[k]);
-        std::array::from_fn(|i| self.inv[i][0] * d[0] + self.inv[i][1] * d[1] + self.inv[i][2] * d[2])
+        std::array::from_fn(|i| {
+            self.inv[i][0] * d[0] + self.inv[i][1] * d[1] + self.inv[i][2] * d[2]
+        })
     }
 
     /// `f` cell vectors' worth of displacement.
@@ -38,14 +43,17 @@ impl Frame {
     /// The shortest way from `a` to `b` through the walls.
     fn nearest(&self, a: V, b: V) -> V {
         let d: V = std::array::from_fn(|k| b[k] - a[k]);
-        let f: V = std::array::from_fn(|i| self.inv[i][0] * d[0] + self.inv[i][1] * d[1] + self.inv[i][2] * d[2]);
+        let f: V = std::array::from_fn(|i| {
+            self.inv[i][0] * d[0] + self.inv[i][1] * d[1] + self.inv[i][2] * d[2]
+        });
         let s = self.shift(f.map(|x| x.round()));
         std::array::from_fn(|k| d[k] - s[k])
     }
 }
 
 fn inverse(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
-    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
     if det.abs() < 1e-12 {
         return None;
@@ -73,7 +81,9 @@ fn inverse(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
 /// Run `f` over the positions of every frame with that frame's cell, then
 /// show the current frame again.
 fn each_frame(s: &mut Structure, mut f: impl FnMut(&mut [V], &Frame)) -> Result<()> {
-    let Some(base) = s.cell else { bail!("there is no cell") };
+    let Some(base) = s.cell else {
+        bail!("there is no cell")
+    };
     if s.frames.is_empty() {
         let frame = Frame::new(base).ok_or_else(|| anyhow::anyhow!("the cell is flat"))?;
         let mut pos: Vec<V> = s.atoms.iter().map(|a| a.pos).collect();
@@ -121,12 +131,18 @@ fn molecules(s: &Structure) -> Vec<Vec<(usize, usize)>> {
     if s.has_polymer() {
         let by_residue = s.atoms_by_residue();
         for chain in &s.chains {
-            let polymer = chain.residues.iter().any(|&r| !s.residues[r as usize].outside_polymer());
+            let polymer = chain
+                .residues
+                .iter()
+                .any(|&r| !s.residues[r as usize].outside_polymer());
             if !polymer {
                 continue;
             }
-            let atoms: Vec<usize> =
-                chain.residues.iter().flat_map(|&r| by_residue.of(r as usize).iter().map(|&a| a as usize)).collect();
+            let atoms: Vec<usize> = chain
+                .residues
+                .iter()
+                .flat_map(|&r| by_residue.of(r as usize).iter().map(|&a| a as usize))
+                .collect();
             let run: Vec<(usize, usize)> = atoms.windows(2).map(|w| (w[0], w[1])).collect();
             for &a in &atoms {
                 placed[a] = true;
@@ -179,11 +195,15 @@ pub fn unwrap_in_time(s: &mut Structure) -> Result<()> {
     if s.frames.len() < 2 {
         bail!("there is one frame");
     }
-    let Some(base) = s.cell else { bail!("there is no cell") };
+    let Some(base) = s.cell else {
+        bail!("there is no cell")
+    };
     let frames = Arc::make_mut(&mut s.frames);
     let mut last_raw = frames[0].pos.clone();
     for t in 1..frames.len() {
-        let Some(frame) = Frame::new(frames[t].cell.unwrap_or(base)) else { continue };
+        let Some(frame) = Frame::new(frames[t].cell.unwrap_or(base)) else {
+            continue;
+        };
         let raw = frames[t].pos.clone();
         if raw.len() != last_raw.len() {
             break;
@@ -204,7 +224,9 @@ pub fn unwrap_in_time(s: &mut Structure) -> Result<()> {
 /// times, its copies laid out along its own vectors, every frame alike.
 /// The cell grows to hold them all.
 pub fn replicate(s: &Structure, n: [usize; 3]) -> Result<Structure> {
-    let Some(base) = s.cell else { bail!("there is no cell") };
+    let Some(base) = s.cell else {
+        bail!("there is no cell")
+    };
     if n.iter().any(|&k| k == 0) || n.iter().product::<usize>() > 1000 {
         bail!("between 1 and 1000 copies, in all");
     }
@@ -212,7 +234,9 @@ pub fn replicate(s: &Structure, n: [usize; 3]) -> Result<Structure> {
         bail!("too many chains to copy");
     }
     let images: Vec<[f32; 3]> = (0..n[0])
-        .flat_map(|a| (0..n[1]).flat_map(move |b| (0..n[2]).map(move |c| [a as f32, b as f32, c as f32])))
+        .flat_map(|a| {
+            (0..n[1]).flat_map(move |b| (0..n[2]).map(move |c| [a as f32, b as f32, c as f32]))
+        })
         .collect();
     let count = s.atoms.len();
     let residues = s.residues.len();
@@ -229,7 +253,8 @@ pub fn replicate(s: &Structure, n: [usize; 3]) -> Result<Structure> {
             .iter()
             .flat_map(|&f| {
                 let d = shift(cell, f);
-                pos.iter().map(move |p| [p[0] + d[0], p[1] + d[1], p[2] + d[2]])
+                pos.iter()
+                    .map(move |p| [p[0] + d[0], p[1] + d[1], p[2] + d[2]])
             })
             .collect()
     };
@@ -254,7 +279,12 @@ pub fn replicate(s: &Structure, n: [usize; 3]) -> Result<Structure> {
             s.residues.iter().map(move |r| {
                 let mut r = r.clone();
                 r.chain += (k * s.chains.len()) as u16;
-                (r.ca, r.n, r.c, r.o) = (offset(r.ca, k), offset(r.n, k), offset(r.c, k), offset(r.o, k));
+                (r.ca, r.n, r.c, r.o) = (
+                    offset(r.ca, k),
+                    offset(r.n, k),
+                    offset(r.c, k),
+                    offset(r.o, k),
+                );
                 (r.nucleic, r.base) = (offset(r.nucleic, k), offset(r.base, k));
                 r
             })
@@ -267,13 +297,21 @@ pub fn replicate(s: &Structure, n: [usize; 3]) -> Result<Structure> {
                 if k > 0 {
                     c.id = format!("{}{}", c.id, k + 1);
                 }
-                c.residues = c.residues.iter().map(|r| r + (k * residues) as u32).collect();
+                c.residues = c
+                    .residues
+                    .iter()
+                    .map(|r| r + (k * residues) as u32)
+                    .collect();
                 c
             })
         })
         .collect();
     out.bonds = (0..images.len())
-        .flat_map(|k| s.bonds.iter().map(move |&[a, b]| [a + (k * count) as u32, b + (k * count) as u32]))
+        .flat_map(|k| {
+            s.bonds
+                .iter()
+                .map(move |&[a, b]| [a + (k * count) as u32, b + (k * count) as u32])
+        })
         .collect();
     out.frames = Arc::new(
         s.frames
@@ -338,7 +376,11 @@ ITEM: ATOMS id type x y z c_pe
     fn an_atom_that_leaves_the_cell_goes_on_rather_than_jumping_back() {
         let mut s = dump();
         unwrap_in_time(&mut s).unwrap();
-        assert!(close(s.frames[1].pos[0], [10.5, 5.0, 5.0]), "{:?}", s.frames[1].pos[0]);
+        assert!(
+            close(s.frames[1].pos[0], [10.5, 5.0, 5.0]),
+            "{:?}",
+            s.frames[1].pos[0]
+        );
         // And wrapped, it is back in the cell.
         wrap(&mut s).unwrap();
         assert!(close(s.frames[1].pos[0], [0.5, 5.0, 5.0]));
@@ -353,7 +395,11 @@ ITEM: ATOMS id type x y z c_pe
         Arc::make_mut(&mut s.frames)[0].pos[1] = [0.2, 5.0, 5.0];
         s.set_frame(0);
         make_whole(&mut s).unwrap();
-        assert!(close(s.atoms[1].pos, [10.2, 5.0, 5.0]), "{:?}", s.atoms[1].pos);
+        assert!(
+            close(s.atoms[1].pos, [10.2, 5.0, 5.0]),
+            "{:?}",
+            s.atoms[1].pos
+        );
     }
 
     #[test]
@@ -366,8 +412,15 @@ ITEM: ATOMS id type x y z c_pe
         assert!(r.frames.iter().all(|f| f.pos.len() == 12));
         assert_eq!(r.props[0].values.len(), 12);
         // The last copy is one cell along x and two along z.
-        assert!(close(r.atoms[11].pos, [15.0, 5.0, 25.0]), "{:?}", r.atoms[11].pos);
-        assert!(r.atoms.iter().all(|a| (a.residue as usize) < r.residues.len()));
+        assert!(
+            close(r.atoms[11].pos, [15.0, 5.0, 25.0]),
+            "{:?}",
+            r.atoms[11].pos
+        );
+        assert!(r
+            .atoms
+            .iter()
+            .all(|a| (a.residue as usize) < r.residues.len()));
         assert!(replicate(&s, [0, 1, 1]).is_err());
     }
 }

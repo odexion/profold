@@ -16,8 +16,8 @@ mod formats;
 mod gpu;
 mod job;
 mod measure;
-mod pbc;
 mod movie;
+mod pbc;
 mod plugins;
 mod protein;
 mod render;
@@ -33,12 +33,15 @@ mod update;
 mod volume;
 
 use gpui::{
-    AppContext, point, px, size, App, Application, Bounds, TitlebarOptions, WindowBounds,
+    point, px, size, App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds,
     WindowOptions,
 };
 
 fn main() {
-    if std::env::args().nth(1).is_some_and(|a| a == "--version" || a == "-V") {
+    if std::env::args()
+        .nth(1)
+        .is_some_and(|a| a == "--version" || a == "-V")
+    {
         #[cfg(windows)]
         unsafe {
             windows_sys::Win32::System::Console::AttachConsole(
@@ -71,7 +74,10 @@ fn main() {
 
         // With the panel under the view, the window opens phone-shaped.
         let window_size = if settings::Settings::load().vertical {
-            let screen = cx.primary_display().map(|d| f32::from(d.bounds().size.height)).unwrap_or(900.);
+            let screen = cx
+                .primary_display()
+                .map(|d| f32::from(d.bounds().size.height))
+                .unwrap_or(900.);
             let height = (screen - 120.).clamp(600., 900.);
             size(px(ui::workspace::phone_width(height)), px(height))
         } else {
@@ -156,7 +162,8 @@ fn main() {
                         }
                     }
                     if let Some(lines) = script {
-                        this.active().update(cx, |tab, cx| tab.queue_script(lines, cx));
+                        this.active()
+                            .update(cx, |tab, cx| tab.queue_script(lines, cx));
                     }
                     // `PROFOLD_TYPE=caffeine` types into the field without
                     // pressing Return, for looking at the search results.
@@ -180,7 +187,9 @@ fn set_dock_icon() {
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
 
-    let Some(mtm) = MainThreadMarker::new() else { return };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
     let data = NSData::with_bytes(include_bytes!("../assets/icon.png"));
     if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
         unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };

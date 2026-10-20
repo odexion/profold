@@ -119,7 +119,9 @@ const TABLE: [(&str, f32, f32, f32, u32); 104] = [
 /// Elements that bond covalently. Two metals next to each other are a
 /// lattice, not a bond, and drawing every contact in a crystal of iron turns
 /// it into a scaffold.
-const NONMETALS: [u8; 23] = [1, 2, 5, 6, 7, 8, 9, 10, 14, 15, 16, 17, 18, 32, 33, 34, 35, 36, 51, 52, 53, 54, 85];
+const NONMETALS: [u8; 23] = [
+    1, 2, 5, 6, 7, 8, 9, 10, 14, 15, 16, 17, 18, 32, 33, 34, 35, 36, 51, 52, 53, 54, 85,
+];
 
 impl Element {
     pub const UNKNOWN: Element = Element(0);

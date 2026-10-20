@@ -70,7 +70,10 @@ pub struct Measurement {
 impl Measurement {
     /// Where its atoms are now, which a trajectory moves frame by frame.
     pub fn points(&self, s: &Structure) -> Option<Vec<[f32; 3]>> {
-        self.atoms.iter().map(|&i| s.atoms.get(i).map(|a| a.pos)).collect()
+        self.atoms
+            .iter()
+            .map(|&i| s.atoms.get(i).map(|a| a.pos))
+            .collect()
     }
 
     pub fn value(&self, s: &Structure) -> Option<f32> {
@@ -116,7 +119,11 @@ fn len(a: [f32; 3]) -> f32 {
 }
 
 fn mid(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5]
+    [
+        (a[0] + b[0]) * 0.5,
+        (a[1] + b[1]) * 0.5,
+        (a[2] + b[2]) * 0.5,
+    ]
 }
 
 #[cfg(test)]
@@ -129,7 +136,10 @@ mod tests {
 
     #[test]
     fn distances_and_angles() {
-        assert!(close(Kind::Distance.value(&[[0.0; 3], [3.0, 4.0, 0.0]]), 5.0));
+        assert!(close(
+            Kind::Distance.value(&[[0.0; 3], [3.0, 4.0, 0.0]]),
+            5.0
+        ));
         let right = [[1.0, 0.0, 0.0], [0.0; 3], [0.0, 2.0, 0.0]];
         assert!(close(Kind::Angle.value(&right), 90.0));
         let straight = [[1.0, 0.0, 0.0], [0.0; 3], [-3.0, 0.0, 0.0]];
@@ -141,10 +151,22 @@ mod tests {
         let (b, c) = ([0.0; 3], [0.0, 0.0, 1.0]);
         let a = [1.0, 0.0, 0.0];
         // Looking down +z, from x round to y is clockwise.
-        assert!(close(Kind::Dihedral.value(&[a, b, c, [0.0, 1.0, 1.0]]), 90.0));
-        assert!(close(Kind::Dihedral.value(&[a, b, c, [0.0, -1.0, 1.0]]), -90.0));
-        assert!(close(Kind::Dihedral.value(&[a, b, c, [1.0, 0.0, 1.0]]), 0.0));
-        assert!(close(Kind::Dihedral.value(&[a, b, c, [-1.0, 0.0, 1.0]]).abs(), 180.0));
+        assert!(close(
+            Kind::Dihedral.value(&[a, b, c, [0.0, 1.0, 1.0]]),
+            90.0
+        ));
+        assert!(close(
+            Kind::Dihedral.value(&[a, b, c, [0.0, -1.0, 1.0]]),
+            -90.0
+        ));
+        assert!(close(
+            Kind::Dihedral.value(&[a, b, c, [1.0, 0.0, 1.0]]),
+            0.0
+        ));
+        assert!(close(
+            Kind::Dihedral.value(&[a, b, c, [-1.0, 0.0, 1.0]]).abs(),
+            180.0
+        ));
     }
 
     #[test]

@@ -116,7 +116,10 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
         let mut values: Vec<Vec<f32>> = vec![Vec::with_capacity(n); names.len()];
         let mut cell = get("lattice").and_then(lattice);
         if let (Some(c), Some(o)) = (cell.as_mut(), get("origin")) {
-            let o: Vec<f32> = o.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            let o: Vec<f32> = o
+                .split_whitespace()
+                .filter_map(|x| x.parse().ok())
+                .collect();
             if o.len() == 3 {
                 c.origin = [o[0], o[1], o[2]];
             }
@@ -173,7 +176,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
             if frame.len() != expected {
                 break;
             }
-            b.frames.push(Snapshot { step: None, pos: frame, cell });
+            b.frames.push(Snapshot {
+                step: None,
+                pos: frame,
+                cell,
+            });
         }
         extras.push(values);
     }
@@ -191,7 +198,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
         .map(|(k, name)| crate::protein::Property {
             name,
             values: extras[0][k].clone(),
-            frames: std::sync::Arc::new(if many { extras.iter().map(|e| e[k].clone()).collect() } else { Vec::new() }),
+            frames: std::sync::Arc::new(if many {
+                extras.iter().map(|e| e[k].clone()).collect()
+            } else {
+                Vec::new()
+            }),
         })
         .collect();
     Ok(s)

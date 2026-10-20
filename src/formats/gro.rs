@@ -67,7 +67,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
                 width = coordinate_width(line);
             }
             let col = |a: usize, b: usize| line.get(a..b.min(line.len())).unwrap_or("").trim();
-            let at = |k: usize| col(20 + k * width, 20 + (k + 1) * width).parse::<f32>().ok();
+            let at = |k: usize| {
+                col(20 + k * width, 20 + (k + 1) * width)
+                    .parse::<f32>()
+                    .ok()
+            };
             let (Some(x), Some(y), Some(z)) = (at(0), at(1), at(2)) else {
                 continue;
             };
@@ -92,7 +96,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
             b.cell = cell;
             first = false;
         } else {
-            b.frames.push(Snapshot { step: None, pos: frame, cell });
+            b.frames.push(Snapshot {
+                step: None,
+                pos: frame,
+                cell,
+            });
         }
     }
 

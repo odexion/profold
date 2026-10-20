@@ -7,11 +7,11 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, point,
-    prelude::*, px, relative, size,
+    actions, div, fill, point, prelude::*, px, relative, size, App, Bounds, ClipboardItem, Context,
+    CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
+    FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style,
+    TextRun, UTF16Selection, UnderlineStyle, Window,
 };
 use unicode_segmentation::*;
 
@@ -124,11 +124,21 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx)
     }
 
-    fn delete_word_left(&mut self, _: &DeleteWordLeft, window: &mut Window, cx: &mut Context<Self>) {
+    fn delete_word_left(
+        &mut self,
+        _: &DeleteWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.delete_back(self.previous_word_start(self.cursor_offset()), window, cx)
     }
 
-    fn delete_word_right(&mut self, _: &DeleteWordRight, window: &mut Window, cx: &mut Context<Self>) {
+    fn delete_word_right(
+        &mut self,
+        _: &DeleteWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.delete_back(self.next_word_end(self.cursor_offset()), window, cx)
     }
 
@@ -349,7 +359,6 @@ impl TextInput {
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
     }
-
 }
 
 impl EntityInputHandler for TextInput {

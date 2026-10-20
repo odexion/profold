@@ -94,12 +94,18 @@ impl Selection {
         if tokens.is_empty() {
             bail!("an empty selection");
         }
-        let mut p = Parser { tokens: &tokens, at: 0 };
+        let mut p = Parser {
+            tokens: &tokens,
+            at: 0,
+        };
         let expr = p.or()?;
         if let Some(t) = p.peek() {
             bail!("unexpected \"{t}\"");
         }
-        Ok(Selection { text: text.trim().to_string(), expr })
+        Ok(Selection {
+            text: text.trim().to_string(),
+            expr,
+        })
     }
 
     pub fn text(&self) -> &str {
@@ -193,7 +199,9 @@ impl Parser<'_> {
     }
 
     fn unary(&mut self) -> Result<Expr> {
-        let Some(w) = self.word() else { bail!("incomplete selection expression") };
+        let Some(w) = self.word() else {
+            bail!("incomplete selection expression")
+        };
         match w.as_str() {
             "not" | "!" => {
                 self.next();
@@ -222,7 +230,12 @@ impl Parser<'_> {
                 }
                 Ok(e)
             }
-            _ if self.tokens.get(self.at + 1).and_then(|t| Op::parse(t)).is_some() => {
+            _ if self
+                .tokens
+                .get(self.at + 1)
+                .and_then(|t| Op::parse(t))
+                .is_some() =>
+            {
                 let name = self.next().unwrap_or_default().to_string();
                 let op = Op::parse(self.next().unwrap_or_default()).expect("checked above");
                 match self.next().map(str::parse::<f32>) {
@@ -239,7 +252,11 @@ impl Parser<'_> {
         self.next();
         let mut list = |what: &str| -> Result<Vec<String>> {
             match self.next() {
-                Some(v) if v != "(" && v != ")" => Ok(v.split(['+', ',']).filter(|x| !x.is_empty()).map(str::to_string).collect()),
+                Some(v) if v != "(" && v != ")" => Ok(v
+                    .split(['+', ','])
+                    .filter(|x| !x.is_empty())
+                    .map(str::to_string)
+                    .collect()),
                 _ => bail!("{what} expects a value"),
             }
         };
@@ -272,7 +289,11 @@ fn ranges(items: &[String]) -> Result<Vec<(i32, i32)>> {
     items
         .iter()
         .map(|item| {
-            let split = item.char_indices().skip(1).find(|&(_, c)| c == '-' || c == ':').map(|(i, _)| i);
+            let split = item
+                .char_indices()
+                .skip(1)
+                .find(|&(_, c)| c == '-' || c == ':')
+                .map(|(i, _)| i);
             let (a, b) = match split {
                 Some(i) => (&item[..i], &item[i + 1..]),
                 None => (item.as_str(), item.as_str()),
@@ -294,7 +315,11 @@ fn eval(e: &Expr, s: &Structure) -> Vec<bool> {
         Expr::All => vec![true; n],
         Expr::None => vec![false; n],
         Expr::Chain(ids) => each(&|i| {
-            let id = s.chains.get(res(i).chain as usize).map(|c| c.id.as_str()).unwrap_or("");
+            let id = s
+                .chains
+                .get(res(i).chain as usize)
+                .map(|c| c.id.as_str())
+                .unwrap_or("");
             any(ids, id)
         }),
         Expr::Resn(names) => each(&|i| any(names, &res(i).name)),
@@ -323,8 +348,16 @@ fn eval(e: &Expr, s: &Structure) -> Vec<bool> {
         Expr::Hydrogen => each(&|i| s.atoms[i].element == Element::H),
         Expr::Ss(ss) => each(&|i| res(i).ca.is_some() && res(i).ss == *ss),
         Expr::Not(a) => eval(a, s).into_iter().map(|x| !x).collect(),
-        Expr::And(a, b) => eval(a, s).into_iter().zip(eval(b, s)).map(|(x, y)| x && y).collect(),
-        Expr::Or(a, b) => eval(a, s).into_iter().zip(eval(b, s)).map(|(x, y)| x || y).collect(),
+        Expr::And(a, b) => eval(a, s)
+            .into_iter()
+            .zip(eval(b, s))
+            .map(|(x, y)| x && y)
+            .collect(),
+        Expr::Or(a, b) => eval(a, s)
+            .into_iter()
+            .zip(eval(b, s))
+            .map(|(x, y)| x || y)
+            .collect(),
         Expr::Byres(a) => {
             let inner = eval(a, s);
             let mut taken = vec![false; s.residues.len()];
@@ -376,12 +409,16 @@ fn within(s: &Structure, marked: &[bool], d: f32) -> Vec<bool> {
             (-1..=1).any(|dx| {
                 (-1..=1).any(|dy| {
                     (-1..=1).any(|dz| {
-                        grid.get(&[c[0] + dx, c[1] + dy, c[2] + dz]).is_some_and(|list| {
-                            list.iter().any(|&j| {
-                                let q = s.atoms[j].pos;
-                                (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2) <= d2
+                        grid.get(&[c[0] + dx, c[1] + dy, c[2] + dz])
+                            .is_some_and(|list| {
+                                list.iter().any(|&j| {
+                                    let q = s.atoms[j].pos;
+                                    (p[0] - q[0]).powi(2)
+                                        + (p[1] - q[1]).powi(2)
+                                        + (p[2] - q[2]).powi(2)
+                                        <= d2
+                                })
                             })
-                        })
                     })
                 })
             })
@@ -394,12 +431,19 @@ mod tests {
     use super::*;
 
     fn sample(name: &str) -> Structure {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(name);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples")
+            .join(name);
         crate::formats::load_bytes(name, std::fs::read(path).unwrap()).unwrap()
     }
 
     fn count(s: &Structure, q: &str) -> usize {
-        Selection::parse(q).unwrap_or_else(|e| panic!("{q}: {e}")).atoms(s).into_iter().filter(|x| *x).count()
+        Selection::parse(q)
+            .unwrap_or_else(|e| panic!("{q}: {e}"))
+            .atoms(s)
+            .into_iter()
+            .filter(|x| *x)
+            .count()
     }
 
     #[test]
@@ -426,18 +470,35 @@ mod tests {
         let n = s.atoms.len();
         assert_eq!(count(&s, "all"), n);
         assert_eq!(count(&s, "none"), 0);
-        let chain_a = s.atoms.iter().filter(|a| s.chains[s.residues[a.residue as usize].chain as usize].id == "A").count();
+        let chain_a = s
+            .atoms
+            .iter()
+            .filter(|a| s.chains[s.residues[a.residue as usize].chain as usize].id == "A")
+            .count();
         assert_eq!(count(&s, "chain A"), chain_a);
         assert_eq!(count(&s, "chain A+B"), count(&s, "chain A or chain B"));
-        assert_eq!(count(&s, "name CA"), s.residues.iter().filter(|r| r.ca.is_some()).count());
+        assert_eq!(
+            count(&s, "name CA"),
+            s.residues.iter().filter(|r| r.ca.is_some()).count()
+        );
         assert_eq!(count(&s, "elem Fe"), 4);
         assert_eq!(count(&s, "resn HEM and elem Fe"), 4);
         assert_eq!(count(&s, "ligand and elem Fe"), 4);
         assert_eq!(count(&s, "not all"), 0);
-        assert_eq!(count(&s, "protein") + count(&s, "ligand") + count(&s, "water"), n);
-        assert_eq!(count(&s, "backbone") + count(&s, "sidechain"), count(&s, "protein"));
+        assert_eq!(
+            count(&s, "protein") + count(&s, "ligand") + count(&s, "water"),
+            n
+        );
+        assert_eq!(
+            count(&s, "backbone") + count(&s, "sidechain"),
+            count(&s, "protein")
+        );
         assert_eq!(count(&s, "resi 1-10 and chain A and name CA"), 10);
-        assert_eq!(count(&s, "chain A resi 1-10 name CA"), 10, "side by side is and");
+        assert_eq!(
+            count(&s, "chain A resi 1-10 name CA"),
+            10,
+            "side by side is and"
+        );
         assert_eq!(count(&s, "index 1-5"), 5);
         assert!(count(&s, "helix") > count(&s, "strand"));
     }
@@ -448,9 +509,16 @@ mod tests {
         let near = count(&s, "within 5 of resn HEM");
         assert!(near > count(&s, "resn HEM"));
         // The proximal histidine is near its haem; byres takes all of it.
-        assert_eq!(count(&s, "byres (resn HIS and chain A and resi 87)"), count(&s, "chain A and resi 87"));
+        assert_eq!(
+            count(&s, "byres (resn HIS and chain A and resi 87)"),
+            count(&s, "chain A and resi 87")
+        );
         let his_near = count(&s, "byres (resn HIS and within 3 of elem Fe)");
-        assert_eq!(his_near % 10, 0, "whole histidines, ten atoms each: {his_near}");
+        assert_eq!(
+            his_near % 10,
+            0,
+            "whole histidines, ten atoms each: {his_near}"
+        );
         assert!(his_near >= 40);
         assert_eq!(count(&s, "within 0 of elem Fe"), 4);
     }
@@ -458,9 +526,23 @@ mod tests {
     #[test]
     fn precedence_and_errors() {
         let s = sample("1crn.pdb.gz");
-        assert_eq!(count(&s, "name CA or name N and resi 1"), count(&s, "name CA or (name N and resi 1)"));
-        assert_eq!(count(&s, "not name CA and resi 1"), count(&s, "(not name CA) and resi 1"));
-        for bad in ["", "chain", "resi x", "within of ligand", "(chain A", "frobnicate", "chain A )"] {
+        assert_eq!(
+            count(&s, "name CA or name N and resi 1"),
+            count(&s, "name CA or (name N and resi 1)")
+        );
+        assert_eq!(
+            count(&s, "not name CA and resi 1"),
+            count(&s, "(not name CA) and resi 1")
+        );
+        for bad in [
+            "",
+            "chain",
+            "resi x",
+            "within of ligand",
+            "(chain A",
+            "frobnicate",
+            "chain A )",
+        ] {
             assert!(Selection::parse(bad).is_err(), "{bad:?} parsed");
         }
         assert_eq!(count(&s, "RESN thr"), count(&s, "resn THR"));

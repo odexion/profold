@@ -41,7 +41,11 @@ const PROBE: f32 = 1.4;
 
 /// The atoms frames are fitted on: a polymer's alpha carbons, or every atom.
 fn fit_atoms(s: &Structure) -> (Vec<usize>, bool) {
-    let ca: Vec<usize> = s.residues.iter().filter_map(|r| r.ca.map(|a| a as usize)).collect();
+    let ca: Vec<usize> = s
+        .residues
+        .iter()
+        .filter_map(|r| r.ca.map(|a| a as usize))
+        .collect();
     if ca.len() >= 3 {
         (ca, true)
     } else {
@@ -83,8 +87,14 @@ pub fn fit_frames(s: &mut Structure) -> anyhow::Result<()> {
         let p: Vec<[f64; 3]> = atoms.iter().map(|&i| f.pos[i].map(f64::from)).collect();
         let (r, cp, cq) = crate::align::kabsch(&p, &reference);
         for v in f.pos.iter_mut() {
-            let d = [f64::from(v[0]) - cp[0], f64::from(v[1]) - cp[1], f64::from(v[2]) - cp[2]];
-            *v = std::array::from_fn(|i| (r[i][0] * d[0] + r[i][1] * d[1] + r[i][2] * d[2] + cq[i]) as f32);
+            let d = [
+                f64::from(v[0]) - cp[0],
+                f64::from(v[1]) - cp[1],
+                f64::from(v[2]) - cp[2],
+            ];
+            *v = std::array::from_fn(|i| {
+                (r[i][0] * d[0] + r[i][1] * d[1] + r[i][2] * d[2] + cq[i]) as f32
+            });
         }
         // A cell turned with the atoms would no longer be the box's; it goes.
         f.cell = None;
@@ -113,10 +123,23 @@ pub fn analyse(s: &Structure, cancel: &AtomicBool, done: &AtomicUsize) -> Option
             }
             let pos = positions(s, t);
             let fit = fitted(&pos, &reference, &atoms);
-            let msd = fit.iter().zip(&reference).map(|(a, b)| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>()).sum::<f64>()
+            let msd = fit
+                .iter()
+                .zip(&reference)
+                .map(|(a, b)| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>())
+                .sum::<f64>()
                 / atoms.len().max(1) as f64;
-            let c: [f64; 3] = std::array::from_fn(|k| pos.iter().map(|p| f64::from(p[k])).sum::<f64>() / pos.len().max(1) as f64);
-            let rg = (pos.iter().map(|p| (0..3).map(|k| (f64::from(p[k]) - c[k]).powi(2)).sum::<f64>()).sum::<f64>()
+            let c: [f64; 3] = std::array::from_fn(|k| {
+                pos.iter().map(|p| f64::from(p[k])).sum::<f64>() / pos.len().max(1) as f64
+            });
+            let rg = (pos
+                .iter()
+                .map(|p| {
+                    (0..3)
+                        .map(|k| (f64::from(p[k]) - c[k]).powi(2))
+                        .sum::<f64>()
+                })
+                .sum::<f64>()
                 / pos.len().max(1) as f64)
                 .sqrt();
             done.fetch_add(1, Ordering::Relaxed);
@@ -142,35 +165,66 @@ pub fn analyse(s: &Structure, cancel: &AtomicBool, done: &AtomicUsize) -> Option
     }
     let rmsf: Vec<f32> = spread.iter().map(|v| v.sqrt() as f32).collect();
     let mut series = vec![
-        Series { name: "RMSD", unit: "Å", points: per_frame.iter().enumerate().map(|(t, f)| (t, f.0)).collect() },
-        Series { name: "Rg", unit: "Å", points: per_frame.iter().enumerate().map(|(t, f)| (t, f.1)).collect() },
+        Series {
+            name: "RMSD",
+            unit: "Å",
+            points: per_frame
+                .iter()
+                .enumerate()
+                .map(|(t, f)| (t, f.0))
+                .collect(),
+        },
+        Series {
+            name: "Rg",
+            unit: "Å",
+            points: per_frame
+                .iter()
+                .enumerate()
+                .map(|(t, f)| (t, f.1))
+                .collect(),
+        },
     ];
     drop(per_frame);
 
     // The costlier ones on a sample of the frames.
     let stride = n.div_ceil(SAMPLED).max(1);
     let sampled: Vec<usize> = (0..n).step_by(stride).collect();
-    let polar: Vec<usize> = (0..s.atoms.len()).filter(|&i| matches!(s.atoms[i].element, Element::N | Element::O)).collect();
+    let polar: Vec<usize> = (0..s.atoms.len())
+        .filter(|&i| matches!(s.atoms[i].element, Element::N | Element::O))
+        .collect();
     if !polar.is_empty() && s.residues.len() > 1 {
         let points = sampled
             .par_iter()
             .map(|&t| (t, contacts(s, &positions(s, t), &polar) as f32))
             .collect();
-        series.push(Series { name: "Polar contacts", unit: "", points });
+        series.push(Series {
+            name: "Polar contacts",
+            unit: "",
+            points,
+        });
     }
     if stop() {
         return None;
     }
     if s.atoms.iter().any(|a| a.element.is_known()) && s.atoms.len() <= 50_000 {
-        let points = sampled.par_iter().map(|&t| (t, sasa(s, &positions(s, t)))).collect();
-        series.push(Series { name: "SASA", unit: "Å²", points });
+        let points = sampled
+            .par_iter()
+            .map(|&t| (t, sasa(s, &positions(s, t))))
+            .collect();
+        series.push(Series {
+            name: "SASA",
+            unit: "Å²",
+            points,
+        });
     }
     if stop() {
         return None;
     }
 
     // Helices and strands, from each sampled frame's own backbone.
-    let ss_residues: Vec<usize> = (0..s.residues.len()).filter(|&r| s.residues[r].ca.is_some()).collect();
+    let ss_residues: Vec<usize> = (0..s.residues.len())
+        .filter(|&r| s.residues[r].ca.is_some())
+        .collect();
     let ss = if s.has_polymer() && ss_residues.len() >= 5 {
         sampled
             .par_iter()
@@ -184,7 +238,13 @@ pub fn analyse(s: &Structure, cancel: &AtomicBool, done: &AtomicUsize) -> Option
         Vec::new()
     };
     done.store(total(s), Ordering::Relaxed);
-    Some(Analysis { series, rmsf, rmsf_by_residue: by_residue, ss, ss_residues })
+    Some(Analysis {
+        series,
+        rmsf,
+        rmsf_by_residue: by_residue,
+        ss,
+        ss_residues,
+    })
 }
 
 /// What `done` counts up to.
@@ -205,7 +265,9 @@ fn contacts(s: &Structure, pos: &[[f32; 3]], polar: &[usize]) -> usize {
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    let Some(list) = grid.get(&[c[0] + dx, c[1] + dy, c[2] + dz]) else { continue };
+                    let Some(list) = grid.get(&[c[0] + dx, c[1] + dy, c[2] + dz]) else {
+                        continue;
+                    };
                     for &j in list {
                         if j <= i || s.atoms[i].residue == s.atoms[j].residue {
                             continue;
@@ -252,18 +314,28 @@ pub fn sasa(s: &Structure, pos: &[[f32; 3]]) -> f32 {
         .map(|i| {
             let c = key(pos[i]);
             let near: Vec<usize> = (-1..=1)
-                .flat_map(|dx| (-1..=1).flat_map(move |dy| (-1..=1).map(move |dz| [c[0] + dx, c[1] + dy, c[2] + dz])))
+                .flat_map(|dx| {
+                    (-1..=1).flat_map(move |dy| {
+                        (-1..=1).map(move |dz| [c[0] + dx, c[1] + dy, c[2] + dz])
+                    })
+                })
                 .filter_map(|k| grid.get(&k))
                 .flatten()
                 .copied()
                 .filter(|&j| j != i)
-                .filter(|&j| (0..3).map(|k| (pos[i][k] - pos[j][k]).powi(2)).sum::<f32>() < (radius[i] + radius[j]).powi(2))
+                .filter(|&j| {
+                    (0..3).map(|k| (pos[i][k] - pos[j][k]).powi(2)).sum::<f32>()
+                        < (radius[i] + radius[j]).powi(2)
+                })
                 .collect();
             let open = dots
                 .iter()
                 .filter(|d| {
                     let p: [f32; 3] = std::array::from_fn(|k| pos[i][k] + d[k] * radius[i]);
-                    near.iter().all(|&j| (0..3).map(|k| (p[k] - pos[j][k]).powi(2)).sum::<f32>() >= radius[j] * radius[j])
+                    near.iter().all(|&j| {
+                        (0..3).map(|k| (p[k] - pos[j][k]).powi(2)).sum::<f32>()
+                            >= radius[j] * radius[j]
+                    })
                 })
                 .count();
             4.0 * std::f32::consts::PI * radius[i] * radius[i] * open as f32 / POINTS as f32
@@ -276,7 +348,11 @@ mod tests {
     use super::*;
 
     fn crambin() -> Structure {
-        crate::formats::load_bytes("1crn.pdb.gz", include_bytes!("../samples/1crn.pdb.gz").to_vec()).unwrap()
+        crate::formats::load_bytes(
+            "1crn.pdb.gz",
+            include_bytes!("../samples/1crn.pdb.gz").to_vec(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -284,7 +360,10 @@ mod tests {
         let s = crate::formats::load_bytes("one.xyz", b"1\n\nC 0 0 0\n".to_vec()).unwrap();
         let r = Element::from_symbol("C").vdw() + PROBE;
         let area = sasa(&s, &[[0.0; 3]]);
-        assert!((area - 4.0 * std::f32::consts::PI * r * r).abs() < 0.01 * area, "{area}");
+        assert!(
+            (area - 4.0 * std::f32::consts::PI * r * r).abs() < 0.01 * area,
+            "{area}"
+        );
     }
 
     #[test]
@@ -292,10 +371,21 @@ mod tests {
         let mut s = crambin();
         let first: Vec<[f32; 3]> = s.atoms.iter().map(|a| a.pos).collect();
         let (c, sn) = (0.6f32.cos(), 0.6f32.sin());
-        let moved: Vec<[f32; 3]> = first.iter().map(|p| [c * p[0] - sn * p[1] + 5.0, sn * p[0] + c * p[1], p[2] - 3.0]).collect();
+        let moved: Vec<[f32; 3]> = first
+            .iter()
+            .map(|p| [c * p[0] - sn * p[1] + 5.0, sn * p[0] + c * p[1], p[2] - 3.0])
+            .collect();
         s.frames = Arc::new(vec![
-            crate::protein::Snapshot { step: None, pos: first.clone(), cell: None },
-            crate::protein::Snapshot { step: None, pos: moved, cell: None },
+            crate::protein::Snapshot {
+                step: None,
+                pos: first.clone(),
+                cell: None,
+            },
+            crate::protein::Snapshot {
+                step: None,
+                pos: moved,
+                cell: None,
+            },
         ]);
         let a = analyse(&s, &AtomicBool::new(false), &AtomicUsize::new(0)).unwrap();
         let rmsd = &a.series[0];
@@ -304,10 +394,16 @@ mod tests {
         // Turning does not change how compact it is.
         assert!((a.series[1].points[0].1 - a.series[1].points[1].1).abs() < 1e-3);
         assert!(a.rmsf_by_residue && a.rmsf.iter().all(|v| *v < 1e-3));
-        assert!(a.series.iter().any(|s| s.name == "SASA") && a.series.iter().any(|s| s.name == "Polar contacts"));
+        assert!(
+            a.series.iter().any(|s| s.name == "SASA")
+                && a.series.iter().any(|s| s.name == "Polar contacts")
+        );
         assert_eq!(a.ss.len(), 2);
         fit_frames(&mut s).unwrap();
-        let d = (0..3).map(|k| (s.frames[1].pos[10][k] - first[10][k]).powi(2)).sum::<f32>().sqrt();
+        let d = (0..3)
+            .map(|k| (s.frames[1].pos[10][k] - first[10][k]).powi(2))
+            .sum::<f32>()
+            .sqrt();
         assert!(d < 1e-3, "{d}");
     }
 }

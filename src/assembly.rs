@@ -12,7 +12,11 @@ use crate::protein::{Chain, Structure};
 /// A rotation and translation, as three rows of a 3x4 matrix.
 pub type Op = [[f32; 4]; 3];
 
-pub const IDENTITY: Op = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
+pub const IDENTITY: Op = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Assembly {
@@ -41,12 +45,13 @@ impl Assembly {
     /// Whether it is just the deposited chains where they are: then there is
     /// nothing to build.
     pub fn is_deposited(&self, s: &Structure) -> bool {
-        let identity = |op: &Op| {
-            (0..3).all(|i| (0..4).all(|j| (op[i][j] - IDENTITY[i][j]).abs() < 1e-4))
-        };
+        let identity =
+            |op: &Op| (0..3).all(|i| (0..4).all(|j| (op[i][j] - IDENTITY[i][j]).abs() < 1e-4));
         let all: Vec<&String> = s.chains.iter().map(|c| &c.id).collect();
         let covered: Vec<&String> = self.parts.iter().flat_map(|p| p.chains.iter()).collect();
-        self.parts.iter().all(|p| p.ops.len() == 1 && identity(&p.ops[0]))
+        self.parts
+            .iter()
+            .all(|p| p.ops.len() == 1 && identity(&p.ops[0]))
             && all.iter().all(|c| covered.contains(c))
             && covered.len() == all.len()
     }
@@ -114,14 +119,20 @@ pub fn expand(expr: &str, ops: &HashMap<String, Op>) -> Vec<Op> {
         out
     };
     let groups: Vec<&str> = if expr.contains('(') {
-        expr.split(['(', ')']).map(str::trim).filter(|g| !g.is_empty()).collect()
+        expr.split(['(', ')'])
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .collect()
     } else {
         vec![expr]
     };
     let mut product = vec![IDENTITY];
     for g in groups.iter().rev() {
         let these = list(g);
-        product = these.iter().flat_map(|a| product.iter().map(move |b| compose(a, b))).collect();
+        product = these
+            .iter()
+            .flat_map(|a| product.iter().map(move |b| compose(a, b)))
+            .collect();
     }
     product
 }
@@ -133,7 +144,11 @@ pub fn from_pdb(text: &str) -> Vec<Assembly> {
     for line in text.lines().filter(|l| l.starts_with("REMARK 350")) {
         let body = line.get(10..).unwrap_or("").trim();
         if let Some(id) = body.strip_prefix("BIOMOLECULE:") {
-            out.push(Assembly { id: id.trim().to_string(), name: String::new(), parts: Vec::new() });
+            out.push(Assembly {
+                id: id.trim().to_string(),
+                name: String::new(),
+                parts: Vec::new(),
+            });
         } else if let Some(name) = body
             .strip_prefix("AUTHOR DETERMINED BIOLOGICAL UNIT:")
             .or_else(|| body.strip_prefix("SOFTWARE DETERMINED QUATERNARY STRUCTURE:"))
@@ -143,14 +158,21 @@ pub fn from_pdb(text: &str) -> Vec<Assembly> {
             }
         } else if let Some(chains) = body.strip_prefix("APPLY THE FOLLOWING TO CHAINS:") {
             if let Some(a) = out.last_mut() {
-                a.parts.push(Part { chains: split_chains(chains), ops: Vec::new() });
+                a.parts.push(Part {
+                    chains: split_chains(chains),
+                    ops: Vec::new(),
+                });
             }
         } else if let Some(chains) = body.strip_prefix("AND CHAINS:") {
             if let Some(p) = out.last_mut().and_then(|a| a.parts.last_mut()) {
                 p.chains.extend(split_chains(chains));
             }
         } else if body.starts_with("BIOMT") {
-            let f: Vec<f32> = body.split_whitespace().skip(2).filter_map(|v| v.parse().ok()).collect();
+            let f: Vec<f32> = body
+                .split_whitespace()
+                .skip(2)
+                .filter_map(|v| v.parse().ok())
+                .collect();
             if f.len() >= 4 {
                 rows.push([f[0], f[1], f[2], f[3]]);
             }
@@ -167,7 +189,11 @@ pub fn from_pdb(text: &str) -> Vec<Assembly> {
 }
 
 fn split_chains(text: &str) -> Vec<String> {
-    text.split(',').map(str::trim).filter(|c| !c.is_empty()).map(str::to_string).collect()
+    text.split(',')
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// The structure with assembly `a` built: every chain it names, copied by
@@ -188,7 +214,11 @@ pub fn build(s: &Structure, a: &Assembly) -> Structure {
     let mut bonds_of: Vec<Vec<[u32; 2]>> = vec![Vec::new(); s.chains.len()];
     // Bonds are copied with their chain; those between chains are kept
     // only within one copy of a part.
-    let chain_of_atom: Vec<usize> = s.atoms.iter().map(|a| s.residues[a.residue as usize].chain as usize).collect();
+    let chain_of_atom: Vec<usize> = s
+        .atoms
+        .iter()
+        .map(|a| s.residues[a.residue as usize].chain as usize)
+        .collect();
     let mut between: Vec<[u32; 2]> = Vec::new();
     let atoms_of = s.atoms_by_residue();
     for &[x, y] in &s.bonds {
@@ -201,14 +231,20 @@ pub fn build(s: &Structure, a: &Assembly) -> Structure {
     }
     let mut seen: HashMap<String, usize> = HashMap::new();
     for part in &a.parts {
-        let chains: Vec<usize> = (0..s.chains.len()).filter(|&c| part.chains.contains(&s.chains[c].id)).collect();
+        let chains: Vec<usize> = (0..s.chains.len())
+            .filter(|&c| part.chains.contains(&s.chains[c].id))
+            .collect();
         for op in &part.ops {
             let mut index: HashMap<u32, u32> = HashMap::new();
             for &c in &chains {
                 let chain = &s.chains[c];
                 let n = seen.entry(chain.id.clone()).or_insert(0);
                 *n += 1;
-                let id = if *n == 1 { chain.id.clone() } else { format!("{}{}", chain.id, n) };
+                let id = if *n == 1 {
+                    chain.id.clone()
+                } else {
+                    format!("{}{}", chain.id, n)
+                };
                 let new_chain = out.chains.len() as u16;
                 let mut residues = Vec::with_capacity(chain.residues.len());
                 for &r in &chain.residues {
@@ -233,10 +269,22 @@ pub fn build(s: &Structure, a: &Assembly) -> Structure {
                     out.residues.push(res);
                     residues.push(new_r);
                 }
-                out.chains.push(Chain { id, residues, color: chain.color });
-                out.bonds.extend(bonds_of[c].iter().filter_map(|[x, y]| Some([*index.get(x)?, *index.get(y)?])));
+                out.chains.push(Chain {
+                    id,
+                    residues,
+                    color: chain.color,
+                });
+                out.bonds.extend(
+                    bonds_of[c]
+                        .iter()
+                        .filter_map(|[x, y]| Some([*index.get(x)?, *index.get(y)?])),
+                );
             }
-            out.bonds.extend(between.iter().filter_map(|[x, y]| Some([*index.get(x)?, *index.get(y)?])));
+            out.bonds.extend(
+                between
+                    .iter()
+                    .filter_map(|[x, y]| Some([*index.get(x)?, *index.get(y)?])),
+            );
         }
     }
     out
@@ -264,7 +312,13 @@ ATOM      4  O   GLY A   1       2.400   4.300   3.000  1.00 10.00           O
 
     #[test]
     fn a_pdb_dimer_is_built_from_its_one_chain() {
-        let s = crate::formats::parse(DIMER, crate::formats::Format::Pdb, "test".into(), crate::protein::Source::File).unwrap();
+        let s = crate::formats::parse(
+            DIMER,
+            crate::formats::Format::Pdb,
+            "test".into(),
+            crate::protein::Source::File,
+        )
+        .unwrap();
         assert_eq!(s.assemblies.len(), 1);
         let a = &s.assemblies[0];
         assert_eq!(a.label(&s), "Dimer");
@@ -272,10 +326,21 @@ ATOM      4  O   GLY A   1       2.400   4.300   3.000  1.00 10.00           O
         assert_eq!(a.chain_count(&s), 2);
         let built = build(&s, a);
         assert_eq!(built.atoms.len(), 8);
-        assert_eq!(built.chains.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["A", "A2"]);
+        assert_eq!(
+            built
+                .chains
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["A", "A2"]
+        );
         // The copy is turned about z and moved along x.
         let copy = built.atoms[4].pos;
-        assert!((copy[0] - 9.0).abs() < 1e-4 && (copy[1] + 2.0).abs() < 1e-4 && (copy[2] - 3.0).abs() < 1e-4);
+        assert!(
+            (copy[0] - 9.0).abs() < 1e-4
+                && (copy[1] + 2.0).abs() < 1e-4
+                && (copy[2] - 3.0).abs() < 1e-4
+        );
         assert_eq!(built.residues[1].ca, Some(5));
         assert!(built.bonds.iter().all(|b| b[0] < 8 && b[1] < 8));
         assert_eq!(built.bonds.len(), s.bonds.len() * 2);
@@ -308,7 +373,9 @@ mod real {
     #[test]
     #[ignore]
     fn downloaded_entries() {
-        let Some(dir) = std::env::var_os("PROFOLD_DL") else { return };
+        let Some(dir) = std::env::var_os("PROFOLD_DL") else {
+            return;
+        };
         for name in ["1stp.cif", "1stp.pdb", "1aon.cif", "1aon.pdb"] {
             let bytes = std::fs::read(std::path::Path::new(&dir).join(name)).unwrap();
             let s = crate::formats::load_bytes(name, bytes).unwrap();
@@ -328,13 +395,22 @@ mod nucleic_real {
     #[test]
     #[ignore]
     fn downloaded_strands() {
-        let Some(dir) = std::env::var_os("PROFOLD_DL") else { return };
+        let Some(dir) = std::env::var_os("PROFOLD_DL") else {
+            return;
+        };
         for name in ["1bna.pdb", "1ehz.cif", "1tsr.pdb"] {
             let bytes = std::fs::read(std::path::Path::new(&dir).join(name)).unwrap();
             let s = crate::formats::load_bytes(name, bytes).unwrap();
             let traced = s.residues.iter().filter(|r| r.nucleic.is_some()).count();
-            let ligands: Vec<String> = s.ligands().into_iter().map(|(n, k)| format!("{n}x{k}")).collect();
-            eprintln!("{name}: {traced} nucleotides traced, polymer {}, ligands {ligands:?}", s.has_polymer());
+            let ligands: Vec<String> = s
+                .ligands()
+                .into_iter()
+                .map(|(n, k)| format!("{n}x{k}"))
+                .collect();
+            eprintln!(
+                "{name}: {traced} nucleotides traced, polymer {}, ligands {ligands:?}",
+                s.has_polymer()
+            );
         }
     }
 }

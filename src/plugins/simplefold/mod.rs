@@ -120,7 +120,9 @@ impl SimpleFold {
                         vec![(vec!["A".to_string()], sequence)]
                     }
                     Retrieval::Pdb(ref id) => fetch::fetch_pdb(id, tx)?.distinct_chains(),
-                    Retrieval::PubChem(_) => anyhow::bail!("a compound has no protein chains to fold"),
+                    Retrieval::PubChem(_) => {
+                        anyhow::bail!("a compound has no protein chains to fold")
+                    }
                 };
 
                 let (foldable, short): (Vec<_>, Vec<_>) =
@@ -164,17 +166,17 @@ impl SimpleFold {
                     };
                     let path = engine.fold(&file, &sequence, &model, steps, plddt, tx)?;
                     let text = std::fs::read_to_string(&path)?;
-                    parts.push((
-                        name.clone(),
-                        parse_any(&text, name, Source::SimpleFold)?,
-                    ));
+                    parts.push((name.clone(), parse_any(&text, name, Source::SimpleFold)?));
                 }
 
                 let _ = tx.send(Event::Stage("Reading structure".into()));
                 Ok(Outcome::Structure(assemble(
                     parts,
                     entry.to_uppercase(),
-                    format!("SimpleFold {label} · {steps} steps from {}", entry.to_uppercase()),
+                    format!(
+                        "SimpleFold {label} · {steps} steps from {}",
+                        entry.to_uppercase()
+                    ),
                 )))
             }),
         }
@@ -357,7 +359,11 @@ fn model_list(fold: &SimpleFold, cx: &mut Context<Viewer>) -> impl IntoElement {
                 .child(
                     div()
                         .text_size(px(11.5))
-                        .text_color(if i == current { theme::ink() } else { theme::text() })
+                        .text_color(if i == current {
+                            theme::ink()
+                        } else {
+                            theme::text()
+                        })
                         .child(model_label(name).to_string()),
                 )
                 .child(
@@ -400,7 +406,9 @@ pub fn options(fold: &SimpleFold, cx: &mut Context<Viewer>) -> impl IntoElement 
                         })),
                 )
                 // Painted last so it sits over whatever follows it.
-                .when(open, |d| d.child(deferred(model_list(fold, cx)).with_priority(1))),
+                .when(open, |d| {
+                    d.child(deferred(model_list(fold, cx)).with_priority(1))
+                }),
         )
         .child(label("STEPS"))
         .child(

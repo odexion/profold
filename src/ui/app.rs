@@ -14,26 +14,26 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    canvas, deferred, div, prelude::*, px, relative, Animation, AnimationExt, App,
-    Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, ScrollDelta,
-    ScrollWheelEvent, SharedString, Task, Window,
+    canvas, deferred, div, prelude::*, px, relative, Animation, AnimationExt, App, Bounds,
+    ClipboardItem, Context, Entity, FocusHandle, Focusable, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, ScrollDelta, ScrollWheelEvent,
+    SharedString, Task, Window,
 };
 
 use crate::align;
+use crate::contacts;
 use crate::fetch::{self, Input, Retrieval};
 use crate::formats;
-use crate::job::{self, Event, Outcome};
-use crate::contacts;
-use crate::select::Selection;
 use crate::formats::write;
+use crate::job::{self, Event, Outcome};
+use crate::select::Selection;
 
-#[path = "session.rs"]
-mod session;
 #[path = "console.rs"]
 mod console;
 #[path = "export.rs"]
 mod export;
+#[path = "session.rs"]
+mod session;
 use crate::measure::{self, Measurement};
 use crate::protein::{LigandPaint, Source, Structure};
 use crate::render::{
@@ -230,7 +230,11 @@ fn display_name(name: impl Into<SharedString>) -> gpui::Div {
 }
 
 /// A small picture from colours row by row, as GPUI takes them.
-fn picture(width: usize, height: usize, rgb: impl Fn(usize, usize) -> [f32; 3]) -> Arc<gpui::RenderImage> {
+fn picture(
+    width: usize,
+    height: usize,
+    rgb: impl Fn(usize, usize) -> [f32; 3],
+) -> Arc<gpui::RenderImage> {
     let mut bgra = vec![0u8; width * height * 4];
     for y in 0..height {
         for x in 0..width {
@@ -242,8 +246,11 @@ fn picture(width: usize, height: usize, rgb: impl Fn(usize, usize) -> [f32; 3]) 
             bgra[o + 3] = 255;
         }
     }
-    let buffer = image::RgbaImage::from_raw(width as u32, height as u32, bgra).expect("sized to fit");
-    Arc::new(gpui::RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]))
+    let buffer =
+        image::RgbaImage::from_raw(width as u32, height as u32, bgra).expect("sized to fit");
+    Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+        image::Frame::new(buffer)
+    ]))
 }
 
 /// Where protein backbones are found on the Ramachandran plot: the right-
@@ -252,7 +259,14 @@ fn picture(width: usize, height: usize, rgb: impl Fn(usize, usize) -> [f32; 3]) 
 /// One of the analysis's plots as a picture `w` by `h`: a line through a
 /// series or RMSF, on faint rules, or secondary structure, frames across
 /// and residues down.
-fn analysis_picture(a: &crate::analysis::Analysis, pick: usize, frames: usize, w: usize, h: usize, dark: bool) -> Arc<gpui::RenderImage> {
+fn analysis_picture(
+    a: &crate::analysis::Analysis,
+    pick: usize,
+    frames: usize,
+    w: usize,
+    h: usize,
+    dark: bool,
+) -> Arc<gpui::RenderImage> {
     let page = theme::view();
     if pick > a.series.len() {
         let rows = a.ss_residues.len().max(1);
@@ -261,17 +275,30 @@ fn analysis_picture(a: &crate::analysis::Analysis, pick: usize, frames: usize, w
             let (_, ss) = &a.ss[(x * columns / w).min(columns - 1)];
             let r = (y * rows / h).min(rows - 1);
             match ss.get(r) {
-                Some(crate::protein::Ss::Coil) | None => page.map(|c| c * 0.92 + if dark { 0.05 } else { 0.0 }),
-                Some(s) => render::SS_COLORS.iter().find(|c| c.0 == *s).map_or(page, |c| c.2),
+                Some(crate::protein::Ss::Coil) | None => {
+                    page.map(|c| c * 0.92 + if dark { 0.05 } else { 0.0 })
+                }
+                Some(s) => render::SS_COLORS
+                    .iter()
+                    .find(|c| c.0 == *s)
+                    .map_or(page, |c| c.2),
             }
         });
     }
     // The values, across: by frame along time, by residue for RMSF.
     let (xs, ys): (Vec<f32>, Vec<f32>) = match a.series.get(pick) {
-        Some(s) => s.points.iter().map(|(f, v)| (*f as f32 / (frames - 1).max(1) as f32, *v)).unzip(),
+        Some(s) => s
+            .points
+            .iter()
+            .map(|(f, v)| (*f as f32 / (frames - 1).max(1) as f32, *v))
+            .unzip(),
         None => {
             let n = a.rmsf.len().max(1);
-            a.rmsf.iter().enumerate().map(|(i, v)| ((i as f32 + 0.5) / n as f32, *v)).unzip()
+            a.rmsf
+                .iter()
+                .enumerate()
+                .map(|(i, v)| ((i as f32 + 0.5) / n as f32, *v))
+                .unzip()
         }
     };
     let lo = ys.iter().cloned().fold(f32::MAX, f32::min);
@@ -284,15 +311,24 @@ fn analysis_picture(a: &crate::analysis::Analysis, pick: usize, frames: usize, w
         .map(|x| {
             let t = x as f32 / (w - 1).max(1) as f32;
             let k = xs.partition_point(|&q| q < t);
-            let v = match (k.checked_sub(1).map(|i| (xs[i], ys[i])), xs.get(k).map(|&q| (q, ys[k]))) {
-                (Some((x0, y0)), Some((x1, y1))) if x1 > x0 => y0 + (y1 - y0) * (t - x0) / (x1 - x0),
+            let v = match (
+                k.checked_sub(1).map(|i| (xs[i], ys[i])),
+                xs.get(k).map(|&q| (q, ys[k])),
+            ) {
+                (Some((x0, y0)), Some((x1, y1))) if x1 > x0 => {
+                    y0 + (y1 - y0) * (t - x0) / (x1 - x0)
+                }
                 (Some((_, y)), _) | (None, Some((_, y))) => y,
                 _ => lo,
             };
             to_y(v)
         })
         .collect();
-    let line = if dark { [0.62, 0.74, 0.95] } else { [0.16, 0.36, 0.72] };
+    let line = if dark {
+        [0.62, 0.74, 0.95]
+    } else {
+        [0.16, 0.36, 0.72]
+    };
     let rule = page.map(|c| c * 0.9 + if dark { 0.06 } else { 0.0 });
     picture(w, h, |x, y| {
         let y = y as f32;
@@ -310,7 +346,8 @@ fn analysis_picture(a: &crate::analysis::Analysis, pick: usize, frames: usize, w
 
 fn ramachandran_ground() -> Arc<gpui::RenderImage> {
     // One for each page, light and dark, made when first wanted.
-    static GROUND: [std::sync::OnceLock<Arc<gpui::RenderImage>>; 2] = [const { std::sync::OnceLock::new() }; 2];
+    static GROUND: [std::sync::OnceLock<Arc<gpui::RenderImage>>; 2] =
+        [const { std::sync::OnceLock::new() }; 2];
     let dark = theme::dark();
     GROUND[dark as usize].get_or_init(|| ground(dark)).clone()
 }
@@ -325,7 +362,11 @@ fn ground(dark: bool) -> Arc<gpui::RenderImage> {
         (-90.0, 0.0, 25.0, 25.0, 0.35),
     ];
     let page = theme::view();
-    let tint = if dark { [0.32, 0.36, 0.44] } else { [0.78, 0.84, 0.92] };
+    let tint = if dark {
+        [0.32, 0.36, 0.44]
+    } else {
+        [0.78, 0.84, 0.92]
+    };
     let n = 120;
     picture(n, n, |x, y| {
         let phi = -180.0 + (x as f32 + 0.5) / n as f32 * 360.0;
@@ -333,10 +374,18 @@ fn ground(dark: bool) -> Arc<gpui::RenderImage> {
         let wrap = |d: f32| (d + 180.0).rem_euclid(360.0) - 180.0;
         let density: f32 = REGIONS
             .iter()
-            .map(|&(p, q, sp, sq, w)| w * (-0.5 * ((wrap(phi - p) / sp).powi(2) + (wrap(psi - q) / sq).powi(2))).exp())
+            .map(|&(p, q, sp, sq, w)| {
+                w * (-0.5 * ((wrap(phi - p) / sp).powi(2) + (wrap(psi - q) / sq).powi(2))).exp()
+            })
             .sum();
         // Two bands: favoured, and allowed.
-        let k = if density > 0.5 { 1.0 } else if density > 0.08 { 0.45 } else { 0.0 };
+        let k = if density > 0.5 {
+            1.0
+        } else if density > 0.08 {
+            0.45
+        } else {
+            0.0
+        };
         [0, 1, 2].map(|i| page[i] + (tint[i] - page[i]) * k)
     })
 }
@@ -634,52 +683,64 @@ impl Viewer {
         .detach();
 
         let console_input = cx.new(|cx| TextInput::new("a command, or help", cx));
-        cx.subscribe_in(&console_input, window, |this, input, event, window, cx| match event {
-            InputEvent::Submit => {
-                let line = input.read(cx).text().to_string();
-                input.update(cx, |i, cx| i.set_text("", cx));
-                if !line.trim().is_empty() {
-                    this.console_history.push(line.clone());
+        cx.subscribe_in(
+            &console_input,
+            window,
+            |this, input, event, window, cx| match event {
+                InputEvent::Submit => {
+                    let line = input.read(cx).text().to_string();
+                    input.update(cx, |i, cx| i.set_text("", cx));
+                    if !line.trim().is_empty() {
+                        this.console_history.push(line.clone());
+                    }
+                    this.console_back = 0;
+                    let result = this.run_command(&line, cx);
+                    this.say(&line, result);
+                    cx.notify();
                 }
-                this.console_back = 0;
-                let result = this.run_command(&line, cx);
-                this.say(&line, result);
-                cx.notify();
-            }
-            InputEvent::Up | InputEvent::Down => {
-                // Back through what was typed, and forward again.
-                let n = this.console_history.len();
-                this.console_back = match event {
-                    InputEvent::Up => (this.console_back + 1).min(n),
-                    _ => this.console_back.saturating_sub(1),
-                };
-                let text = if this.console_back == 0 { String::new() } else { this.console_history[n - this.console_back].clone() };
-                input.update(cx, |i, cx| i.set_text(text, cx));
-            }
-            InputEvent::Cancel => {
-                this.console_open = false;
-                window.focus(&this.focus);
-                cx.notify();
-            }
-            InputEvent::Changed => {}
-        })
+                InputEvent::Up | InputEvent::Down => {
+                    // Back through what was typed, and forward again.
+                    let n = this.console_history.len();
+                    this.console_back = match event {
+                        InputEvent::Up => (this.console_back + 1).min(n),
+                        _ => this.console_back.saturating_sub(1),
+                    };
+                    let text = if this.console_back == 0 {
+                        String::new()
+                    } else {
+                        this.console_history[n - this.console_back].clone()
+                    };
+                    input.update(cx, |i, cx| i.set_text(text, cx));
+                }
+                InputEvent::Cancel => {
+                    this.console_open = false;
+                    window.focus(&this.focus);
+                    cx.notify();
+                }
+                InputEvent::Changed => {}
+            },
+        )
         .detach();
 
         let select_input = cx.new(|cx| TextInput::new("e.g. resn HIS and within 5 of ligand", cx));
-        cx.subscribe_in(&select_input, window, |this, input, event, _window, cx| match event {
-            InputEvent::Submit => {
-                let text = input.read(cx).text().to_string();
-                if this.add_layer(&text, cx) {
-                    input.update(cx, |i, cx| i.set_text("", cx));
+        cx.subscribe_in(
+            &select_input,
+            window,
+            |this, input, event, _window, cx| match event {
+                InputEvent::Submit => {
+                    let text = input.read(cx).text().to_string();
+                    if this.add_layer(&text, cx) {
+                        input.update(cx, |i, cx| i.set_text("", cx));
+                    }
                 }
-            }
-            InputEvent::Changed => {
-                if this.select_error.take().is_some() {
-                    cx.notify();
+                InputEvent::Changed => {
+                    if this.select_error.take().is_some() {
+                        cx.notify();
+                    }
                 }
-            }
-            InputEvent::Cancel | InputEvent::Up | InputEvent::Down => {}
-        })
+                InputEvent::Cancel | InputEvent::Up | InputEvent::Down => {}
+            },
+        )
         .detach();
 
         let editor = cx.new(|cx| TextInput::new("", cx));
@@ -1005,10 +1066,17 @@ impl Viewer {
         // solvent is half of what it shows.
         self.appearance.hide_solvent = polymer;
         self.stop_playing();
-        self.camera = Camera { perspective: self.camera.perspective, ..Camera::frame(&structure) };
+        self.camera = Camera {
+            perspective: self.camera.perspective,
+            ..Camera::frame(&structure)
+        };
         self.all_chains = false;
         self.iso = match &structure.volume {
-            Some(v) => Iso { shown: true, level: v.default_level(), mesh: false },
+            Some(v) => Iso {
+                shown: true,
+                level: v.default_level(),
+                mesh: false,
+            },
             None => Iso::default(),
         };
         self.structure = Some(Arc::new(structure));
@@ -1043,7 +1111,10 @@ impl Viewer {
         reference.tint = Some(align::REFERENCE_TINT);
         prediction.tint = Some(align::PREDICTION_TINT);
         self.coloring = Coloring::Pair;
-        self.camera = Camera { perspective: self.camera.perspective, ..Camera::frame_all(&[&reference, &prediction]) };
+        self.camera = Camera {
+            perspective: self.camera.perspective,
+            ..Camera::frame_all(&[&reference, &prediction])
+        };
         self.structure = Some(Arc::new(reference));
         self.compare = Some(Arc::new(prediction));
         self.fit = Some((rmsd, matched));
@@ -1098,7 +1169,16 @@ impl Viewer {
         (0..2)
             .filter_map(|which| {
                 let s = self.shown(which)?;
-                let picked = render::pick(s, self.repr, &self.appearance, &self.camera, width, height, x, y)?;
+                let picked = render::pick(
+                    s,
+                    self.repr,
+                    &self.appearance,
+                    &self.camera,
+                    width,
+                    height,
+                    x,
+                    y,
+                )?;
                 Some(Target { which, picked })
             })
             .max_by(|a, b| a.picked.depth.total_cmp(&b.picked.depth))
@@ -1128,7 +1208,8 @@ impl Viewer {
     fn select(&mut self, target: Option<Target>, cx: &mut Context<Self>) {
         // A second click on the same thing lets go of it.
         let target = target.filter(|t| {
-            self.selected.is_none_or(|s| (s.which, s.picked.atom) != (t.which, t.picked.atom))
+            self.selected
+                .is_none_or(|s| (s.which, s.picked.atom) != (t.which, t.picked.atom))
         });
         if target != self.selected {
             self.selected = target;
@@ -1174,7 +1255,9 @@ impl Viewer {
     /// Show the structure another way. A backbone style is refused for a
     /// structure without a backbone, as its pill is greyed out.
     pub fn set_repr(&mut self, repr: Repr, cx: &mut Context<Self>) {
-        let Some(s) = self.structure.as_ref() else { return };
+        let Some(s) = self.structure.as_ref() else {
+            return;
+        };
         if repr.needs_polymer() && !s.has_polymer() {
             return;
         }
@@ -1204,7 +1287,11 @@ impl Viewer {
         // structures is over by then.
         let framed = {
             let all: Vec<&Structure> = self.visible().into_iter().map(|s| s.as_ref()).collect();
-            (!all.is_empty()).then(|| Camera { perspective: self.camera.perspective, slab: self.camera.slab, ..Camera::frame_all(&all) })
+            (!all.is_empty()).then(|| Camera {
+                perspective: self.camera.perspective,
+                slab: self.camera.slab,
+                ..Camera::frame_all(&all)
+            })
         };
         if let Some(camera) = framed {
             self.camera = camera;
@@ -1300,7 +1387,12 @@ impl Viewer {
         match Selection::parse(text) {
             Ok(selection) => {
                 self.select_error = None;
-                self.layers.push(Layer { selection, atoms: Arc::new(Vec::new()), style: render::LayerStyle::Sticks, color: None });
+                self.layers.push(Layer {
+                    selection,
+                    atoms: Arc::new(Vec::new()),
+                    style: render::LayerStyle::Sticks,
+                    color: None,
+                });
                 self.rebuild(cx);
                 true
             }
@@ -1317,7 +1409,10 @@ impl Viewer {
     fn compose(&mut self, cx: &mut Context<Self>) {
         let hovered = self.seq_hover.and_then(|r| {
             let s = self.structure.as_ref()?;
-            Some(Target { which: 0, picked: residue_pick(s, r)? })
+            Some(Target {
+                which: 0,
+                picked: residue_pick(s, r)?,
+            })
         });
         // Pointed at, it is painted most of the way; picked, all the way.
         let glows: Vec<(Target, bool)> = hovered
@@ -1333,7 +1428,13 @@ impl Viewer {
                     let residue = s.atoms[t.picked.atom].residue;
                     scene.paint_residue(tris, capsules, residue, self.style, faint);
                 }
-                scene.merge(render::build_highlight(s, t.picked, self.repr, self.style, &self.appearance));
+                scene.merge(render::build_highlight(
+                    s,
+                    t.picked,
+                    self.repr,
+                    self.style,
+                    &self.appearance,
+                ));
             }
         }
         if let (Some(site), Some(s)) = (&self.site, self.shown(0)) {
@@ -1351,8 +1452,18 @@ impl Viewer {
         // over the viewport, by `measure_lines`.
         if let Some(s) = self.shown(self.pending_which) {
             for &atom in &self.pending {
-                let picked = Picked { atom, residue: false, depth: 0.0 };
-                scene.merge(render::build_highlight(s, picked, self.repr, self.style, &self.appearance));
+                let picked = Picked {
+                    atom,
+                    residue: false,
+                    depth: 0.0,
+                };
+                scene.merge(render::build_highlight(
+                    s,
+                    picked,
+                    self.repr,
+                    self.style,
+                    &self.appearance,
+                ));
             }
         }
         self.scene = Arc::new(scene.stamp());
@@ -1365,7 +1476,11 @@ impl Viewer {
         let s = self.structure.as_ref()?;
         let mut appearance = self.appearance.clone();
         appearance.hidden = None;
-        let mut ligand_paint: Vec<(String, LigandPaint)> = s.ligand_paint.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let mut ligand_paint: Vec<(String, LigandPaint)> = s
+            .ligand_paint
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
         ligand_paint.sort_by(|a, b| a.0.cmp(&b.0));
         Some(ShownAs {
             repr: self.repr,
@@ -1375,7 +1490,11 @@ impl Viewer {
             standard_colors: self.standard_colors,
             show_cell: self.show_cell,
             appearance,
-            layers: self.layers.iter().map(|l| (l.selection.text().to_string(), l.style, l.color)).collect(),
+            layers: self
+                .layers
+                .iter()
+                .map(|l| (l.selection.text().to_string(), l.style, l.color))
+                .collect(),
             measurements: self.measurements.clone(),
             chain_colors: s.chains.iter().map(|c| c.color).collect(),
             ligand_paint,
@@ -1404,7 +1523,9 @@ impl Viewer {
     /// on again.
     pub fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
         let target = if redo {
-            let Some(next) = self.undone.pop() else { return };
+            let Some(next) = self.undone.pop() else {
+                return;
+            };
             self.history.push(next.clone());
             next
         } else {
@@ -1426,7 +1547,12 @@ impl Viewer {
             .layers
             .iter()
             .filter_map(|(text, style, color)| {
-                Some(Layer { selection: Selection::parse(text).ok()?, atoms: Arc::new(Vec::new()), style: *style, color: *color })
+                Some(Layer {
+                    selection: Selection::parse(text).ok()?,
+                    atoms: Arc::new(Vec::new()),
+                    style: *style,
+                    color: *color,
+                })
             })
             .collect();
         self.measurements = target.measurements.clone();
@@ -1445,7 +1571,13 @@ impl Viewer {
     /// Turn the camera's attention to a point: it slides across and zooms
     /// until a ball `extent` ångström across fills the view, and with `face`,
     /// turns too, until that direction in the structure points at the viewer.
-    fn fly_to(&mut self, centre: [f32; 3], extent: f32, face: Option<[f32; 3]>, cx: &mut Context<Self>) {
+    fn fly_to(
+        &mut self,
+        centre: [f32; 3],
+        extent: f32,
+        face: Option<[f32; 3]>,
+        cx: &mut Context<Self>,
+    ) {
         self.halt();
         let start = self.camera;
         let (from, zoom0, pan0) = (start.center, start.zoom, start.pan);
@@ -1453,7 +1585,9 @@ impl Viewer {
         let (axis, angle) = face.map_or(([0.0; 3], 0.0), |d| start.turn_to_face(d));
         self.fly_task = Some(cx.spawn(async move |this, cx| {
             for k in 1..=FLY_FRAMES {
-                cx.background_executor().timer(Duration::from_millis(16)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
                 let t = k as f32 / FLY_FRAMES as f32;
                 let e = t * t * (3.0 - 2.0 * t);
                 let going = this.update(cx, |this, cx| {
@@ -1481,13 +1615,20 @@ impl Viewer {
         self.camera.slab = view.slab;
         self.fly_task = Some(cx.spawn(async move |this, cx| {
             for k in 1..=FLY_FRAMES {
-                cx.background_executor().timer(Duration::from_millis(16)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
                 let t = k as f32 / FLY_FRAMES as f32;
                 let e = t * t * (3.0 - 2.0 * t);
                 let going = this.update(cx, |this, cx| {
                     let c = &mut this.camera;
-                    c.orientation = if k == FLY_FRAMES { view.orientation } else { start.turned(axis, angle * e) };
-                    c.center = [0, 1, 2].map(|i| start.center[i] + (view.center[i] - start.center[i]) * e);
+                    c.orientation = if k == FLY_FRAMES {
+                        view.orientation
+                    } else {
+                        start.turned(axis, angle * e)
+                    };
+                    c.center =
+                        [0, 1, 2].map(|i| start.center[i] + (view.center[i] - start.center[i]) * e);
                     c.zoom = start.zoom * (view.zoom / start.zoom).powf(e);
                     c.pan = [0, 1].map(|i| start.pan[i] + (view.pan[i] - start.pan[i]) * e);
                     cx.notify();
@@ -1515,23 +1656,43 @@ impl Viewer {
     /// Look at a ligand's binding site: its side chains drawn, each named,
     /// and the camera brought round to it.
     fn show_site(&mut self, ligand: usize, cx: &mut Context<Self>) {
-        let Some(s) = self.structure.clone() else { return };
+        let Some(s) = self.structure.clone() else {
+            return;
+        };
         let residues = s.site(ligand, SITE_CUTOFF);
-        let mut points: Vec<[f32; 3]> = s.residue_atoms(ligand).iter().map(|&i| s.atoms[i].pos).collect();
+        let mut points: Vec<[f32; 3]> = s
+            .residue_atoms(ligand)
+            .iter()
+            .map(|&i| s.atoms[i].pos)
+            .collect();
         let (centre, _) = spread(points.iter().copied());
         points.extend(residues.iter().filter_map(|&r| s.side_chain_centre(r)));
         let found = contacts::between(&s, ligand, &residues);
-        self.site = Some(Site { ligand, residues, contacts: found, hidden: Vec::new() });
+        self.site = Some(Site {
+            ligand,
+            residues,
+            contacts: found,
+            hidden: Vec::new(),
+        });
         self.compose(cx);
         // Round the ligand, so that it and its neighbours are all in view.
         let reach = points
             .iter()
-            .map(|p| ((p[0] - centre[0]).powi(2) + (p[1] - centre[1]).powi(2) + (p[2] - centre[2]).powi(2)).sqrt())
+            .map(|p| {
+                ((p[0] - centre[0]).powi(2)
+                    + (p[1] - centre[1]).powi(2)
+                    + (p[2] - centre[2]).powi(2))
+                .sqrt()
+            })
             .fold(0.0, f32::max);
         // Brought round to the near side, out from the middle of the
         // structure, so the protein it sits in is not in the way.
         let (middle, _) = spread(s.atoms.iter().map(|a| a.pos));
-        let out = [centre[0] - middle[0], centre[1] - middle[1], centre[2] - middle[2]];
+        let out = [
+            centre[0] - middle[0],
+            centre[1] - middle[1],
+            centre[2] - middle[2],
+        ];
         let face = (out.iter().map(|v| v * v).sum::<f32>() > 1.0).then_some(out);
         self.fly_to(centre, reach * 2.0 + 4.0, face, cx);
     }
@@ -1539,7 +1700,9 @@ impl Viewer {
     /// The binding site of the next copy of a ligand, by name, from the one
     /// being looked at; the first, if it is another ligand's.
     fn next_site(&mut self, name: &str, cx: &mut Context<Self>) {
-        let Some(s) = self.structure.as_ref() else { return };
+        let Some(s) = self.structure.as_ref() else {
+            return;
+        };
         let copies = s.copies(name);
         if copies.is_empty() {
             return;
@@ -1562,7 +1725,9 @@ impl Viewer {
     /// the structure as deposited. Style and colours stay; what was picked,
     /// measured or looked into goes, as its atoms are numbered anew.
     fn show_assembly(&mut self, k: Option<usize>, cx: &mut Context<Self>) {
-        let Some(base) = self.deposited.clone().or_else(|| self.structure.clone()) else { return };
+        let Some(base) = self.deposited.clone().or_else(|| self.structure.clone()) else {
+            return;
+        };
         if k == self.assembly {
             return;
         }
@@ -1581,7 +1746,10 @@ impl Viewer {
             }
         };
         self.assembly = k;
-        self.camera = Camera { perspective: self.camera.perspective, ..Camera::frame(&shown) };
+        self.camera = Camera {
+            perspective: self.camera.perspective,
+            ..Camera::frame(&shown)
+        };
         self.structure = Some(shown);
         self.selected = None;
         self.seq_hover = None;
@@ -1652,7 +1820,11 @@ impl Viewer {
         }
         let cam = &self.camera;
         let m = cam.basis();
-        let q = [p[0] - cam.center[0], p[1] - cam.center[1], p[2] - cam.center[2]];
+        let q = [
+            p[0] - cam.center[0],
+            p[1] - cam.center[1],
+            p[2] - cam.center[2],
+        ];
         let d = |r: [f32; 3]| r[0] * q[0] + r[1] * q[1] + r[2] * q[2];
         let (v, _) = cam.warp([d(m[0]), d(m[1]), d(m[2])]);
         let scale = w.min(h) as f32 / (2.2 * cam.radius) * cam.zoom;
@@ -1668,31 +1840,55 @@ impl Viewer {
         match result {
             // A trajectory with as many atoms as the structure shown moves
             // that structure's atoms, rather than standing in for it.
-            Ok(s) if s.format == Some("trajectory")
-                && self.compare.is_none()
-                && self.structure.as_ref().is_some_and(|shown| shown.atoms.len() == s.atoms.len()) =>
+            Ok(s)
+                if s.format == Some("trajectory")
+                    && self.compare.is_none()
+                    && self
+                        .structure
+                        .as_ref()
+                        .is_some_and(|shown| shown.atoms.len() == s.atoms.len()) =>
             {
                 self.opening = None;
                 let frames: Vec<crate::protein::Snapshot> = if s.frames.is_empty() {
-                    vec![crate::protein::Snapshot { step: None, pos: s.atoms.iter().map(|a| a.pos).collect(), cell: s.cell }]
+                    vec![crate::protein::Snapshot {
+                        step: None,
+                        pos: s.atoms.iter().map(|a| a.pos).collect(),
+                        cell: s.cell,
+                    }]
                 } else {
                     s.frames.to_vec()
                 };
                 let n = frames.len();
-                if let Some(moved) = self.structure.as_ref().and_then(|shown| shown.with_frames(frames)) {
-                    self.note(format!("{} frames from {} superimposed onto {}", thousands(n), s.id, moved.id));
+                if let Some(moved) = self
+                    .structure
+                    .as_ref()
+                    .and_then(|shown| shown.with_frames(frames))
+                {
+                    self.note(format!(
+                        "{} frames from {} superimposed onto {}",
+                        thousands(n),
+                        s.id,
+                        moved.id
+                    ));
                     self.stop_playing();
                     self.structure = Some(Arc::new(moved));
                     self.rebuild(cx);
                 }
             }
             // A map, which has no atoms, is laid over the structure shown.
-            Ok(s) if s.format == Some("map") && self.structure.as_ref().is_some_and(|s| !s.atoms.is_empty()) => {
+            Ok(s)
+                if s.format == Some("map")
+                    && self.structure.as_ref().is_some_and(|s| !s.atoms.is_empty()) =>
+            {
                 self.opening = None;
                 if let (Some(shown), Some(volume)) = (self.structure.as_mut(), s.volume) {
                     let [a, b, c] = volume.dims;
                     let said = format!("map {} · {a} × {b} × {c} laid over {}", s.id, shown.id);
-                    self.iso = Iso { shown: true, level: volume.default_level(), mesh: false };
+                    self.iso = Iso {
+                        shown: true,
+                        level: volume.default_level(),
+                        mesh: false,
+                    };
                     Arc::make_mut(shown).volume = Some(volume);
                     self.note(said);
                     self.rebuild(cx);
@@ -1839,16 +2035,20 @@ impl Viewer {
                     .on_click(cx.listener(|this, _, _, cx| this.prompt_overlay(cx))),
             )
             .child(
-                item("overlay-entry", "Overlay an entry by ID or name…".into(), self.overlay_next)
-                    .debug_selector(|| "overlay-entry".into())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open = None;
-                        this.overlay_next = !this.overlay_next;
-                        if this.overlay_next {
-                            window.focus(&this.input.read(cx).focus_handle(cx));
-                        }
-                        cx.notify();
-                    })),
+                item(
+                    "overlay-entry",
+                    "Overlay an entry by ID or name…".into(),
+                    self.overlay_next,
+                )
+                .debug_selector(|| "overlay-entry".into())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open = None;
+                    this.overlay_next = !this.overlay_next;
+                    if this.overlay_next {
+                        window.focus(&this.input.read(cx).focus_handle(cx));
+                    }
+                    cx.notify();
+                })),
             )
             .when(comparing, |d| {
                 d.child(divide()).child(
@@ -1884,7 +2084,9 @@ impl Viewer {
             Input::UniProt(acc) => self.retrieve(Retrieval::AlphaFold(acc), cx),
             Input::Cid(cid) => self.retrieve(Retrieval::PubChem(cid), cx),
             Input::Query(_) | Input::Sequence(_) => {
-                let Some(query) = self.search_text() else { return };
+                let Some(query) = self.search_text() else {
+                    return;
+                };
                 if query == self.hits_for && self.searching.is_none() {
                     if self.hits.is_empty() {
                         self.dropdown = true;
@@ -1923,9 +2125,9 @@ impl Viewer {
         let job = match self.detected.clone() {
             Input::Sequence(seq) => self.simplefold.fold(seq),
             Input::Pdb(id) => self.simplefold.fold_entry(Retrieval::Pdb(id.clone()), id),
-            Input::UniProt(acc) => {
-                self.simplefold.fold_entry(Retrieval::AlphaFold(acc.clone()), acc)
-            }
+            Input::UniProt(acc) => self
+                .simplefold
+                .fold_entry(Retrieval::AlphaFold(acc.clone()), acc),
             Input::Empty => return,
             _ => {
                 self.error = Some(
@@ -1972,51 +2174,49 @@ impl Viewer {
             let _ = tx.send(Event::Finished(result));
         });
 
-        self.task = Some(cx.spawn(async move |this, cx| {
+        self.task = Some(cx.spawn(async move |this, cx| loop {
+            let mut dirty = false;
+            let mut done = None;
             loop {
-                let mut dirty = false;
-                let mut done = None;
-                loop {
-                    match rx.try_recv() {
-                        Ok(Event::Stage(s)) => {
-                            let _ = this.update(cx, |this, _| {
-                                this.note(s.clone());
-                                this.busy = Some(s.into());
-                                this.progress = None;
-                            });
-                            dirty = true;
-                        }
-                        Ok(Event::Log(line)) => {
-                            let _ = this.update(cx, |this, _| this.note(line));
-                            dirty = true;
-                        }
-                        Ok(Event::Progress(p)) => {
-                            let _ = this.update(cx, |this, _| this.progress = Some(p));
-                            dirty = true;
-                        }
-                        Ok(Event::Heartbeat) => {}
-                        Ok(Event::Finished(result)) => {
-                            done = Some(result);
-                            break;
-                        }
-                        Err(mpsc::TryRecvError::Empty) => break,
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            done = Some(Err(anyhow::anyhow!("the job stopped unexpectedly")));
-                            break;
-                        }
+                match rx.try_recv() {
+                    Ok(Event::Stage(s)) => {
+                        let _ = this.update(cx, |this, _| {
+                            this.note(s.clone());
+                            this.busy = Some(s.into());
+                            this.progress = None;
+                        });
+                        dirty = true;
+                    }
+                    Ok(Event::Log(line)) => {
+                        let _ = this.update(cx, |this, _| this.note(line));
+                        dirty = true;
+                    }
+                    Ok(Event::Progress(p)) => {
+                        let _ = this.update(cx, |this, _| this.progress = Some(p));
+                        dirty = true;
+                    }
+                    Ok(Event::Heartbeat) => {}
+                    Ok(Event::Finished(result)) => {
+                        done = Some(result);
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        done = Some(Err(anyhow::anyhow!("the job stopped unexpectedly")));
+                        break;
                     }
                 }
-                if dirty {
-                    let _ = this.update(cx, |_, cx| cx.notify());
-                }
-                if let Some(result) = done {
-                    let _ = this.update(cx, |this, cx| this.settle(result, cx));
-                    return;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_millis(70))
-                    .await;
             }
+            if dirty {
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }
+            if let Some(result) = done {
+                let _ = this.update(cx, |this, cx| this.settle(result, cx));
+                return;
+            }
+            cx.background_executor()
+                .timer(Duration::from_millis(70))
+                .await;
         }));
     }
 
@@ -2178,7 +2378,11 @@ impl Viewer {
             return;
         }
         // From the end, play starts over.
-        if self.structure.as_ref().is_some_and(|s| s.frame + 1 >= count) {
+        if self
+            .structure
+            .as_ref()
+            .is_some_and(|s| s.frame + 1 >= count)
+        {
             self.set_frame(0, cx);
         }
         self.playing = true;
@@ -2226,7 +2430,13 @@ impl Viewer {
 
     /// Put the field editor on a value, with what it shows selected so
     /// typing replaces it.
-    fn start_edit(&mut self, field: Field, text: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_edit(
+        &mut self,
+        field: Field,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.editing.as_ref() == Some(&field) {
             return;
         }
@@ -2295,9 +2505,9 @@ impl Viewer {
             Pick::Chain(i) => self.set_chain_color(i, color, cx),
             Pick::Ligand(name) => {
                 let carbons = self.structure.as_ref().is_some_and(|s| {
-                    s.atoms.iter().any(|a| {
-                        a.element.0 == 6 && s.residues[a.residue as usize].name == name
-                    })
+                    s.atoms
+                        .iter()
+                        .any(|a| a.element.0 == 6 && s.residues[a.residue as usize].name == name)
                 });
                 let paint = color.map(|c| match self.ligand_paint(&name) {
                     Some(p) => p.with_color(c),
@@ -2317,16 +2527,25 @@ impl Viewer {
     /// colours. It shows under any scheme, so the scheme is left alone.
     /// Change the structure across its periodic boundaries; `Periodic::Original`
     /// puts back what was opened. What it did, to say so.
-    pub(super) fn periodic(&mut self, op: Periodic, cx: &mut Context<Self>) -> anyhow::Result<String> {
-        let Some(shown) = self.structure.clone() else { anyhow::bail!("nothing is open") };
+    pub(super) fn periodic(
+        &mut self,
+        op: Periodic,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<String> {
+        let Some(shown) = self.structure.clone() else {
+            anyhow::bail!("nothing is open")
+        };
         let (next, said) = match op {
             Periodic::Original => {
-                let Some(base) = self.unwrapped_from.take() else { anyhow::bail!("nothing to undo") };
+                let Some(base) = self.unwrapped_from.take() else {
+                    anyhow::bail!("nothing to undo")
+                };
                 (base, "as opened".to_string())
             }
-            Periodic::Replicate(n) => {
-                (Arc::new(crate::pbc::replicate(&shown, n)?), format!("replicated {} × {} × {}", n[0], n[1], n[2]))
-            }
+            Periodic::Replicate(n) => (
+                Arc::new(crate::pbc::replicate(&shown, n)?),
+                format!("replicated {} × {} × {}", n[0], n[1], n[2]),
+            ),
             Periodic::Wrap | Periodic::Whole | Periodic::InTime | Periodic::Fit => {
                 let mut s = (*shown).clone();
                 let said = match op {
@@ -2355,7 +2574,10 @@ impl Viewer {
         }
         let reframe = matches!(op, Periodic::Replicate(_) | Periodic::Original);
         if reframe {
-            self.camera = Camera { perspective: self.camera.perspective, ..Camera::frame(&next) };
+            self.camera = Camera {
+                perspective: self.camera.perspective,
+                ..Camera::frame(&next)
+            };
         }
         self.structure = Some(next);
         self.selected = None;
@@ -2388,7 +2610,11 @@ impl Viewer {
         if volume.signed() {
             lobes.push((volume.isosurface(-level, true), [0.86, 0.30, 0.22]));
         }
-        let step = volume.axes.iter().map(|a| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()).fold(f32::MAX, f32::min);
+        let step = volume
+            .axes
+            .iter()
+            .map(|a| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt())
+            .fold(f32::MAX, f32::min);
         let mut scene = Scene::default();
         for (facets, color) in lobes {
             if self.iso.mesh {
@@ -2411,7 +2637,11 @@ impl Viewer {
                     }
                 }
             } else {
-                scene.tris.extend(facets.iter().map(|f| render::Tri { p: f.p, n: f.n, c: color }));
+                scene.tris.extend(facets.iter().map(|f| render::Tri {
+                    p: f.p,
+                    n: f.n,
+                    c: color,
+                }));
             }
         }
         let scene = Arc::new(scene);
@@ -2428,7 +2658,9 @@ impl Viewer {
     /// Work out the trajectory's analysis in the background, unless it is
     /// worked out or being worked out already.
     pub(super) fn start_analysis(&mut self, cx: &mut Context<Self>) {
-        let Some(s) = self.structure.clone() else { return };
+        let Some(s) = self.structure.clone() else {
+            return;
+        };
         if s.frame_count() < 2 || self.analysis_for(&s).is_some() || self.analysis_task.is_some() {
             return;
         }
@@ -2447,7 +2679,9 @@ impl Viewer {
         });
         self.analysis_task = Some(cx.spawn(async move |this, cx| {
             while !finished.load(std::sync::atomic::Ordering::Relaxed) {
-                cx.background_executor().timer(Duration::from_millis(200)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
                 if this.update(cx, |_, cx| cx.notify()).is_err() {
                     return;
                 }
@@ -2470,7 +2704,10 @@ impl Viewer {
     fn go_to_plotted(&mut self, t: f32, cx: &mut Context<Self>) {
         let n = self.frame_count();
         self.stop_playing();
-        self.set_frame((t.clamp(0.0, 1.0) * (n.max(1) - 1) as f32).round() as usize, cx);
+        self.set_frame(
+            (t.clamp(0.0, 1.0) * (n.max(1) - 1) as f32).round() as usize,
+            cx,
+        );
     }
 
     /// What is plotted for pick `i`: a series, then RMSF, then secondary
@@ -2487,7 +2724,11 @@ impl Viewer {
     /// The trajectory's plots: a value through time, how much each residue
     /// moves, or its helices and strands frame by frame. Clicking a point
     /// along time goes to that frame.
-    fn trajectory_analysis(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn trajectory_analysis(
+        &self,
+        structure: &Structure,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         if structure.frame_count() < 2 {
             return None;
         }
@@ -2506,7 +2747,12 @@ impl Viewer {
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .child(div().text_size(px(9.5)).text_color(theme::faint()).child(caption))
+                        .child(
+                            div()
+                                .text_size(px(9.5))
+                                .text_color(theme::faint())
+                                .child(caption),
+                        )
                         .child(
                             div()
                                 .id("open-analysis")
@@ -2536,7 +2782,9 @@ impl Viewer {
             let part = self.analysis_done.as_ref().map_or(0.0, |(d, n)| {
                 d.load(std::sync::atomic::Ordering::Relaxed) as f32 / (*n).max(1) as f32
             });
-            return Some(row(format!("working · {}%", (part * 100.0) as u32), true, cx).into_any_element());
+            return Some(
+                row(format!("working · {}%", (part * 100.0) as u32), true, cx).into_any_element(),
+            );
         };
         let names = Self::analysis_names(&a);
         let pick = self.analysis_pick.min(names.len() - 1);
@@ -2560,39 +2808,61 @@ impl Viewer {
         let value_at = |t: f32| -> Option<String> {
             if let Some(series) = a.series.get(pick) {
                 let frame = (t * (frames - 1) as f32).round() as usize;
-                let (f, v) = series.points.iter().min_by_key(|(f, _)| f.abs_diff(frame))?;
+                let (f, v) = series
+                    .points
+                    .iter()
+                    .min_by_key(|(f, _)| f.abs_diff(frame))?;
                 Some(format!("frame {} · {} {}", f + 1, figure(*v), series.unit))
             } else if pick == a.series.len() {
                 let i = ((t * a.rmsf.len() as f32) as usize).min(a.rmsf.len().checked_sub(1)?);
                 let v = a.rmsf[i];
                 let what = if a.rmsf_by_residue {
-                    let r = structure.residues.iter().filter(|r| r.ca.is_some()).nth(i)?;
+                    let r = structure
+                        .residues
+                        .iter()
+                        .filter(|r| r.ca.is_some())
+                        .nth(i)?;
                     format!("{} {}", r.name, r.seq)
                 } else {
                     format!("atom {}", i + 1)
                 };
                 Some(format!("{what} · {} Å", figure(v)))
             } else {
-                let (f, _) = a.ss.get(((t * a.ss.len() as f32) as usize).min(a.ss.len() - 1))?;
+                let (f, _) =
+                    a.ss.get(((t * a.ss.len() as f32) as usize).min(a.ss.len() - 1))?;
                 Some(format!("frame {}", f + 1))
             }
         };
         let caption = self
             .analysis_hover
             .and_then(value_at)
-            .or_else(|| a.series.get(pick).map(|s| format!("{} through {} frames", s.name, thousands(frames))))
-            .unwrap_or_else(|| if pick == a.series.len() { "RMSF along the chain".into() } else { "helix · strand · coil".into() });
+            .or_else(|| {
+                a.series
+                    .get(pick)
+                    .map(|s| format!("{} through {} frames", s.name, thousands(frames)))
+            })
+            .unwrap_or_else(|| {
+                if pick == a.series.len() {
+                    "RMSF along the chain".into()
+                } else {
+                    "helix · strand · coil".into()
+                }
+            });
         let at = structure.frame as f32 / (frames - 1).max(1) as f32;
         let store = self.analysis_bounds.clone();
-        let pills = div().flex().flex_wrap().gap(px(4.)).children(names.iter().enumerate().map(|(i, n)| {
-            pill_keyed(("analysis", i), *n, i == pick)
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.analysis_pick = i;
-                    this.analysis_hover = None;
-                    cx.notify();
-                }))
-        }));
+        let pills = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(4.))
+            .children(names.iter().enumerate().map(|(i, n)| {
+                pill_keyed(("analysis", i), *n, i == pick)
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.analysis_pick = i;
+                        this.analysis_hover = None;
+                        cx.notify();
+                    }))
+            }));
         let plot = div()
             .id("analysis-plot")
             .debug_selector(|| "analysis-plot".into())
@@ -2603,8 +2873,18 @@ impl Viewer {
             .overflow_hidden()
             .border_1()
             .border_color(theme::border())
-            .child(gpui::img(gpui::ImageSource::Render(image)).absolute().inset_0().size_full())
-            .child(canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {}).absolute().inset_0().size_full())
+            .child(
+                gpui::img(gpui::ImageSource::Render(image))
+                    .absolute()
+                    .inset_0()
+                    .size_full(),
+            )
+            .child(
+                canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0()
+                    .size_full(),
+            )
             .when(timeline, |d| {
                 d.child(
                     div()
@@ -2613,7 +2893,10 @@ impl Viewer {
                         .bottom_0()
                         .left(px((PLOT - 2.0) * at))
                         .w(px(1.5))
-                        .bg(gpui::Hsla { a: 0.6, ..theme::ink() }),
+                        .bg(gpui::Hsla {
+                            a: 0.6,
+                            ..theme::ink()
+                        }),
                 )
             })
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
@@ -2654,7 +2937,16 @@ impl Viewer {
                 .flex()
                 .flex_col()
                 .child(row(caption, true, cx))
-                .child(div().pt(px(10.)).flex().flex_col().gap(px(8.)).child(pills).child(plot).child(div().flex().child(fit)))
+                .child(
+                    div()
+                        .pt(px(10.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(pills)
+                        .child(plot)
+                        .child(div().flex().child(fit)),
+                )
                 .into_any_element(),
         )
     }
@@ -2663,7 +2955,8 @@ impl Viewer {
     pub(crate) fn iso_drawn(&self) -> Option<Arc<Scene>> {
         let volume = self.structure.as_ref()?.volume.as_ref()?;
         let (iso, key, scene) = self.iso_cache.as_ref()?;
-        (self.iso.shown && *iso == self.iso && *key == Arc::as_ptr(volume) as usize).then(|| scene.clone())
+        (self.iso.shown && *iso == self.iso && *key == Arc::as_ptr(volume) as usize)
+            .then(|| scene.clone())
     }
 
     /// The volume's surface: shown or not, solid or a mesh, and its level.
@@ -2673,7 +2966,11 @@ impl Viewer {
     }
 
     /// Controls for the volume, under the structure's name.
-    fn volume_tools(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn volume_tools(
+        &self,
+        structure: &Structure,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let volume = structure.volume.as_ref()?;
         let iso = self.iso;
         let chip = |id: &'static str, label: String, on: bool, next: Iso| {
@@ -2685,7 +2982,10 @@ impl Viewer {
                 .text_size(px(10.))
                 .cursor_pointer()
                 .when(on, |d| d.bg(theme::sunken()).text_color(theme::text()))
-                .when(!on, |d| d.text_color(theme::muted()).hover(|s| s.bg(theme::sunken()).text_color(theme::text())))
+                .when(!on, |d| {
+                    d.text_color(theme::muted())
+                        .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
+                })
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| this.set_iso(next, cx)))
         };
@@ -2704,11 +3004,45 @@ impl Viewer {
                         .flex_wrap()
                         .items_center()
                         .gap(px(2.))
-                        .child(chip("iso-solid", "Surface".into(), iso.shown && !iso.mesh, Iso { shown: true, mesh: false, ..iso }))
-                        .child(chip("iso-mesh", "Mesh".into(), iso.shown && iso.mesh, Iso { shown: true, mesh: true, ..iso }))
-                        .child(chip("iso-hide", "Hide".into(), !iso.shown, Iso { shown: false, ..iso }))
+                        .child(chip(
+                            "iso-solid",
+                            "Surface".into(),
+                            iso.shown && !iso.mesh,
+                            Iso {
+                                shown: true,
+                                mesh: false,
+                                ..iso
+                            },
+                        ))
+                        .child(chip(
+                            "iso-mesh",
+                            "Mesh".into(),
+                            iso.shown && iso.mesh,
+                            Iso {
+                                shown: true,
+                                mesh: true,
+                                ..iso
+                            },
+                        ))
+                        .child(chip(
+                            "iso-hide",
+                            "Hide".into(),
+                            !iso.shown,
+                            Iso {
+                                shown: false,
+                                ..iso
+                            },
+                        ))
                         .child(div().w(px(8.)))
-                        .child(chip("iso-down", "−".into(), false, Iso { level: iso.level / 1.25, ..iso }))
+                        .child(chip(
+                            "iso-down",
+                            "−".into(),
+                            false,
+                            Iso {
+                                level: iso.level / 1.25,
+                                ..iso
+                            },
+                        ))
                         .child(
                             div()
                                 .px(px(4.))
@@ -2717,14 +3051,26 @@ impl Viewer {
                                 .text_color(theme::text())
                                 .child(format!("level {}", figure(iso.level))),
                         )
-                        .child(chip("iso-up", "+".into(), false, Iso { level: iso.level * 1.25, ..iso })),
+                        .child(chip(
+                            "iso-up",
+                            "+".into(),
+                            false,
+                            Iso {
+                                level: iso.level * 1.25,
+                                ..iso
+                            },
+                        )),
                 )
                 .into_any_element(),
         )
     }
 
     /// Buttons under the cell's size for what can be done across its walls.
-    fn periodic_tools(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn periodic_tools(
+        &self,
+        structure: &Structure,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         structure.cell?;
         let chip = |id: &'static str, label: &'static str, op: Periodic| {
             div()
@@ -2754,9 +3100,17 @@ impl Viewer {
                 .border_color(theme::border())
                 .child(chip("pbc-wrap", "Wrap", Periodic::Wrap))
                 .child(chip("pbc-whole", "Make whole", Periodic::Whole))
-                .when(structure.frame_count() > 1, |d| d.child(chip("pbc-time", "Unwrap in time", Periodic::InTime)))
-                .child(chip("pbc-replicate", "Replicate 2×2×2", Periodic::Replicate([2, 2, 2])))
-                .when(self.unwrapped_from.is_some(), |d| d.child(chip("pbc-original", "Original", Periodic::Original)))
+                .when(structure.frame_count() > 1, |d| {
+                    d.child(chip("pbc-time", "Unwrap in time", Periodic::InTime))
+                })
+                .child(chip(
+                    "pbc-replicate",
+                    "Replicate 2×2×2",
+                    Periodic::Replicate([2, 2, 2]),
+                ))
+                .when(self.unwrapped_from.is_some(), |d| {
+                    d.child(chip("pbc-original", "Original", Periodic::Original))
+                })
                 .into_any_element(),
         )
     }
@@ -2766,7 +3120,10 @@ impl Viewer {
         if c == Coloring::Property {
             if let Some(s) = self.structure.as_mut() {
                 if s.prop_color.is_none() && !s.props.is_empty() {
-                    Arc::make_mut(s).prop_color = Some(crate::protein::PropertyColor { index: 0, range: None });
+                    Arc::make_mut(s).prop_color = Some(crate::protein::PropertyColor {
+                        index: 0,
+                        range: None,
+                    });
                 }
             }
         }
@@ -2775,7 +3132,12 @@ impl Viewer {
     }
 
     /// Colour by property `index`, over `range` or its own span.
-    pub(super) fn colour_by_property(&mut self, index: usize, range: Option<(f32, f32)>, cx: &mut Context<Self>) {
+    pub(super) fn colour_by_property(
+        &mut self,
+        index: usize,
+        range: Option<(f32, f32)>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(s) = self.structure.as_mut() else {
             return;
         };
@@ -2784,7 +3146,12 @@ impl Viewer {
         self.rebuild(cx);
     }
 
-    fn set_ligand_paint(&mut self, name: String, paint: Option<LigandPaint>, cx: &mut Context<Self>) {
+    fn set_ligand_paint(
+        &mut self,
+        name: String,
+        paint: Option<LigandPaint>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(s) = self.structure.as_mut() else {
             return;
         };
@@ -2827,13 +3194,18 @@ impl Viewer {
         let Some(s) = &self.structure else {
             return Vec::new();
         };
-        let chains = s.chains.iter().enumerate().filter(|(_, c)| c.color.is_some()).map(|(i, c)| {
-            if c.id.trim().is_empty() {
-                format!("Chain {}", i + 1)
-            } else {
-                format!("Chain {}", c.id)
-            }
-        });
+        let chains = s
+            .chains
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.color.is_some())
+            .map(|(i, c)| {
+                if c.id.trim().is_empty() {
+                    format!("Chain {}", i + 1)
+                } else {
+                    format!("Chain {}", c.id)
+                }
+            });
         let elements = s
             .composition()
             .into_iter()
@@ -2843,7 +3215,12 @@ impl Viewer {
         let kinds = s
             .kinds
             .iter()
-            .filter(|k| self.appearance.get(&Species::Kind((*k).clone())).color.is_some())
+            .filter(|k| {
+                self.appearance
+                    .get(&Species::Kind((*k).clone()))
+                    .color
+                    .is_some()
+            })
             .map(|k| format!("Type {k}"));
         let ligands = s
             .ligands()
@@ -2970,7 +3347,9 @@ impl Viewer {
         if width == 0 || height == 0 {
             return;
         }
-        let camera = self.camera.resized((width, height), (width * scale, height * scale));
+        let camera = self
+            .camera
+            .resized((width, height), (width * scale, height * scale));
         let (width, height) = (width * scale, height * scale);
         let scene = self.scene.clone();
         let style = self.style;
@@ -2978,9 +3357,15 @@ impl Viewer {
         // The labels where their atoms are, set at the picture's scale.
         let pinned: Vec<([f32; 3], String)> = self
             .shown(0)
-            .map(|s| self.labels.iter().filter_map(|l| Some((s.atoms.get(l.atom as usize)?.pos, l.text.clone()))).collect())
+            .map(|s| {
+                self.labels
+                    .iter()
+                    .filter_map(|l| Some((s.atoms.get(l.atom as usize)?.pos, l.text.clone())))
+                    .collect()
+            })
             .unwrap_or_default();
-        let label_size = 10.5 * (width as f32 / f32::from(self.cache.borrow().bounds.size.width).max(1.0));
+        let label_size =
+            10.5 * (width as f32 / f32::from(self.cache.borrow().bounds.size.width).max(1.0));
         let ink = theme::view().map(|c| if c > 0.5 { 0.07 } else { 0.92 });
         let page = theme::view();
         let traced = self.traced.then(|| {
@@ -3012,9 +3397,13 @@ impl Viewer {
                 let finished = finished.clone();
                 async move {
                     let rgba = if let Some((done, _)) = &traced {
-                        let control = crate::trace::Control { cancel: None, done: Some(done) };
-                        let t = crate::trace::trace(&scene, &camera, width, height, style, &control)
-                            .expect("not cancelled");
+                        let control = crate::trace::Control {
+                            cancel: None,
+                            done: Some(done),
+                        };
+                        let t =
+                            crate::trace::trace(&scene, &camera, width, height, style, &control)
+                                .expect("not cancelled");
                         if transparent {
                             t.transparent()
                         } else {
@@ -3040,9 +3429,16 @@ impl Viewer {
                     let mut rgba = rgba;
                     if !pinned.is_empty() {
                         if let Some(font) = crate::movie::font() {
-                            let mut pic = crate::movie::Picture { width, height, rgba };
-                            let labels: Vec<([f32; 3], &str)> = pinned.iter().map(|(p, t)| (*p, t.as_str())).collect();
-                            crate::movie::draw_labels(&mut pic, &font, &camera, &labels, label_size, ink, page);
+                            let mut pic = crate::movie::Picture {
+                                width,
+                                height,
+                                rgba,
+                            };
+                            let labels: Vec<([f32; 3], &str)> =
+                                pinned.iter().map(|(p, t)| (*p, t.as_str())).collect();
+                            crate::movie::draw_labels(
+                                &mut pic, &font, &camera, &labels, label_size, ink, page,
+                            );
                             rgba = pic.rgba;
                         }
                     }
@@ -3060,7 +3456,9 @@ impl Viewer {
             });
             // Shown again now and then while it is traced, so the progress moves.
             while following && !finished.load(std::sync::atomic::Ordering::Relaxed) {
-                cx.background_executor().timer(std::time::Duration::from_millis(200)).await;
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
                 let _ = this.update(cx, |_, cx| cx.notify());
             }
             let drawn = drawn.await;
@@ -3108,16 +3506,26 @@ impl Viewer {
     /// residue's chain, the binding site looked into, and the session.
     /// Write out the whole structure, as PDB or as mmCIF.
     pub fn save_structure(&mut self, cif: bool, cx: &mut Context<Self>) {
-        let Some(s) = self.structure.clone() else { return };
+        let Some(s) = self.structure.clone() else {
+            return;
+        };
         let stem = s.id.to_lowercase();
-        let (text, ext) = if cif { (write::mmcif(&s, |_| true), "cif") } else { (write::pdb(&s, |_| true), "pdb") };
+        let (text, ext) = if cif {
+            (write::mmcif(&s, |_| true), "cif")
+        } else {
+            (write::pdb(&s, |_| true), "pdb")
+        };
         self.save_text(format!("{stem}.{ext}"), text, cx);
     }
 
     /// Write out the session: what is open and how it is shown.
     pub fn save_session(&mut self, cx: &mut Context<Self>) {
         if let Some(json) = self.session_json() {
-            let stem = self.structure.as_ref().map(|s| s.id.to_lowercase()).unwrap_or_default();
+            let stem = self
+                .structure
+                .as_ref()
+                .map(|s| s.id.to_lowercase())
+                .unwrap_or_default();
             self.save_text(format!("{stem}.{}", session::EXTENSION), json, cx);
         }
     }
@@ -3127,7 +3535,10 @@ impl Viewer {
             return menu(240.);
         };
         let stem = s.id.to_lowercase();
-        let chain = self.selected.filter(|t| t.which == 0).map(|t| s.residues[s.atoms[t.picked.atom].residue as usize].chain as usize);
+        let chain = self
+            .selected
+            .filter(|t| t.which == 0)
+            .map(|t| s.residues[s.atoms[t.picked.atom].residue as usize].chain as usize);
         let site = self.site.clone();
         let whole = |id: &'static str, label: &'static str, cif: bool| {
             item(id, label.into(), false)
@@ -3145,26 +3556,32 @@ impl Viewer {
                 let s = s.clone();
                 let id = s.chains[c].id.clone();
                 let stem = format!("{stem}_{id}");
-                d.child(item("save-chain", format!("Chain {id} as PDB…"), false).debug_selector(|| "save-chain".into()).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        let text = write::pdb(&s, |i| s.residues[s.atoms[i].residue as usize].chain as usize == c);
-                        this.save_text(format!("{stem}.pdb"), text, cx);
-                    }),
-                ))
+                d.child(
+                    item("save-chain", format!("Chain {id} as PDB…"), false)
+                        .debug_selector(|| "save-chain".into())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let text = write::pdb(&s, |i| {
+                                s.residues[s.atoms[i].residue as usize].chain as usize == c
+                            });
+                            this.save_text(format!("{stem}.pdb"), text, cx);
+                        })),
+                )
             })
             .when_some(site, |d, site| {
                 let s = s.clone();
                 let name = s.residues[site.ligand].name.to_lowercase();
                 let stem = format!("{stem}_{name}_site");
-                d.child(item("save-site", "Binding site as PDB…".into(), false).debug_selector(|| "save-site".into()).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        let text = write::pdb(&s, |i| {
-                            let r = s.atoms[i].residue as usize;
-                            r == site.ligand || site.residues.contains(&r)
-                        });
-                        this.save_text(format!("{stem}.pdb"), text, cx);
-                    }),
-                ))
+                d.child(
+                    item("save-site", "Binding site as PDB…".into(), false)
+                        .debug_selector(|| "save-site".into())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let text = write::pdb(&s, |i| {
+                                let r = s.atoms[i].residue as usize;
+                                r == site.ligand || site.residues.contains(&r)
+                            });
+                            this.save_text(format!("{stem}.pdb"), text, cx);
+                        })),
+                )
             })
             .child(divide())
             .child(
@@ -3373,7 +3790,11 @@ impl Viewer {
         // Near at the top.
         let at = |z: f32| ((r - z) / (2.0 * r)).clamp(0.0, 1.0) * H;
         let (top, bottom) = (at(near), at(far));
-        let hint = format!("{}-scroll: slab depth · {}: slab thickness", theme::keys("⌥"), theme::keys("⌥⇧"));
+        let hint = format!(
+            "{}-scroll: slab depth · {}: slab thickness",
+            theme::keys("⌥"),
+            theme::keys("⌥⇧")
+        );
         Some(
             div()
                 .absolute()
@@ -3383,7 +3804,12 @@ impl Viewer {
                 .flex_col()
                 .items_end()
                 .gap(px(6.))
-                .child(div().text_size(px(9.)).text_color(theme::faint()).child(spaced("SLAB")))
+                .child(
+                    div()
+                        .text_size(px(9.))
+                        .text_color(theme::faint())
+                        .child(spaced("SLAB")),
+                )
                 .child(
                     div()
                         .relative()
@@ -3402,7 +3828,13 @@ impl Viewer {
                                 .bg(theme::ink()),
                         ),
                 )
-                .child(div().w(px(90.)).text_size(px(9.)).text_color(theme::faint()).child(hint))
+                .child(
+                    div()
+                        .w(px(90.))
+                        .text_size(px(9.))
+                        .text_color(theme::faint())
+                        .child(hint),
+                )
                 .into_any_element(),
         )
     }
@@ -3455,7 +3887,11 @@ impl Viewer {
             ),
             (
                 "In the field",
-                &[("Return", "Open the best match"), ("↑ ↓", "Choose a result"), ("Esc", "Close the results")],
+                &[
+                    ("Return", "Open the best match"),
+                    ("↑ ↓", "Choose a result"),
+                    ("Esc", "Close the results"),
+                ],
             ),
         ];
         // Written the Mac way; elsewhere a chord is spelled out, and a lone
@@ -3478,8 +3914,19 @@ impl Viewer {
                 .flex()
                 .justify_between()
                 .gap(px(16.))
-                .child(div().text_size(px(11.)).text_color(theme::text()).child(what.to_string()))
-                .child(div().font_family(theme::MONO).text_size(px(10.5)).text_color(theme::muted()).child(k))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme::text())
+                        .child(what.to_string()),
+                )
+                .child(
+                    div()
+                        .font_family(theme::MONO)
+                        .text_size(px(10.5))
+                        .text_color(theme::muted())
+                        .child(k),
+                )
         };
         Some(
             div()
@@ -3490,7 +3937,10 @@ impl Viewer {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(gpui::Hsla { a: 0.35, ..theme::ink() })
+                .bg(gpui::Hsla {
+                    a: 0.35,
+                    ..theme::ink()
+                })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_shortcuts(cx)))
                 .child(
@@ -3542,7 +3992,9 @@ impl Viewer {
         self.turn_task = Some(cx.spawn(async move |this, cx| {
             let mut last = 0.0f32;
             loop {
-                cx.background_executor().timer(Duration::from_millis(16)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
                 let t = start.elapsed().as_secs_f32();
                 // Spinning: a turn every 14 seconds. Rocking: 40 degrees each
                 // way, there and back in six.
@@ -3611,7 +4063,11 @@ impl Viewer {
         if e.click_count >= 2 {
             let all: Vec<&Structure> = self.visible().into_iter().map(|s| s.as_ref()).collect();
             if !all.is_empty() {
-                self.camera = Camera { perspective: self.camera.perspective, slab: self.camera.slab, ..Camera::frame_all(&all) };
+                self.camera = Camera {
+                    perspective: self.camera.perspective,
+                    slab: self.camera.slab,
+                    ..Camera::frame_all(&all)
+                };
             }
         } else {
             self.drag = Some(if e.modifiers.shift || e.button == MouseButton::Right {
@@ -3630,7 +4086,9 @@ impl Viewer {
         if self.resizing {
             if theme::vertical() {
                 let bottom = window.viewport_size().height;
-                theme::set_band_height(f32::from(bottom - e.position.y).min(f32::from(bottom) - 240.));
+                theme::set_band_height(
+                    f32::from(bottom - e.position.y).min(f32::from(bottom) - 240.),
+                );
             } else {
                 let right = f32::from(window.viewport_size().width);
                 theme::set_side_width(f32::from(e.position.x).min(right - 320.));
@@ -3675,7 +4133,8 @@ impl Viewer {
                 // so the molecule turns with the hand.
                 let bounds = self.cache.borrow().bounds;
                 let cx_ = f32::from(bounds.origin.x + bounds.size.width / 2.0) + self.camera.pan[0];
-                let cy_ = f32::from(bounds.origin.y + bounds.size.height / 2.0) + self.camera.pan[1];
+                let cy_ =
+                    f32::from(bounds.origin.y + bounds.size.height / 2.0) + self.camera.pan[1];
                 let (x, y) = (f32::from(e.position.x) - cx_, f32::from(e.position.y) - cy_);
                 let (px_, py_) = (x - dx, y - dy);
                 if x * x + y * y > 4.0 && px_ * px_ + py_ * py_ > 4.0 {
@@ -3804,7 +4263,11 @@ pub(crate) struct Iso {
 
 impl Default for Iso {
     fn default() -> Self {
-        Iso { shown: true, level: 1.0, mesh: false }
+        Iso {
+            shown: true,
+            level: 1.0,
+            mesh: false,
+        }
     }
 }
 
@@ -3824,14 +4287,24 @@ pub(crate) enum Periodic {
 pub(crate) fn figure(v: f32) -> String {
     let a = v.abs();
     if a == 0.0 || (0.01..1e5).contains(&a) {
-        let digits = if a >= 100.0 { 0 } else if a >= 1.0 { 2 } else { 3 };
+        let digits = if a >= 100.0 {
+            0
+        } else if a >= 1.0 {
+            2
+        } else {
+            3
+        };
         format!("{v:.digits$}")
     } else {
         format!("{v:.2e}")
     }
 }
 
-pub(crate) fn pill(id: &'static str, label: impl Into<SharedString>, active: bool) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn pill(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    active: bool,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .px(px(9.))
@@ -3940,7 +4413,11 @@ pub(crate) fn swallow(_: &MouseDownEvent, _: &mut Window, cx: &mut App) {
 }
 
 /// One line of a menu: a name, a tick when it is the one in use.
-pub(crate) fn item(id: impl Into<gpui::ElementId>, text: String, chosen: bool) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn item(
+    id: impl Into<gpui::ElementId>,
+    text: String,
+    chosen: bool,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id.into())
         .flex()
@@ -3959,7 +4436,12 @@ pub(crate) fn item(id: impl Into<gpui::ElementId>, text: String, chosen: bool) -
                 .child(text),
         )
         .when(chosen, |d| {
-            d.child(div().text_size(px(10.)).text_color(theme::muted()).child("✓"))
+            d.child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(theme::muted())
+                    .child("✓"),
+            )
         })
 }
 
@@ -3991,7 +4473,6 @@ pub(crate) fn label(text: impl Into<gpui::SharedString>) -> impl IntoElement {
         .text_color(theme::faint())
         .child(text.into())
 }
-
 
 fn swatch(c: [f32; 3]) -> gpui::Rgba {
     gpui::Rgba {
@@ -4049,7 +4530,6 @@ fn swatch_strip(p: Palette) -> impl IntoElement {
         }))
 }
 
-
 /// The middle of some points, and how far the furthest is from it.
 fn spread(points: impl Iterator<Item = [f32; 3]> + Clone) -> ([f32; 3], f32) {
     let (sum, n) = points.clone().fold(([0.0f32; 3], 0usize), |(s, n), p| {
@@ -4072,7 +4552,11 @@ fn residue_pick(s: &Structure, residue: usize) -> Option<Picked> {
         Some(ca) => ca as usize,
         None => s.atoms.iter().position(|a| a.residue as usize == residue)?,
     };
-    Some(Picked { atom, residue: true, depth: 0.0 })
+    Some(Picked {
+        atom,
+        residue: true,
+        depth: 0.0,
+    })
 }
 
 /// The letter a residue goes by in the sequence: its amino acid's, or a
@@ -4321,7 +4805,7 @@ impl Viewer {
                 ))
             })
             .when(loaded, |d| {
-                d                .child(self.tab_with_menu(
+                d.child(self.tab_with_menu(
                     Dropdown::Camera,
                     "camera",
                     "Camera",
@@ -4422,9 +4906,7 @@ impl Viewer {
             .child(
                 tab(id, name, open)
                     .debug_selector(move || format!("tab-{id}"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                    this.toggle(which, cx)
-                })),
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle(which, cx))),
             )
             .when(open, |d| d.child(deferred(card).with_priority(2)))
     }
@@ -4437,8 +4919,13 @@ impl Viewer {
             .take(6)
             .map(|o| {
                 let name = match o.strip_prefix("sample:") {
-                    Some(file) => SAMPLES.iter().find(|s| s.file == file).map_or(file.to_string(), |s| s.name.to_string()),
-                    None => std::path::Path::new(&o).file_name().map_or(o.clone(), |n| n.to_string_lossy().into_owned()),
+                    Some(file) => SAMPLES
+                        .iter()
+                        .find(|s| s.file == file)
+                        .map_or(file.to_string(), |s| s.name.to_string()),
+                    None => std::path::Path::new(&o)
+                        .file_name()
+                        .map_or(o.clone(), |n| n.to_string_lossy().into_owned()),
                 };
                 (o, name)
             })
@@ -4449,25 +4936,31 @@ impl Viewer {
                 cx.notify();
             }))
             .when(!recent.is_empty(), |d| {
-                d.child(div().px(px(8.)).pt(px(3.)).pb(px(2.)).child(label("RECENT")))
-                    .children(recent.into_iter().enumerate().map(|(i, (origin, name))| {
-                        div()
-                            .id(("recent", i))
-                            .debug_selector(move || format!("recent-{i}"))
-                            .px(px(8.))
-                            .py(px(4.))
-                            .rounded(px(5.))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme::sunken()))
-                            .text_size(px(11.5))
-                            .text_color(theme::text())
-                            .child(clip(&name, 34))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open = None;
-                                this.reopen(&origin, cx);
-                            }))
-                    }))
-                    .child(divide())
+                d.child(
+                    div()
+                        .px(px(8.))
+                        .pt(px(3.))
+                        .pb(px(2.))
+                        .child(label("RECENT")),
+                )
+                .children(recent.into_iter().enumerate().map(|(i, (origin, name))| {
+                    div()
+                        .id(("recent", i))
+                        .debug_selector(move || format!("recent-{i}"))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::sunken()))
+                        .text_size(px(11.5))
+                        .text_color(theme::text())
+                        .child(clip(&name, 34))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open = None;
+                            this.reopen(&origin, cx);
+                        }))
+                }))
+                .child(divide())
             })
             .children(crate::samples::grouped().into_iter().enumerate().flat_map(
                 |(n, (group, samples))| {
@@ -4592,12 +5085,16 @@ impl Viewer {
                 .iter()
                 .map(|st| {
                     let st = *st;
-                    item(("style-item", st as usize), st.label().to_string(), st == style)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open = None;
-                            this.set_style(st, cx);
-                        }))
-                        .into_any_element()
+                    item(
+                        ("style-item", st as usize),
+                        st.label().to_string(),
+                        st == style,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open = None;
+                        this.set_style(st, cx);
+                    }))
+                    .into_any_element()
                 })
                 .collect();
             let colour_name = |c: Coloring| match c {
@@ -4607,24 +5104,39 @@ impl Viewer {
             let colourings: Vec<gpui::AnyElement> = options
                 .iter()
                 .filter(|c| **c != Coloring::Confidence || has_confidence)
-                .filter(|c| **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some()))
+                .filter(|c| {
+                    **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some())
+                })
                 .filter(|c| **c != Coloring::Structure || polymer)
-                    .filter(|c| **c != Coloring::Property || structure.is_some_and(|s| !s.props.is_empty()))
+                .filter(|c| {
+                    **c != Coloring::Property || structure.is_some_and(|s| !s.props.is_empty())
+                })
                 .map(|c| {
                     let c = *c;
-                    item(("colour-item", c as usize), colour_name(c).to_string(), c == coloring)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open = None;
-                            this.set_coloring(c, cx);
-                        }))
-                        .into_any_element()
+                    item(
+                        ("colour-item", c as usize),
+                        colour_name(c).to_string(),
+                        c == coloring,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open = None;
+                        this.set_coloring(c, cx);
+                    }))
+                    .into_any_element()
                 })
                 .collect();
             let top = bar()
                 .debug_selector(|| "top-controls".into())
                 .top(px(12.))
                 .child(self.choice(Dropdown::Repr, "repr-menu", repr.label(), false, reprs, cx))
-                .child(self.choice(Dropdown::Style, "style-menu", style.label(), false, styles, cx))
+                .child(self.choice(
+                    Dropdown::Style,
+                    "style-menu",
+                    style.label(),
+                    false,
+                    styles,
+                    cx,
+                ))
                 .child(group(vec![pill("measure", "Measure", self.measuring)
                     .debug_selector(|| "measure".into())
                     .cursor_pointer()
@@ -4642,7 +5154,14 @@ impl Viewer {
             let bottom = bar()
                 .bottom(px(bottom))
                 .child(self.palette_button(cx))
-                .child(self.choice(Dropdown::Coloring, "colour-menu", colour_name(coloring), true, colourings, cx));
+                .child(self.choice(
+                    Dropdown::Coloring,
+                    "colour-menu",
+                    colour_name(coloring),
+                    true,
+                    colourings,
+                    cx,
+                ));
             return vec![top.into_any_element(), bottom.into_any_element()];
         }
 
@@ -4703,9 +5222,13 @@ impl Viewer {
                     // is offered only for one; B-factors only where the file
                     // has them, and helices only in a protein.
                     .filter(|c| **c != Coloring::Confidence || has_confidence)
-                    .filter(|c| **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some()))
+                    .filter(|c| {
+                        **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some())
+                    })
                     .filter(|c| **c != Coloring::Structure || polymer)
-                    .filter(|c| **c != Coloring::Property || structure.is_some_and(|s| !s.props.is_empty()))
+                    .filter(|c| {
+                        **c != Coloring::Property || structure.is_some_and(|s| !s.props.is_empty())
+                    })
                     .map(|c| {
                         let c = *c;
                         let name = match c {
@@ -4765,8 +5288,18 @@ impl Viewer {
                     .cursor_pointer()
                     .when(open, |d| d.bg(theme::sunken()))
                     .hover(|s| s.bg(theme::sunken()))
-                    .child(div().text_size(px(11.)).text_color(theme::ink()).child(label))
-                    .child(div().text_size(px(10.)).text_color(theme::muted()).child(arrow))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(theme::ink())
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(theme::muted())
+                            .child(arrow),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle(which, cx))),
             )
             .when(open, |d| d.child(deferred(list).with_priority(2)))
@@ -4799,7 +5332,12 @@ impl Viewer {
                         .child(p.label()),
                 )
                 .when(chosen, |d| {
-                    d.child(div().text_size(px(10.)).text_color(theme::muted()).child("✓"))
+                    d.child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(theme::muted())
+                            .child("✓"),
+                    )
                 })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.palette = p;
@@ -4834,17 +5372,15 @@ impl Viewer {
             }
             col
         };
-        let top = div()
-            .flex()
-            .flex_col()
-            .gap(px(1.))
-            .child(heading(PaletteGroup::Classic, true))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(4.))
-                    .children(members(PaletteGroup::Classic).map(|p| div().flex_1().child(item(p)))),
-            );
+        let top =
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(heading(PaletteGroup::Classic, true))
+                .child(div().flex().gap(px(4.)).children(
+                    members(PaletteGroup::Classic).map(|p| div().flex_1().child(item(p))),
+                ));
         let left = column(&[PaletteGroup::Perceptual]);
         let right = column(&[PaletteGroup::Thematic, PaletteGroup::Muted]);
         let list = menu(372.)
@@ -4855,7 +5391,14 @@ impl Viewer {
                 cx.notify();
             }))
             .child(top)
-            .child(div().flex().items_start().gap(px(4.)).child(left).child(right))
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(4.))
+                    .child(left)
+                    .child(right),
+            )
             .when_some(kept_note(&self.own_colors()), |d, note| {
                 // Picked colours outlast a change of palette; say which, so
                 // the ones that did not move are not a surprise.
@@ -5112,7 +5655,11 @@ impl Viewer {
             .on_click(cx.listener(|this, _, _, cx| this.open_movie(cx)));
         let record = item(
             "movie-record-menu",
-            if self.recording() { "Stop recording".into() } else { "Record a camera path".into() },
+            if self.recording() {
+                "Stop recording".into()
+            } else {
+                "Record a camera path".into()
+            },
             false,
         )
         .debug_selector(|| "movie-record-menu".into())
@@ -5130,9 +5677,10 @@ impl Viewer {
     /// corner of the viewport while one runs.
     fn tracing_label(&self) -> Option<impl IntoElement> {
         let (what, part) = match &self.saving {
-            Some((done, rows)) => {
-                ("Ray tracing the image", done.load(std::sync::atomic::Ordering::Relaxed) as f32 / (*rows).max(1) as f32)
-            }
+            Some((done, rows)) => (
+                "Ray tracing the image",
+                done.load(std::sync::atomic::Ordering::Relaxed) as f32 / (*rows).max(1) as f32,
+            ),
             None => ("Ray tracing", self.cache.borrow().tracing()?),
         };
         Some(
@@ -5156,12 +5704,16 @@ impl Viewer {
     /// Write the viewport out as a picture, at a multiple of its size.
     fn image_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (w, h) = self.cache.borrow().size;
-        let transparent = item("transparent", "Transparent background".into(), self.transparent)
-            .debug_selector(|| "transparent".into())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.transparent = !this.transparent;
-                cx.notify();
-            }));
+        let transparent = item(
+            "transparent",
+            "Transparent background".into(),
+            self.transparent,
+        )
+        .debug_selector(|| "transparent".into())
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.transparent = !this.transparent;
+            cx.notify();
+        }));
         let traced = item("traced", "Ray traced".into(), self.traced)
             .debug_selector(|| "traced".into())
             .tooltip(|_, cx| {
@@ -5221,7 +5773,11 @@ impl Viewer {
         // Each name at the size that spans the panel beside the logo.
         let (name, size, purpose) = match self.mode {
             Mode::View => ("profold", 66., "Proteins, molecules and crystals"),
-            Mode::Fold => ("Fold a protein", 34., "Structure prediction with Apple's SimpleFold"),
+            Mode::Fold => (
+                "Fold a protein",
+                34.,
+                "Structure prediction with Apple's SimpleFold",
+            ),
         };
         div()
             .flex()
@@ -5260,7 +5816,10 @@ impl Viewer {
         let detected = self.detected.clone();
         let folding = self.mode == Mode::Fold;
         let ready = if folding {
-            matches!(detected, Input::Sequence(_) | Input::Pdb(_) | Input::UniProt(_))
+            matches!(
+                detected,
+                Input::Sequence(_) | Input::Pdb(_) | Input::UniProt(_)
+            )
         } else {
             match &detected {
                 Input::Empty | Input::Unknown | Input::Missing(_) => false,
@@ -5305,7 +5864,9 @@ impl Viewer {
                     .cursor_pointer()
             })
             .when(!ready || busy, |d| {
-                d.border_1().border_color(theme::border()).text_color(theme::faint())
+                d.border_1()
+                    .border_color(theme::border())
+                    .text_color(theme::faint())
             })
             .when(!empty, |d| d.child(div().text_size(px(11.)).child(action)))
             .child("↵")
@@ -5335,9 +5896,13 @@ impl Viewer {
         let choosing = self.dropdown && !self.hits.is_empty();
         let status = match &detected {
             Input::Empty if folding => Some(hint("A sequence, PDB ID or UniProt accession".into())),
-            Input::Empty => Some(hint("Names, genes, PDB and UniProt IDs, CIDs, sequences or files".into())),
+            Input::Empty => Some(hint(
+                "Names, genes, PDB and UniProt IDs, CIDs, sequences or files".into(),
+            )),
             Input::Query(_) if folding => Some(hint("Not a sequence, PDB ID or accession".into())),
-            Input::Query(_) if choosing => Some(hint("↑↓ to choose · ↵ to open · esc to close".into())),
+            Input::Query(_) if choosing => {
+                Some(hint("↑↓ to choose · ↵ to open · esc to close".into()))
+            }
             Input::Query(_) => Some(hint("Searches the PDB, AlphaFold DB and PubChem".into())),
             Input::Sequence(_) if !folding => Some(hint("Looked up in the PDB by sequence".into())),
             Input::Unknown | Input::Missing(_) | Input::File(_) => Some(hint(detected.detail())),
@@ -5369,59 +5934,63 @@ impl Viewer {
             .gap(px(10.))
             .px(px(20.))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .id("search-field")
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .h(px(40.))
-                            .pl(px(12.))
-                            .pr(px(7.))
-                            .rounded(px(9.))
-                            .bg(if focused { theme::surface() } else { theme::sunken() })
-                            .border_1()
-                            .border_color(if focused {
-                                theme::border_focus()
-                            } else {
-                                theme::border()
-                            })
-                            .text_size(px(12.5))
-                            .text_color(theme::text())
-                            // Back into the field, the list comes back with it.
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    if !this.hits.is_empty()
-                                        && this.search_text().as_deref() == Some(this.hits_for.as_str())
-                                    {
-                                        this.dropdown = true;
-                                        cx.notify();
-                                    }
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    // Typed text is set in mono, for sequences and
-                                    // IDs; the placeholder reads as prose.
-                                    .when(!empty, |d| d.font_family(theme::MONO))
-                                    .child(self.input.clone()),
-                            )
-                            .when_some(chip, |d, c| d.child(c))
-                            .child(run),
-                    ),
+                div().flex().items_center().gap(px(8.)).child(
+                    div()
+                        .id("search-field")
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .h(px(40.))
+                        .pl(px(12.))
+                        .pr(px(7.))
+                        .rounded(px(9.))
+                        .bg(if focused {
+                            theme::surface()
+                        } else {
+                            theme::sunken()
+                        })
+                        .border_1()
+                        .border_color(if focused {
+                            theme::border_focus()
+                        } else {
+                            theme::border()
+                        })
+                        .text_size(px(12.5))
+                        .text_color(theme::text())
+                        // Back into the field, the list comes back with it.
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                if !this.hits.is_empty()
+                                    && this.search_text().as_deref() == Some(this.hits_for.as_str())
+                                {
+                                    this.dropdown = true;
+                                    cx.notify();
+                                }
+                            }),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                // Typed text is set in mono, for sequences and
+                                // IDs; the placeholder reads as prose.
+                                .when(!empty, |d| d.font_family(theme::MONO))
+                                .child(self.input.clone()),
+                        )
+                        .when_some(chip, |d, c| d.child(c))
+                        .child(run),
+                ),
             )
             // While the next entry is to be laid over this one, say so.
             .when(self.overlay_next && !busy, |d| {
-                let onto = self.structure.as_ref().map(|s| s.id.to_uppercase()).unwrap_or_default();
+                let onto = self
+                    .structure
+                    .as_ref()
+                    .map(|s| s.id.to_uppercase())
+                    .unwrap_or_default();
                 d.child(
                     div()
                         .flex()
@@ -5429,11 +5998,9 @@ impl Viewer {
                         .justify_between()
                         .gap(px(8.))
                         .text_size(px(10.5))
-                        .child(
-                            div()
-                                .text_color(theme::text())
-                                .child(format!("The next structure opened is superimposed onto {onto}")),
-                        )
+                        .child(div().text_color(theme::text()).child(format!(
+                            "The next structure opened is superimposed onto {onto}"
+                        )))
                         .child(
                             div()
                                 .id("overlay-cancel")
@@ -5650,11 +6217,14 @@ impl Viewer {
     /// working panel, which is where you look while a job is going.
     fn status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = cx;
-        div()
-            .px(px(20.))
-            .when_some(self.error.clone(), |d, err| {
-                d.child(div().text_size(px(11.)).text_color(theme::danger()).child(err))
-            })
+        div().px(px(20.)).when_some(self.error.clone(), |d, err| {
+            d.child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme::danger())
+                    .child(err),
+            )
+        })
     }
 
     /// A determinate bar where the job knows how far along it is, and a
@@ -5779,7 +6349,9 @@ impl Viewer {
             .flex_col()
             .gap(px(7.))
             .px(px(20.))
-            .when(!folding, |d| d.child(self.sample_list(cx)).child(div().h(px(8.))))
+            .when(!folding, |d| {
+                d.child(self.sample_list(cx)).child(div().h(px(8.)))
+            })
             .child(label(heading))
             .children(examples.iter().enumerate().map(|(i, (value, note))| {
                 let value = value.to_string();
@@ -5906,7 +6478,6 @@ impl Viewer {
                                 .text_color(theme::ink())
                                 .child(format!("{rmsd:.2} Å")),
                         )
-
                         .child(
                             div()
                                 .text_size(px(10.))
@@ -5933,7 +6504,11 @@ impl Viewer {
     }
 
     /// The deposited structure, and each assembly that is more than it.
-    fn assembly_choice(&self, shown: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn assembly_choice(
+        &self,
+        shown: &Structure,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let base: &Structure = self.deposited.as_deref().unwrap_or(shown);
         let offered: Vec<(usize, String)> = base
             .assemblies
@@ -5957,13 +6532,24 @@ impl Viewer {
             let chosen = self.assembly == k;
             div()
                 .id(("assembly", k.map_or(0, |k| k + 1)))
-                .debug_selector(move || format!("assembly-{}", k.map_or("deposited".to_string(), |k| k.to_string())))
+                .debug_selector(move || {
+                    format!(
+                        "assembly-{}",
+                        k.map_or("deposited".to_string(), |k| k.to_string())
+                    )
+                })
                 .px(px(7.))
                 .py(px(1.))
                 .rounded(px(5.))
                 .text_size(px(10.))
-                .when(chosen, |d| d.bg(theme::surface()).text_color(theme::ink()).shadow_sm())
-                .when(!chosen, |d| d.text_color(theme::muted()).cursor_pointer().hover(|s| s.text_color(theme::ink())))
+                .when(chosen, |d| {
+                    d.bg(theme::surface()).text_color(theme::ink()).shadow_sm()
+                })
+                .when(!chosen, |d| {
+                    d.text_color(theme::muted())
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme::ink()))
+                })
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| this.show_assembly(k, cx)))
         };
@@ -5991,7 +6577,10 @@ impl Viewer {
     }
 
     /// Bring the plots' worked-out parts up to the structure shown.
-    fn plots_for(&self, structure: &Structure) -> (Arc<Vec<Option<(f32, f32)>>>, Option<Arc<gpui::RenderImage>>) {
+    fn plots_for(
+        &self,
+        structure: &Structure,
+    ) -> (Arc<Vec<Option<(f32, f32)>>>, Option<Arc<gpui::RenderImage>>) {
         let key = (structure as *const Structure as usize, structure.frame);
         let mut cache = self.plot_cache.borrow_mut();
         if cache.key != Some(key) {
@@ -6004,7 +6593,10 @@ impl Viewer {
                 let step = pae.n as f32 / n as f32;
                 let low = [0.05, 0.30, 0.15];
                 picture(n, n, |x, y| {
-                    let v = pae.at(((y as f32 * step) as usize).min(pae.n - 1), ((x as f32 * step) as usize).min(pae.n - 1));
+                    let v = pae.at(
+                        ((y as f32 * step) as usize).min(pae.n - 1),
+                        ((x as f32 * step) as usize).min(pae.n - 1),
+                    );
                     let t = (v / pae.max).clamp(0.0, 1.0);
                     [0, 1, 2].map(|i| low[i] + (1.0 - low[i]) * t)
                 })
@@ -6016,7 +6608,11 @@ impl Viewer {
     /// φ against ψ, a dot per residue in its secondary structure's colour.
     /// A dot pointed at glows its residue; clicked, it picks it out; what is
     /// picked is ringed.
-    fn ramachandran(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn ramachandran(
+        &self,
+        structure: &Structure,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         if !structure.residues.iter().any(|r| r.ca.is_some()) {
             return None;
         }
@@ -6025,17 +6621,30 @@ impl Viewer {
             return None;
         }
         if !self.rama_open {
-            return Some(self.plot_row("ramachandran", false, None, cx).into_any_element());
+            return Some(
+                self.plot_row("ramachandran", false, None, cx)
+                    .into_any_element(),
+            );
         }
         let selected = self.selected_residue();
-        let pointed = self.rama_hover.or(self.seq_hover).or(self.hovered_residue());
+        let pointed = self
+            .rama_hover
+            .or(self.seq_hover)
+            .or(self.hovered_residue());
         let dots: Vec<(usize, f32, f32, [f32; 3])> = torsions
             .iter()
             .enumerate()
             .filter_map(|(r, t)| {
                 let (phi, psi) = (*t)?;
                 let res = &structure.residues[r];
-                let color = if res.name == "GLY" { [0.55, 0.56, 0.58] } else { render::SS_COLORS.iter().find(|c| c.0 == res.ss).map_or([0.6; 3], |c| c.2) };
+                let color = if res.name == "GLY" {
+                    [0.55, 0.56, 0.58]
+                } else {
+                    render::SS_COLORS
+                        .iter()
+                        .find(|c| c.0 == res.ss)
+                        .map_or([0.6; 3], |c| c.2)
+                };
                 Some((r, (phi + 180.0) / 360.0, (180.0 - psi) / 360.0, color))
             })
             .collect();
@@ -6044,7 +6653,10 @@ impl Viewer {
         let caption = pointed.and_then(|r| {
             let (phi, psi) = torsions.get(r).copied().flatten()?;
             let res = &structure.residues[r];
-            Some(format!("{} {} · φ {phi:.0}° ψ {psi:.0}°", res.name, res.seq))
+            Some(format!(
+                "{} {} · φ {phi:.0}° ψ {psi:.0}°",
+                res.name, res.seq
+            ))
         });
         let ink = theme::ink();
         let plot = div()
@@ -6057,7 +6669,12 @@ impl Viewer {
             .overflow_hidden()
             .border_1()
             .border_color(theme::border())
-            .child(gpui::img(gpui::ImageSource::Render(ground)).absolute().inset_0().size_full())
+            .child(
+                gpui::img(gpui::ImageSource::Render(ground))
+                    .absolute()
+                    .inset_0()
+                    .size_full(),
+            )
             .child({
                 let dots = dots.clone();
                 canvas(
@@ -6066,13 +6683,28 @@ impl Viewer {
                         let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
                         // The axes through zero.
                         let line = gpui::Hsla { a: 0.25, ..ink };
-                        window.paint_quad(gpui::fill(Bounds::new(bounds.origin + gpui::point(px(w * 0.5), px(0.)), gpui::size(px(1.), px(h))), line));
-                        window.paint_quad(gpui::fill(Bounds::new(bounds.origin + gpui::point(px(0.), px(h * 0.5)), gpui::size(px(w), px(1.))), line));
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(
+                                bounds.origin + gpui::point(px(w * 0.5), px(0.)),
+                                gpui::size(px(1.), px(h)),
+                            ),
+                            line,
+                        ));
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(
+                                bounds.origin + gpui::point(px(0.), px(h * 0.5)),
+                                gpui::size(px(w), px(1.)),
+                            ),
+                            line,
+                        ));
                         for &(r, x, y, c) in &dots {
                             let big = Some(r) == selected || Some(r) == pointed;
                             let d = if big { 7.0 } else { 4.0 };
-                            let at = bounds.origin + gpui::point(px(x * w - d * 0.5), px(y * h - d * 0.5));
-                            let mut q = gpui::fill(Bounds::new(at, gpui::size(px(d), px(d))), swatch(c)).corner_radii(px(d * 0.5));
+                            let at = bounds.origin
+                                + gpui::point(px(x * w - d * 0.5), px(y * h - d * 0.5));
+                            let mut q =
+                                gpui::fill(Bounds::new(at, gpui::size(px(d), px(d))), swatch(c))
+                                    .corner_radii(px(d * 0.5));
                             if big {
                                 q = q.border_widths(px(1.5)).border_color(ink);
                             }
@@ -6087,7 +6719,10 @@ impl Viewer {
             .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
                 let b = this.rama_bounds.get();
                 let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
-                let (x, y) = (f32::from(e.position.x - b.origin.x), f32::from(e.position.y - b.origin.y));
+                let (x, y) = (
+                    f32::from(e.position.x - b.origin.x),
+                    f32::from(e.position.y - b.origin.y),
+                );
                 let near = dots
                     .iter()
                     .map(|&(r, dx, dy, _)| (r, (dx * w - x).powi(2) + (dy * h - y).powi(2)))
@@ -6108,7 +6743,9 @@ impl Viewer {
             }))
             .on_click(cx.listener(|this, _, _, cx| {
                 let Some(r) = this.rama_hover else { return };
-                let Some(s) = this.structure.as_ref() else { return };
+                let Some(s) = this.structure.as_ref() else {
+                    return;
+                };
                 let target = residue_pick(s, r).map(|picked| Target { which: 0, picked });
                 this.select(target, cx);
             }));
@@ -6116,7 +6753,12 @@ impl Viewer {
             div()
                 .flex()
                 .flex_col()
-                .child(self.plot_row("ramachandran", true, Some(caption.unwrap_or_else(|| "φ across, ψ up".into())), cx))
+                .child(self.plot_row(
+                    "ramachandran",
+                    true,
+                    Some(caption.unwrap_or_else(|| "φ across, ψ up".into())),
+                    cx,
+                ))
                 .child(div().pt(px(10.)).child(plot))
                 .into_any_element(),
         )
@@ -6129,58 +6771,94 @@ impl Viewer {
         let (_, image) = self.plots_for(structure);
         let image = image?;
         if !self.pae_open {
-            return Some(self.plot_row("predicted aligned error", false, None, cx).into_any_element());
+            return Some(
+                self.plot_row("predicted aligned error", false, None, cx)
+                    .into_any_element(),
+            );
         }
         let store = self.pae_bounds.clone();
-        let polymer: Vec<usize> = (0..structure.residues.len()).filter(|&r| !structure.residues[r].outside_polymer()).collect();
+        let polymer: Vec<usize> = (0..structure.residues.len())
+            .filter(|&r| !structure.residues[r].outside_polymer())
+            .collect();
         let caption = self.pae_hover.and_then(|(i, j)| {
-            let (a, b) = (&structure.residues[*polymer.get(i)?], &structure.residues[*polymer.get(j)?]);
-            Some(format!("{}{} on {}{} · {:.1} Å", b.name, b.seq, a.name, a.seq, pae.at(i, j)))
+            let (a, b) = (
+                &structure.residues[*polymer.get(i)?],
+                &structure.residues[*polymer.get(j)?],
+            );
+            Some(format!(
+                "{}{} on {}{} · {:.1} Å",
+                b.name,
+                b.seq,
+                a.name,
+                a.seq,
+                pae.at(i, j)
+            ))
         });
         let n = pae.n;
         Some(
             div()
                 .flex()
                 .flex_col()
-                .child(self.plot_row("predicted aligned error", true, Some(caption.unwrap_or_else(|| format!("0 – {:.0} Å", pae.max))), cx))
+                .child(self.plot_row(
+                    "predicted aligned error",
+                    true,
+                    Some(caption.unwrap_or_else(|| format!("0 – {:.0} Å", pae.max))),
+                    cx,
+                ))
                 .child(
-                    div()
-                        .pt(px(10.))
-                        .child(
-                    div()
-                        .id("pae")
-                        .debug_selector(|| "pae".into())
-                        .relative()
-                        .w(px(PLOT))
-                        .h(px(PLOT))
-                        .rounded(px(4.))
-                        .overflow_hidden()
-                        .child(gpui::img(gpui::ImageSource::Render(image)).absolute().inset_0().size_full())
-                        .child(canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {}).absolute().inset_0().size_full())
-                        .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
-                            let b = this.pae_bounds.get();
-                            let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
-                            if w <= 0.0 || h <= 0.0 {
-                                return;
-                            }
-                            let x = (f32::from(e.position.x - b.origin.x) / w * n as f32) as usize;
-                            let y = (f32::from(e.position.y - b.origin.y) / h * n as f32) as usize;
-                            let at = Some((y.min(n - 1), x.min(n - 1)));
-                            if at != this.pae_hover {
-                                this.pae_hover = at;
-                                // The residue the error is of glows.
-                                let r = at.and_then(|(_, j)| this.structure.as_ref().and_then(|s| (0..s.residues.len()).filter(|&r| !s.residues[r].outside_polymer()).nth(j)));
-                                this.set_seq_hover(r, cx);
-                                cx.notify();
-                            }
-                        }))
-                        .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                            if !*hovered && this.pae_hover.take().is_some() {
-                                this.set_seq_hover(None, cx);
-                                cx.notify();
-                            }
-                        })),
-                        ),
+                    div().pt(px(10.)).child(
+                        div()
+                            .id("pae")
+                            .debug_selector(|| "pae".into())
+                            .relative()
+                            .w(px(PLOT))
+                            .h(px(PLOT))
+                            .rounded(px(4.))
+                            .overflow_hidden()
+                            .child(
+                                gpui::img(gpui::ImageSource::Render(image))
+                                    .absolute()
+                                    .inset_0()
+                                    .size_full(),
+                            )
+                            .child(
+                                canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {})
+                                    .absolute()
+                                    .inset_0()
+                                    .size_full(),
+                            )
+                            .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _, cx| {
+                                let b = this.pae_bounds.get();
+                                let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+                                if w <= 0.0 || h <= 0.0 {
+                                    return;
+                                }
+                                let x =
+                                    (f32::from(e.position.x - b.origin.x) / w * n as f32) as usize;
+                                let y =
+                                    (f32::from(e.position.y - b.origin.y) / h * n as f32) as usize;
+                                let at = Some((y.min(n - 1), x.min(n - 1)));
+                                if at != this.pae_hover {
+                                    this.pae_hover = at;
+                                    // The residue the error is of glows.
+                                    let r = at.and_then(|(_, j)| {
+                                        this.structure.as_ref().and_then(|s| {
+                                            (0..s.residues.len())
+                                                .filter(|&r| !s.residues[r].outside_polymer())
+                                                .nth(j)
+                                        })
+                                    });
+                                    this.set_seq_hover(r, cx);
+                                    cx.notify();
+                                }
+                            }))
+                            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                                if !*hovered && this.pae_hover.take().is_some() {
+                                    this.set_seq_hover(None, cx);
+                                    cx.notify();
+                                }
+                            })),
+                    ),
                 )
                 .into_any_element(),
         )
@@ -6188,9 +6866,19 @@ impl Viewer {
 
     /// A plot's row in the facts table: its name, what the pointer is over
     /// while it is open, and a button that opens or closes it.
-    fn plot_row(&self, label: &'static str, open: bool, caption: Option<String>, cx: &mut Context<Self>) -> impl IntoElement {
+    fn plot_row(
+        &self,
+        label: &'static str,
+        open: bool,
+        caption: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let rama = label == "ramachandran";
-        let id = if rama { "open-ramachandran" } else { "open-pae" };
+        let id = if rama {
+            "open-ramachandran"
+        } else {
+            "open-pae"
+        };
         div()
             .flex()
             .items_center()
@@ -6205,7 +6893,10 @@ impl Viewer {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .children(caption.map(|c| div().text_size(px(9.5)).text_color(theme::faint()).child(c)))
+                    .children(
+                        caption
+                            .map(|c| div().text_size(px(9.5)).text_color(theme::faint()).child(c)),
+                    )
                     .child(
                         div()
                             .id(id)
@@ -6246,8 +6937,14 @@ impl Viewer {
                     .py(px(1.))
                     .rounded(px(5.))
                     .text_size(px(10.))
-                    .when(chosen, |d| d.bg(theme::surface()).text_color(theme::ink()).shadow_sm())
-                    .when(!chosen, |d| d.text_color(theme::muted()).cursor_pointer().hover(|s| s.text_color(theme::ink())))
+                    .when(chosen, |d| {
+                        d.bg(theme::surface()).text_color(theme::ink()).shadow_sm()
+                    })
+                    .when(!chosen, |d| {
+                        d.text_color(theme::muted())
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(theme::ink()))
+                    })
                     .child(k.label())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(l) = this.layers.get_mut(i) {
@@ -6278,11 +6975,25 @@ impl Viewer {
                                 .rounded_full()
                                 .cursor_pointer()
                                 .hover(|d| d.bg(theme::sunken()))
-                                .child(div().size(px(8.)).rounded_full().when_some(color, |d, c| d.bg(swatch(c))).when(color.is_none(), |d| d.border_1().border_color(theme::faint())))
-                                .tooltip(|_, cx| cx.new(|_| Tip("Element colours or a uniform colour".into())).into())
+                                .child(
+                                    div()
+                                        .size(px(8.))
+                                        .rounded_full()
+                                        .when_some(color, |d, c| d.bg(swatch(c)))
+                                        .when(color.is_none(), |d| {
+                                            d.border_1().border_color(theme::faint())
+                                        }),
+                                )
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| Tip("Element colours or a uniform colour".into()))
+                                        .into()
+                                })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if let Some(l) = this.layers.get_mut(i) {
-                                        let at = LAYER_COLORS.iter().position(|c| *c == l.color).unwrap_or(0);
+                                        let at = LAYER_COLORS
+                                            .iter()
+                                            .position(|c| *c == l.color)
+                                            .unwrap_or(0);
                                         l.color = LAYER_COLORS[(at + 1) % LAYER_COLORS.len()];
                                         this.rebuild(cx);
                                     }
@@ -6297,7 +7008,13 @@ impl Viewer {
                                 .text_color(theme::text())
                                 .child(clip(layer.selection.text(), 30)),
                         )
-                        .child(div().font_family(theme::MONO).text_size(px(10.)).text_color(theme::faint()).child(thousands(n)))
+                        .child(
+                            div()
+                                .font_family(theme::MONO)
+                                .text_size(px(10.))
+                                .text_color(theme::faint())
+                                .child(thousands(n)),
+                        )
                         .child(
                             div()
                                 .id(("layer-remove", i))
@@ -6318,18 +7035,15 @@ impl Viewer {
                         ),
                 )
                 .child(
-                    div()
-                        .pl(px(21.))
-                        .flex()
-                        .child(
-                            div()
-                                .flex()
-                                .p(px(2.))
-                                .gap(px(2.))
-                                .rounded(px(7.))
-                                .bg(theme::sunken())
-                                .children(render::LayerStyle::ALL.map(style_pill)),
-                        ),
+                    div().pl(px(21.)).flex().child(
+                        div()
+                            .flex()
+                            .p(px(2.))
+                            .gap(px(2.))
+                            .rounded(px(7.))
+                            .bg(theme::sunken())
+                            .children(render::LayerStyle::ALL.map(style_pill)),
+                    ),
                 )
         });
         div()
@@ -6345,7 +7059,9 @@ impl Viewer {
                     // Anywhere in the box puts the cursor in it.
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, window, cx| window.focus(&this.select_input.read(cx).focus_handle(cx))),
+                        cx.listener(|this, _, window, cx| {
+                            window.focus(&this.select_input.read(cx).focus_handle(cx))
+                        }),
                     )
                     .cursor(gpui::CursorStyle::IBeam)
                     .h(px(28.))
@@ -6370,14 +7086,23 @@ impl Viewer {
     /// What the colours mean, for the colourings whose colours are not the
     /// chains': a ramp with its ends for B-factors, a swatch each for
     /// helix, strand and coil, and pLDDT's bands.
-    fn colour_key(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn colour_key(
+        &self,
+        structure: &Structure,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         let row = |color: [f32; 3], label: String| {
             div()
                 .flex()
                 .items_center()
                 .gap(px(6.))
                 .child(div().size(px(8.)).rounded_full().bg(swatch(color)))
-                .child(div().text_size(px(10.5)).text_color(theme::text()).child(label))
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(theme::text())
+                        .child(label),
+                )
         };
         let body = match self.coloring {
             Coloring::BFactor => {
@@ -6399,7 +7124,10 @@ impl Viewer {
                             .rounded(px(4.))
                             .overflow_hidden()
                             .children((0..24).map(move |i| {
-                                div().flex_1().h_full().bg(swatch(palette.ramp(i as f32 / 23.0)))
+                                div()
+                                    .flex_1()
+                                    .h_full()
+                                    .bg(swatch(palette.ramp(i as f32 / 23.0)))
                             })),
                     )
                     .child(format!("{hi:.0} Å²"))
@@ -6410,11 +7138,15 @@ impl Viewer {
                 let (lo, hi) = structure.prop_span(chosen)?;
                 let palette = self.palette;
                 // Which column, as pills that wrap, then its ramp.
-                let names = div().flex().flex_wrap().gap(px(4.)).children(structure.props.iter().enumerate().map(|(i, p)| {
-                    pill_keyed(("prop", i), p.name.clone(), i == chosen)
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| this.colour_by_property(i, None, cx)))
-                }));
+                let names = div().flex().flex_wrap().gap(px(4.)).children(
+                    structure.props.iter().enumerate().map(|(i, p)| {
+                        pill_keyed(("prop", i), p.name.clone(), i == chosen)
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.colour_by_property(i, None, cx)
+                            }))
+                    }),
+                );
                 let ramp = div()
                     .flex()
                     .items_center()
@@ -6430,19 +7162,38 @@ impl Viewer {
                             .flex()
                             .rounded(px(4.))
                             .overflow_hidden()
-                            .children((0..24).map(move |i| div().flex_1().h_full().bg(swatch(palette.ramp(i as f32 / 23.0))))),
+                            .children((0..24).map(move |i| {
+                                div()
+                                    .flex_1()
+                                    .h_full()
+                                    .bg(swatch(palette.ramp(i as f32 / 23.0)))
+                            })),
                     )
                     .child(figure(hi));
-                div().flex().flex_col().gap(px(8.)).child(names).child(ramp).into_any_element()
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(names)
+                    .child(ramp)
+                    .into_any_element()
             }
             Coloring::Structure => div()
                 .flex()
                 .gap(px(14.))
-                .children(render::SS_COLORS.iter().map(|(_, name, c)| row(*c, name.to_string())))
+                .children(
+                    render::SS_COLORS
+                        .iter()
+                        .map(|(_, name, c)| row(*c, name.to_string())),
+                )
                 .into_any_element(),
             Coloring::Hydrophobic | Coloring::Charge => {
                 let hydro = self.coloring == Coloring::Hydrophobic;
-                let (low, high) = if hydro { (render::HYDROPHILIC, render::HYDROPHOBIC) } else { (render::NEGATIVE, render::POSITIVE) };
+                let (low, high) = if hydro {
+                    (render::HYDROPHILIC, render::HYDROPHOBIC)
+                } else {
+                    (render::NEGATIVE, render::POSITIVE)
+                };
                 let ends = if hydro {
                     ("hydrophilic", "hydrophobic")
                 } else if self.repr == Repr::Surface {
@@ -6465,7 +7216,11 @@ impl Viewer {
                             .rounded(px(4.))
                             .overflow_hidden()
                             .children((0..24).map(move |i| {
-                                div().flex_1().h_full().bg(swatch(render::diverging(i as f32 / 11.5 - 1.0, low, high)))
+                                div().flex_1().h_full().bg(swatch(render::diverging(
+                                    i as f32 / 11.5 - 1.0,
+                                    low,
+                                    high,
+                                )))
                             })),
                     )
                     .child(ends.1)
@@ -6593,12 +7348,16 @@ impl Viewer {
                                             .iter()
                                             .map(|r| &structure.residues[*r as usize])
                                             .filter(|r| !r.outside_polymer());
-                                        let (n, nucleic) = own.fold((0, 0), |(n, k), r| (n + 1, k + r.nucleic.is_some() as usize));
+                                        let (n, nucleic) = own.fold((0, 0), |(n, k), r| {
+                                            (n + 1, k + r.nucleic.is_some() as usize)
+                                        });
                                         // Nucleotides, where most of the chain is them.
                                         format!("{n} {}", if nucleic * 2 > n { "nt" } else { "aa" })
                                     }),
                             )
-                            .when(chain.color.is_some(), |d| d.child(self.unpick(i, Pick::Chain(i), cx)))
+                            .when(chain.color.is_some(), |d| {
+                                d.child(self.unpick(i, Pick::Chain(i), cx))
+                            })
                             .when(picking, |d| {
                                 d.child(
                                     deferred(self.color_picker(
@@ -6620,25 +7379,21 @@ impl Viewer {
                         .flex()
                         .items_center()
                         .text_size(px(10.5))
-                        .child(
-                            div()
-                                .flex_1()
-                                .when(rest > 0, |d| {
-                                    d.child(
-                                        div()
-                                            .id("more-chains")
-                                            .debug_selector(|| "more-chains".into())
-                                            .text_color(theme::faint())
-                                            .cursor_pointer()
-                                            .hover(|s| s.text_color(theme::ink()))
-                                            .child(format!("and {rest} more"))
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.all_chains = true;
-                                                cx.notify();
-                                            })),
-                                    )
-                                }),
-                        )
+                        .child(div().flex_1().when(rest > 0, |d| {
+                            d.child(
+                                div()
+                                    .id("more-chains")
+                                    .debug_selector(|| "more-chains".into())
+                                    .text_color(theme::faint())
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(theme::ink()))
+                                    .child(format!("and {rest} more"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.all_chains = true;
+                                        cx.notify();
+                                    })),
+                            )
+                        }))
                         .when(changed, |d| {
                             d.child(
                                 div()
@@ -6684,29 +7439,32 @@ impl Viewer {
                 let paint = structure.ligand_paint.get(&name).copied();
                 let carbonless = carbonless[i];
                 let picking = self.picking == Some(Pick::Ligand(name.clone()));
-                let mode = |k: usize, label: &'static str, chosen: bool, to: Option<LigandPaint>| {
-                    let name = name.clone();
-                    div()
-                        .id(("ligand-mode", i * 3 + k))
-                        .debug_selector({
-                            let name = name.clone();
-                            move || format!("ligand-{name}-{label}")
-                        })
-                        .px(px(7.))
-                        .py(px(1.))
-                        .rounded(px(5.))
-                        .text_size(px(10.))
-                        .when(chosen, |d| d.bg(theme::surface()).text_color(theme::ink()).shadow_sm())
-                        .when(!chosen, |d| {
-                            d.text_color(theme::muted())
-                                .cursor_pointer()
-                                .hover(|s| s.text_color(theme::ink()))
-                        })
-                        .child(label)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_ligand_paint(name.clone(), to, cx)
-                        }))
-                };
+                let mode =
+                    |k: usize, label: &'static str, chosen: bool, to: Option<LigandPaint>| {
+                        let name = name.clone();
+                        div()
+                            .id(("ligand-mode", i * 3 + k))
+                            .debug_selector({
+                                let name = name.clone();
+                                move || format!("ligand-{name}-{label}")
+                            })
+                            .px(px(7.))
+                            .py(px(1.))
+                            .rounded(px(5.))
+                            .text_size(px(10.))
+                            .when(chosen, |d| {
+                                d.bg(theme::surface()).text_color(theme::ink()).shadow_sm()
+                            })
+                            .when(!chosen, |d| {
+                                d.text_color(theme::muted())
+                                    .cursor_pointer()
+                                    .hover(|s| s.text_color(theme::ink()))
+                            })
+                            .child(label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_ligand_paint(name.clone(), to, cx)
+                            }))
+                    };
                 let color = paint.map(|p| p.color()).unwrap_or(LIGAND_GOLD);
                 let pick = Pick::Ligand(name.clone());
                 div()
@@ -6781,8 +7539,14 @@ impl Viewer {
                                     .cursor_pointer()
                                     .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
                                     .child("Site")
-                                    .tooltip(|_, cx| cx.new(|_| Tip("Its binding site".into())).into())
-                                    .on_click(cx.listener(move |this, _, _, cx| this.next_site(&name, cx)))
+                                    .tooltip(|_, cx| {
+                                        cx.new(|_| Tip("Its binding site".into())).into()
+                                    })
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.next_site(&name, cx)
+                                        }),
+                                    )
                             }),
                     )
                     .child(
@@ -6808,7 +7572,9 @@ impl Viewer {
                                 Some(LigandPaint::Solid(color)),
                             )),
                     )
-                    .when(paint.is_some(), |d| d.child(self.unpick(i, Pick::Ligand(name.clone()), cx)))
+                    .when(paint.is_some(), |d| {
+                        d.child(self.unpick(i, Pick::Ligand(name.clone()), cx))
+                    })
                     .when(picking, |d| {
                         d.child(
                             deferred(self.color_picker(
@@ -6837,7 +7603,12 @@ impl Viewer {
             .into_iter()
             .filter(|(e, _)| e.is_known())
             .map(|(e, n)| {
-                (Species::Element(e.0), e.symbol().to_string(), colors[e.0 as usize], n)
+                (
+                    Species::Element(e.0),
+                    e.symbol().to_string(),
+                    colors[e.0 as usize],
+                    n,
+                )
             })
             .collect();
         let mut by_kind = vec![0usize; structure.kinds.len()];
@@ -6846,10 +7617,21 @@ impl Viewer {
                 *n += 1;
             }
         }
-        rows.extend(by_kind.iter().enumerate().filter(|(_, n)| **n > 0).map(|(k, n)| {
-            let name = structure.kinds[k].clone();
-            (Species::Kind(name.clone()), format!("Type {name}"), palette.chain(k), *n)
-        }));
+        rows.extend(
+            by_kind
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| **n > 0)
+                .map(|(k, n)| {
+                    let name = structure.kinds[k].clone();
+                    (
+                        Species::Kind(name.clone()),
+                        format!("Type {name}"),
+                        palette.chain(k),
+                        *n,
+                    )
+                }),
+        );
         let changed = !self.appearance.is_default();
 
         let header = div()
@@ -6884,136 +7666,154 @@ impl Viewer {
             .flex_col()
             .gap(px(5.))
             .child(header)
-            .children(rows.into_iter().enumerate().map(|(i, (species, name, default, n))| {
-                let look = self.appearance.get(&species);
-                let shown = look.color.unwrap_or(default);
-                let picking = self.picking.as_ref() == Some(&Pick::Species(species.clone()));
-                let pick = Pick::Species(species.clone());
-                div()
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(
+            .children(
+                rows.into_iter()
+                    .enumerate()
+                    .map(|(i, (species, name, default, n))| {
+                        let look = self.appearance.get(&species);
+                        let shown = look.color.unwrap_or(default);
+                        let picking =
+                            self.picking.as_ref() == Some(&Pick::Species(species.clone()));
+                        let pick = Pick::Species(species.clone());
                         div()
-                            .flex_1()
+                            .relative()
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .overflow_hidden()
-                            .when(look.hidden(), |d| d.opacity(0.45))
-                            .child(
-                                div()
-                                    .id(("colour-dot", i))
-                                    .debug_selector({
-                                        let name = name.clone();
-                                        move || format!("dot-{name}")
-                                    })
-                                    .flex_none()
-                                    .size(px(13.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_full()
-                                    .cursor_pointer()
-                                    .when(look.color.is_some() && !picking, |d| {
-                                        d.border_1().border_color(theme::faint())
-                                    })
-                                    .when(picking, |d| d.border_1().border_color(theme::ink()))
-                                    .hover(|d| d.bg(theme::sunken()))
-                                    .child(
-                                        div()
-                                            .size(px(8.))
-                                            .rounded_full()
-                                            .when(by_element, |d| {
-                                                d.bg(swatch(shown)).opacity(look.alpha.max(0.2))
-                                            })
-                                            .when(!by_element, |d| {
-                                                d.border_1().border_color(theme::faint())
-                                            }),
-                                    )
-                                    .tooltip(|_, cx| {
-                                        cx.new(|_| Tip("Choose a colour".into())).into()
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.picking = Some(pick.clone());
-                                        cx.notify();
-                                    })),
-                            )
                             .child(
                                 div()
                                     .flex_1()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
                                     .overflow_hidden()
-                                    .text_size(px(11.5))
-                                    .text_color(theme::text())
-                                    .whitespace_nowrap()
-                                    .child(name.clone()),
+                                    .when(look.hidden(), |d| d.opacity(0.45))
+                                    .child(
+                                        div()
+                                            .id(("colour-dot", i))
+                                            .debug_selector({
+                                                let name = name.clone();
+                                                move || format!("dot-{name}")
+                                            })
+                                            .flex_none()
+                                            .size(px(13.))
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded_full()
+                                            .cursor_pointer()
+                                            .when(look.color.is_some() && !picking, |d| {
+                                                d.border_1().border_color(theme::faint())
+                                            })
+                                            .when(picking, |d| {
+                                                d.border_1().border_color(theme::ink())
+                                            })
+                                            .hover(|d| d.bg(theme::sunken()))
+                                            .child(
+                                                div()
+                                                    .size(px(8.))
+                                                    .rounded_full()
+                                                    .when(by_element, |d| {
+                                                        d.bg(swatch(shown))
+                                                            .opacity(look.alpha.max(0.2))
+                                                    })
+                                                    .when(!by_element, |d| {
+                                                        d.border_1().border_color(theme::faint())
+                                                    }),
+                                            )
+                                            .tooltip(|_, cx| {
+                                                cx.new(|_| Tip("Choose a colour".into())).into()
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.picking = Some(pick.clone());
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            .text_size(px(11.5))
+                                            .text_color(theme::text())
+                                            .whitespace_nowrap()
+                                            .child(name.clone()),
+                                    ),
                             )
-                    )
-                    .when(look.color.is_some(), |d| {
-                        d.child(self.unpick(i, Pick::Species(species.clone()), cx))
-                    })
-                    .child(
-                        div()
-                            .w(px(96.))
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .child(self.slider(i, species.clone(), Knob::Size, look, cx))
-                            .child(self.field(
-                                ("size-value", i),
-                                Field::Look(species.clone(), Knob::Size),
-                                format!("{:.2}×", look.size),
-                                40.,
-                                cx,
-                            )),
-                    )
-                    .child(
-                        div()
-                            .w(px(96.))
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .child(self.slider(i, species.clone(), Knob::Opacity, look, cx))
-                            .child(self.field(
-                                ("opacity-value", i),
-                                Field::Look(species.clone(), Knob::Opacity),
-                                format!("{:.0}%", look.alpha * 100.0),
-                                40.,
-                                cx,
-                            )),
-                    )
-                    .child(
-                        div()
-                            .w(px(36.))
-                            .flex()
-                            .justify_end()
-                            .font_family(theme::MONO)
-                            .text_size(px(10.))
-                            .text_color(theme::faint())
-                            .child(thousands(n)),
-                    )
-                    .when(picking, |d| {
-                        d.child(
-                            deferred(self.color_picker(
-                                Pick::Species(species.clone()),
-                                name,
-                                default,
-                                look.color,
-                                cx,
-                            ))
-                                .with_priority(3),
-                        )
-                    })
-            }))
+                            .when(look.color.is_some(), |d| {
+                                d.child(self.unpick(i, Pick::Species(species.clone()), cx))
+                            })
+                            .child(
+                                div()
+                                    .w(px(96.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(self.slider(i, species.clone(), Knob::Size, look, cx))
+                                    .child(self.field(
+                                        ("size-value", i),
+                                        Field::Look(species.clone(), Knob::Size),
+                                        format!("{:.2}×", look.size),
+                                        40.,
+                                        cx,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .w(px(96.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(self.slider(i, species.clone(), Knob::Opacity, look, cx))
+                                    .child(self.field(
+                                        ("opacity-value", i),
+                                        Field::Look(species.clone(), Knob::Opacity),
+                                        format!("{:.0}%", look.alpha * 100.0),
+                                        40.,
+                                        cx,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .w(px(36.))
+                                    .flex()
+                                    .justify_end()
+                                    .font_family(theme::MONO)
+                                    .text_size(px(10.))
+                                    .text_color(theme::faint())
+                                    .child(thousands(n)),
+                            )
+                            .when(picking, |d| {
+                                d.child(
+                                    deferred(self.color_picker(
+                                        Pick::Species(species.clone()),
+                                        name,
+                                        default,
+                                        look.color,
+                                        cx,
+                                    ))
+                                    .with_priority(3),
+                                )
+                            })
+                    }),
+            )
             .child(self.standard_colors_toggle(cx))
             .children(self.visibility_toggles(structure, cx))
     }
 
     /// Water and hydrogens on or off at a click, where the structure has them.
-    fn visibility_toggles(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let water = structure.residues.iter().any(|r| crate::protein::is_solvent(&r.name));
-        let hydrogens = structure.atoms.iter().any(|a| a.element == crate::protein::Element::H);
+    fn visibility_toggles(
+        &self,
+        structure: &Structure,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        let water = structure
+            .residues
+            .iter()
+            .any(|r| crate::protein::is_solvent(&r.name));
+        let hydrogens = structure
+            .atoms
+            .iter()
+            .any(|a| a.element == crate::protein::Element::H);
         if !water && !hydrogens {
             return None;
         }
@@ -7031,9 +7831,20 @@ impl Viewer {
                 .rounded(px(5.))
                 .text_size(px(10.5))
                 .cursor_pointer()
-                .when(shown, |d| d.bg(theme::surface()).text_color(theme::ink()).shadow_sm())
-                .when(!shown, |d| d.text_color(theme::muted()).hover(|s| s.text_color(theme::ink())))
-                .child(div().size(px(6.)).rounded_full().when(shown, |d| d.bg(theme::ink())).when(!shown, |d| d.border_1().border_color(theme::faint())))
+                .when(shown, |d| {
+                    d.bg(theme::surface()).text_color(theme::ink()).shadow_sm()
+                })
+                .when(!shown, |d| {
+                    d.text_color(theme::muted())
+                        .hover(|s| s.text_color(theme::ink()))
+                })
+                .child(
+                    div()
+                        .size(px(6.))
+                        .rounded_full()
+                        .when(shown, |d| d.bg(theme::ink()))
+                        .when(!shown, |d| d.border_1().border_color(theme::faint())),
+                )
                 .child(label)
         };
         Some(
@@ -7042,7 +7853,12 @@ impl Viewer {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .child(div().text_size(px(11.)).text_color(theme::muted()).child("Show"))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(theme::muted())
+                        .child("Show"),
+                )
                 .child(
                     div()
                         .flex()
@@ -7051,23 +7867,31 @@ impl Viewer {
                         .rounded(px(7.))
                         .bg(theme::sunken())
                         .when(water, |d| {
-                            d.child(toggle("show-water", "Water", water_shown).on_click(cx.listener(|this, _, _, cx| {
-                                this.appearance.hide_solvent = !this.appearance.hide_solvent;
-                                this.rebuild(cx);
-                            })))
+                            d.child(toggle("show-water", "Water", water_shown).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.appearance.hide_solvent = !this.appearance.hide_solvent;
+                                    this.rebuild(cx);
+                                }),
+                            ))
                         })
                         .when(hydrogens, |d| {
-                            d.child(toggle("show-hydrogens", "Hydrogens", h_shown).on_click(cx.listener(|this, _, _, cx| {
-                                let h = Species::Element(1);
-                                let look = this.appearance.get(&h);
-                                let look = if look.hidden() {
-                                    Look { size: 1.0, alpha: 1.0, ..look }
-                                } else {
-                                    Look { size: 0.0, ..look }
-                                };
-                                this.appearance.set(h, look);
-                                this.rebuild(cx);
-                            })))
+                            d.child(toggle("show-hydrogens", "Hydrogens", h_shown).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    let h = Species::Element(1);
+                                    let look = this.appearance.get(&h);
+                                    let look = if look.hidden() {
+                                        Look {
+                                            size: 1.0,
+                                            alpha: 1.0,
+                                            ..look
+                                        }
+                                    } else {
+                                        Look { size: 0.0, ..look }
+                                    };
+                                    this.appearance.set(h, look);
+                                    this.rebuild(cx);
+                                }),
+                            ))
                         }),
                 )
                 .into_any_element(),
@@ -7086,7 +7910,9 @@ impl Viewer {
                 .py(px(2.))
                 .rounded(px(5.))
                 .text_size(px(10.5))
-                .when(chosen, |d| d.bg(theme::surface()).text_color(theme::ink()).shadow_sm())
+                .when(chosen, |d| {
+                    d.bg(theme::surface()).text_color(theme::ink()).shadow_sm()
+                })
                 .when(!chosen, |d| {
                     d.text_color(theme::muted())
                         .cursor_pointer()
@@ -7126,9 +7952,14 @@ impl Viewer {
                             },
                         ),
                     )
-                    .child(option("element-colours-palette", "Palette", !standard, false).tooltip(
-                        |_, cx| cx.new(|_| Tip("From the palette, most common first".into())).into(),
-                    )),
+                    .child(
+                        option("element-colours-palette", "Palette", !standard, false).tooltip(
+                            |_, cx| {
+                                cx.new(|_| Tip("From the palette, most common first".into()))
+                                    .into()
+                            },
+                        ),
+                    ),
             )
     }
 
@@ -7143,21 +7974,22 @@ impl Viewer {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let current = chosen.unwrap_or(default);
-        let swatch_button = |id: usize, c: [f32; 3], chosen: bool, set: Option<[f32; 3]>, target: Pick| {
-            div()
-                .id(("swatch", id))
-                .debug_selector(move || format!("swatch-{id}"))
-                .size(px(20.))
-                .rounded(px(5.))
-                .p(px(2.))
-                .cursor_pointer()
-                .when(chosen, |d| d.border_1().border_color(theme::ink()))
-                .when(!chosen, |d| d.hover(|s| s.bg(theme::sunken())))
-                .child(div().size_full().rounded(px(3.)).bg(swatch(c)))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.paint(target.clone(), set, cx)
-                }))
-        };
+        let swatch_button =
+            |id: usize, c: [f32; 3], chosen: bool, set: Option<[f32; 3]>, target: Pick| {
+                div()
+                    .id(("swatch", id))
+                    .debug_selector(move || format!("swatch-{id}"))
+                    .size(px(20.))
+                    .rounded(px(5.))
+                    .p(px(2.))
+                    .cursor_pointer()
+                    .when(chosen, |d| d.border_1().border_color(theme::ink()))
+                    .when(!chosen, |d| d.hover(|s| s.bg(theme::sunken())))
+                    .child(div().size_full().rounded(px(3.)).bg(swatch(c)))
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.paint(target.clone(), set, cx)),
+                    )
+            };
         let label = |t: &'static str| {
             div()
                 .w(px(30.))
@@ -7279,7 +8111,14 @@ impl Viewer {
         let slot = (species.clone(), knob);
         let tip: SharedString = knob.describe(value).into();
         div()
-            .id((if knob == Knob::Size { "size" } else { "opacity" }, row))
+            .id((
+                if knob == Knob::Size {
+                    "size"
+                } else {
+                    "opacity"
+                },
+                row,
+            ))
             .relative()
             .w(px(52.))
             .h(px(14.))
@@ -7304,7 +8143,13 @@ impl Viewer {
                     .h(px(3.))
                     .rounded_full()
                     .bg(theme::sunken())
-                    .child(div().h_full().w(relative(t)).rounded_full().bg(theme::muted()))
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(t))
+                            .rounded_full()
+                            .bg(theme::muted()),
+                    )
                     // The default, so it can be found by eye.
                     .when(knob == Knob::Size, |d| {
                         d.child(
@@ -7488,7 +8333,11 @@ impl Viewer {
                     .children(self.trajectory_analysis(structure, cx)),
             )
             .children(self.source_line(structure));
-        vec![head.into_any_element(), atoms.into_any_element(), facts.into_any_element()]
+        vec![
+            head.into_any_element(),
+            atoms.into_any_element(),
+            facts.into_any_element(),
+        ]
     }
 
     /// What is on screen, set like the opening of an article: the category in
@@ -7504,90 +8353,101 @@ impl Viewer {
         let total = structure.chains.len();
         let shown = if self.all_chains { total } else { total.min(6) };
         let several = total > 1;
-        div()
-            .pt(px(9.))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .children(structure.chains.iter().take(shown).enumerate().filter_map(|(ci, chain)| {
-                let residues: Vec<usize> = chain
-                    .residues
-                    .iter()
-                    .map(|&r| r as usize)
-                    .filter(|&r| !structure.residues[r].outside_polymer())
-                    .collect();
-                if residues.is_empty() {
-                    return None;
-                }
-                let blocks = residues.chunks(SEQUENCE_BLOCK).map(|block| {
-                    let first = structure.residues[block[0]].seq;
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .h(px(11.))
-                                .font_family(theme::MONO)
-                                .text_size(px(8.))
-                                .text_color(theme::faint())
-                                .child(first.to_string()),
-                        )
-                        .child(div().flex().children(block.iter().map(|&ri| {
-                            let r = &structure.residues[ri];
-                            let tip: SharedString = format!("{} {}", r.name, r.seq).into();
-                            let on = selected == Some(ri);
-                            let near = pointed == Some(ri);
-                            div()
-                                .id(("residue", ri))
-                                .debug_selector(move || format!("residue-{ri}"))
-                                .w(px(7.5))
-                                .h(px(14.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(2.))
-                                .cursor_pointer()
-                                .font_family(theme::MONO)
-                                .text_size(px(10.5))
-                                .when(on, |d| d.bg(theme::ink()).text_color(theme::on_ink()))
-                                .when(!on && near, |d| d.bg(theme::sunken()).text_color(theme::ink()))
-                                .when(!on && !near, |d| d.text_color(theme::muted()))
-                                .child(residue_letter(r).to_string())
-                                .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone())).into())
-                                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                                    if *hovered {
-                                        this.set_seq_hover(Some(ri), cx);
-                                    } else if this.seq_hover == Some(ri) {
-                                        this.set_seq_hover(None, cx);
-                                    }
-                                }))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let Some(s) = this.structure.as_ref() else { return };
-                                    let target = residue_pick(s, ri).map(|picked| Target { which: 0, picked });
-                                    this.select(target, cx);
-                                }))
-                        })))
-                });
-                Some(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .when(several, |d| {
-                            let id = chain.id.trim();
-                            d.child(
+        div().pt(px(9.)).flex().flex_col().gap(px(8.)).children(
+            structure
+                .chains
+                .iter()
+                .take(shown)
+                .enumerate()
+                .filter_map(|(ci, chain)| {
+                    let residues: Vec<usize> = chain
+                        .residues
+                        .iter()
+                        .map(|&r| r as usize)
+                        .filter(|&r| !structure.residues[r].outside_polymer())
+                        .collect();
+                    if residues.is_empty() {
+                        return None;
+                    }
+                    let blocks = residues.chunks(SEQUENCE_BLOCK).map(|block| {
+                        let first = structure.residues[block[0]].seq;
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(
                                 div()
-                                    .text_size(px(9.))
+                                    .h(px(11.))
+                                    .font_family(theme::MONO)
+                                    .text_size(px(8.))
                                     .text_color(theme::faint())
-                                    .child(spaced(&if id.is_empty() {
+                                    .child(first.to_string()),
+                            )
+                            .child(div().flex().children(block.iter().map(|&ri| {
+                                let r = &structure.residues[ri];
+                                let tip: SharedString = format!("{} {}", r.name, r.seq).into();
+                                let on = selected == Some(ri);
+                                let near = pointed == Some(ri);
+                                div()
+                                    .id(("residue", ri))
+                                    .debug_selector(move || format!("residue-{ri}"))
+                                    .w(px(7.5))
+                                    .h(px(14.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(2.))
+                                    .cursor_pointer()
+                                    .font_family(theme::MONO)
+                                    .text_size(px(10.5))
+                                    .when(on, |d| d.bg(theme::ink()).text_color(theme::on_ink()))
+                                    .when(!on && near, |d| {
+                                        d.bg(theme::sunken()).text_color(theme::ink())
+                                    })
+                                    .when(!on && !near, |d| d.text_color(theme::muted()))
+                                    .child(residue_letter(r).to_string())
+                                    .tooltip(move |_, cx| cx.new(|_| Tip(tip.clone())).into())
+                                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                        if *hovered {
+                                            this.set_seq_hover(Some(ri), cx);
+                                        } else if this.seq_hover == Some(ri) {
+                                            this.set_seq_hover(None, cx);
+                                        }
+                                    }))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        let Some(s) = this.structure.as_ref() else {
+                                            return;
+                                        };
+                                        let target = residue_pick(s, ri)
+                                            .map(|picked| Target { which: 0, picked });
+                                        this.select(target, cx);
+                                    }))
+                            })))
+                    });
+                    Some(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .when(several, |d| {
+                                let id = chain.id.trim();
+                                d.child(div().text_size(px(9.)).text_color(theme::faint()).child(
+                                    spaced(&if id.is_empty() {
                                         format!("CHAIN {}", ci + 1)
                                     } else {
                                         format!("CHAIN {}", id.to_uppercase())
-                                    })),
-                            )
-                        })
-                        .child(div().flex().flex_wrap().gap_x(px(6.)).gap_y(px(2.)).children(blocks)),
-                )
-            }))
+                                    }),
+                                ))
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_x(px(6.))
+                                    .gap_y(px(2.))
+                                    .children(blocks),
+                            ),
+                    )
+                }),
+        )
     }
 
     /// What is known of the structure, in sections the panel stacks in one
@@ -7601,15 +8461,15 @@ impl Viewer {
         // The numbering is worth showing only when the file does not start at
         // one, which is the sign of a fragment or a trimmed construct.
         // Water is no residue of the protein's.
-        let own: Vec<&crate::protein::Residue> =
-            structure.residues.iter().filter(|r| !crate::protein::is_solvent(&r.name)).collect();
+        let own: Vec<&crate::protein::Residue> = structure
+            .residues
+            .iter()
+            .filter(|r| !crate::protein::is_solvent(&r.name))
+            .collect();
         let residues = match (own.first(), own.last()) {
-            (Some(a), Some(b)) if a.seq != 1 => format!(
-                "{} aa  ·  {}–{}",
-                thousands(own.len()),
-                a.seq,
-                b.seq
-            ),
+            (Some(a), Some(b)) if a.seq != 1 => {
+                format!("{} aa  ·  {}–{}", thousands(own.len()), a.seq, b.seq)
+            }
             _ => format!("{} aa", thousands(own.len())),
         };
         let chains = if structure.chains.len() <= 4 {
@@ -7671,18 +8531,10 @@ impl Viewer {
                     .pt(px(16.))
                     .flex()
                     .flex_col()
-                    .child(spec(
-                        "structure",
-                        structure.id.to_uppercase(),
-                        true,
-                    ))
+                    .child(spec("structure", structure.id.to_uppercase(), true))
                     .child(spec("residues", residues, false))
                     .child(spec("chains", chains, false))
-                    .child(spec(
-                        "atoms",
-                        thousands(structure.atoms.len()),
-                        false,
-                    ))
+                    .child(spec("atoms", thousands(structure.atoms.len()), false))
                     .child(spec(
                         "mass",
                         format!("{:.1} kDa", structure.mass_kda()),
@@ -7718,8 +8570,9 @@ impl Viewer {
                                         d.text_color(theme::text()).bg(theme::sunken())
                                     })
                                     .when(!self.copied, |d| {
-                                        d.text_color(theme::muted())
-                                            .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
+                                        d.text_color(theme::muted()).hover(|s| {
+                                            s.bg(theme::sunken()).text_color(theme::text())
+                                        })
                                     })
                                     .child(if self.copied { "Copied" } else { "Copy" })
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -7862,22 +8715,18 @@ impl Viewer {
                     .min_w_0()
                     .h_full()
                     .overflow_y_scroll()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .pb(px(20.))
-                            .children(sections.into_iter().map(|section| {
-                                div()
-                                    .flex_grow()
-                                    .flex_basis(px(PANEL_WIDTH))
-                                    .max_w(px(PANEL_WIDTH + 120.))
-                                    .min_w(px(PANEL_WIDTH))
-                                    .when(has_structure, |d| d.px(px(20.)).pt(px(4.)))
-                                    .when(!has_structure, |d| d.pt(px(18.)))
-                                    .child(section)
-                            })),
-                    ),
+                    .child(div().flex().flex_wrap().pb(px(20.)).children(
+                        sections.into_iter().map(|section| {
+                            div()
+                                .flex_grow()
+                                .flex_basis(px(PANEL_WIDTH))
+                                .max_w(px(PANEL_WIDTH + 120.))
+                                .min_w(px(PANEL_WIDTH))
+                                .when(has_structure, |d| d.px(px(20.)).pt(px(4.)))
+                                .when(!has_structure, |d| d.pt(px(18.)))
+                                .child(section)
+                        }),
+                    )),
             )
     }
 
@@ -7887,8 +8736,20 @@ impl Viewer {
         let grip = div()
             .id("divider")
             .absolute()
-            .when(vertical, |d| d.left_0().right_0().top(px(-3.)).h(px(7.)).cursor_row_resize())
-            .when(!vertical, |d| d.top_0().bottom_0().left(px(-3.)).w(px(7.)).cursor_col_resize())
+            .when(vertical, |d| {
+                d.left_0()
+                    .right_0()
+                    .top(px(-3.))
+                    .h(px(7.))
+                    .cursor_row_resize()
+            })
+            .when(!vertical, |d| {
+                d.top_0()
+                    .bottom_0()
+                    .left(px(-3.))
+                    .w(px(7.))
+                    .cursor_col_resize()
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, e: &MouseDownEvent, _, cx| {
@@ -8041,12 +8902,19 @@ impl Viewer {
         let s = self.shown(t.which)?;
         let card = s.card(t.picked.atom, t.picked.residue)?;
         // Which of a superimposed pair, when both are drawn.
-        let whose = (self.compare.is_some() && self.visible().len() > 1)
-            .then(|| {
-                let s = if t.which == 0 { self.structure.as_ref() } else { self.compare.as_ref() };
-                let tint = if t.which == 0 { align::REFERENCE_TINT } else { align::PREDICTION_TINT };
-                (s.map(|s| s.id.to_uppercase()).unwrap_or_default(), tint)
-            });
+        let whose = (self.compare.is_some() && self.visible().len() > 1).then(|| {
+            let s = if t.which == 0 {
+                self.structure.as_ref()
+            } else {
+                self.compare.as_ref()
+            };
+            let tint = if t.which == 0 {
+                align::REFERENCE_TINT
+            } else {
+                align::PREDICTION_TINT
+            };
+            (s.map(|s| s.id.to_uppercase()).unwrap_or_default(), tint)
+        });
         let on_ink = theme::on_ink();
         let soft = |a: f32| gpui::Hsla { a, ..on_ink };
         // A residue shows its letter in its kind's colour; an atom, its
@@ -8066,13 +8934,17 @@ impl Viewer {
         };
         let (badge, color, round) = match (card.class, card.element, &card.kind) {
             (_, Some((e, c)), _) => (e.to_string(), element_color(c), true),
-            (_, None, Some((k, name))) => {
-                (name.clone(), species_color(&Species::Kind(name.clone()), self.palette.chain(*k)), true)
-            }
+            (_, None, Some((k, name))) => (
+                name.clone(),
+                species_color(&Species::Kind(name.clone()), self.palette.chain(*k)),
+                true,
+            ),
             // A ligand has no letter; its code stands in.
-            (Some(('X', _, c)), None, None) => {
-                (card.tag.split(' ').next().unwrap_or("").to_string(), c, false)
-            }
+            (Some(('X', _, c)), None, None) => (
+                card.tag.split(' ').next().unwrap_or("").to_string(),
+                c,
+                false,
+            ),
             (Some((code, _, c)), None, None) => (code.to_string(), c, false),
             (None, None, None) => ("·".to_string(), [0.55, 0.55, 0.58], true),
         };
@@ -8090,42 +8962,44 @@ impl Viewer {
             .bg(swatch(color))
             // A pale badge, hydrogen's, would melt into a pale card.
             .border_1()
-            .border_color(gpui::Hsla { a: 0.12, ..gpui::black() })
+            .border_color(gpui::Hsla {
+                a: 0.12,
+                ..gpui::black()
+            })
             .text_size(px(match badge.chars().count() {
                 0 | 1 => 13.,
                 2 => 11.,
                 _ => 9.5,
             }))
             .font_weight(gpui::FontWeight::BOLD)
-            .text_color(if light { gpui::rgb(0x1d1d22) } else { gpui::rgb(0xffffff) })
+            .text_color(if light {
+                gpui::rgb(0x1d1d22)
+            } else {
+                gpui::rgb(0xffffff)
+            })
             .child(badge);
         let mut sub = card.tag.clone();
         if let Some(c) = &card.chain {
             sub.push_str(&format!(" · chain {c}"));
         }
-        let header = div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(badge)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .text_size(px(12.5))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(card.title.clone()),
-                    )
-                    .child(
-                        div()
-                            .font_family(theme::MONO)
-                            .text_size(px(9.5))
-                            .text_color(soft(0.6))
-                            .child(sub),
-                    ),
-            );
+        let header = div().flex().items_center().gap(px(8.)).child(badge).child(
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(card.title.clone()),
+                )
+                .child(
+                    div()
+                        .font_family(theme::MONO)
+                        .text_size(px(9.5))
+                        .text_color(soft(0.6))
+                        .child(sub),
+                ),
+        );
 
         let dot = |c: [f32; 3]| div().flex_none().size(px(7.)).rounded_full().bg(swatch(c));
         let row = |label: &'static str, value: gpui::AnyElement| {
@@ -8139,16 +9013,27 @@ impl Viewer {
                         .flex_none()
                         .text_size(px(9.))
                         .text_color(soft(0.5))
-                        .child(if label == "pLDDT" { label.to_string() } else { spaced(&label.to_uppercase()) }),
+                        .child(if label == "pLDDT" {
+                            label.to_string()
+                        } else {
+                            spaced(&label.to_uppercase())
+                        }),
                 )
                 .child(value)
         };
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
         if let Some(name) = &card.atom {
             let mut v = div().flex().items_center().gap(px(5.)).child(
-                div().font_family(theme::MONO).text_size(px(10.5)).child(name.clone()),
+                div()
+                    .font_family(theme::MONO)
+                    .text_size(px(10.5))
+                    .child(name.clone()),
             );
-            if let Some((e, c)) = card.element.filter(|(e, _)| e != name).map(|(e, c)| (e, element_color(c))) {
+            if let Some((e, c)) = card
+                .element
+                .filter(|(e, _)| e != name)
+                .map(|(e, c)| (e, element_color(c)))
+            {
                 v = v.child(
                     div()
                         .flex()
@@ -8164,7 +9049,12 @@ impl Viewer {
             rows.push(row("atom", v.into_any_element()).into_any_element());
         }
         if let Some((_, kind, c)) = card.class {
-            let v = div().flex().items_center().gap(px(5.)).child(dot(c)).child(div().text_size(px(10.5)).child(kind));
+            let v = div()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .child(dot(c))
+                .child(div().text_size(px(10.5)).child(kind));
             rows.push(row("kind", v.into_any_element()).into_any_element());
         }
         if let Some(ss) = card.ss {
@@ -8173,15 +9063,21 @@ impl Viewer {
                 .find(|(s, _, _)| *s == ss)
                 .copied()
                 .unwrap_or((ss, "Coil", [0.78; 3]));
-            let v = div().flex().items_center().gap(px(5.)).child(dot(c)).child(div().text_size(px(10.5)).child(name.to_lowercase()));
+            let v = div()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .child(dot(c))
+                .child(div().text_size(px(10.5)).child(name.to_lowercase()));
             rows.push(row("fold", v.into_any_element()).into_any_element());
         }
         if let Some((label, b)) = card.b {
-            let mut v = div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(div().font_family(theme::MONO).text_size(px(10.5)).child(format!("{b:.1}")));
+            let mut v = div().flex().items_center().gap(px(6.)).child(
+                div()
+                    .font_family(theme::MONO)
+                    .text_size(px(10.5))
+                    .child(format!("{b:.1}")),
+            );
             if label == "pLDDT" {
                 let c = crate::render::plddt_band_color(b);
                 // AlphaFold's cut-offs, at 90, 70 and 50.
@@ -8198,7 +9094,13 @@ impl Viewer {
                             .h(px(4.))
                             .rounded_full()
                             .bg(soft(0.15))
-                            .child(div().h_full().rounded_full().w(px(40. * (b / 100.).clamp(0.04, 1.))).bg(swatch(c))),
+                            .child(
+                                div()
+                                    .h_full()
+                                    .rounded_full()
+                                    .w(px(40. * (b / 100.).clamp(0.04, 1.)))
+                                    .bg(swatch(c)),
+                            ),
                     )
                     .child(div().text_size(px(9.5)).text_color(soft(0.6)).child(band));
             }
@@ -8233,7 +9135,12 @@ impl Viewer {
                         .items_center()
                         .gap(px(5.))
                         .child(div().size(px(6.)).rounded_full().bg(swatch(tint)))
-                        .child(div().text_size(px(9.)).text_color(soft(0.6)).child(spaced(&w)))
+                        .child(
+                            div()
+                                .text_size(px(9.))
+                                .text_color(soft(0.6))
+                                .child(spaced(&w)),
+                        )
                 }))
                 .child(header)
                 .when(!rows.is_empty(), |d| {
@@ -8247,7 +9154,10 @@ impl Viewer {
     fn hover_tip(&self) -> Option<gpui::AnyElement> {
         let (t, at) = self.hover?;
         // Nothing to add over the thing already named in the corner.
-        if self.selected.is_some_and(|s| (s.which, s.picked.atom) == (t.which, t.picked.atom)) {
+        if self
+            .selected
+            .is_some_and(|s| (s.which, s.picked.atom) == (t.which, t.picked.atom))
+        {
             return None;
         }
         let size = self.cache.borrow().bounds.size;
@@ -8293,8 +9203,11 @@ impl Viewer {
     fn measure_lines(&self) -> Option<gpui::AnyElement> {
         // Measurements in yellow, and the binding site's contacts each in
         // their kind's colour.
-        let mut segments: Vec<(Point<Pixels>, Point<Pixels>, u32)> =
-            self.measure_segments().into_iter().map(|(a, b)| (a, b, 0xffd23f)).collect();
+        let mut segments: Vec<(Point<Pixels>, Point<Pixels>, u32)> = self
+            .measure_segments()
+            .into_iter()
+            .map(|(a, b)| (a, b, 0xffd23f))
+            .collect();
         segments.extend(self.contact_segments());
         if segments.is_empty() {
             return None;
@@ -8309,18 +9222,19 @@ impl Viewer {
                     colors.dedup();
                     // All the dark undersides first, so no colour is
                     // crossed out by another line's.
-                    let stroke = |width: f32, color: gpui::Hsla, only: Option<u32>, window: &mut Window| {
-                        let mut path = gpui::PathBuilder::stroke(px(width)).dash_array(&dash);
-                        for &(a, b, c) in &segments {
-                            if only.is_none_or(|o| o == c) {
-                                path.move_to(bounds.origin + a);
-                                path.line_to(bounds.origin + b);
+                    let stroke =
+                        |width: f32, color: gpui::Hsla, only: Option<u32>, window: &mut Window| {
+                            let mut path = gpui::PathBuilder::stroke(px(width)).dash_array(&dash);
+                            for &(a, b, c) in &segments {
+                                if only.is_none_or(|o| o == c) {
+                                    path.move_to(bounds.origin + a);
+                                    path.line_to(bounds.origin + b);
+                                }
                             }
-                        }
-                        if let Ok(path) = path.build() {
-                            window.paint_path(path, color);
-                        }
-                    };
+                            if let Ok(path) = path.build() {
+                                window.paint_path(path, color);
+                            }
+                        };
                     stroke(3.5, gpui::Hsla::from(gpui::rgba(0x1a1a1acc)), None, window);
                     for c in colors {
                         stroke(1.75, gpui::Hsla::from(gpui::rgb(c)), Some(c), window);
@@ -8402,19 +9316,31 @@ impl Viewer {
             0 => format!("Click {need} atoms"),
             n => format!("{n} of {need} picked · click empty space to reset"),
         };
-        let kinds = div().flex().gap(px(2.)).children(measure::Kind::ALL.iter().map(|&k| {
-            pill_keyed(("measure-kind", k as usize), k.label(), k == kind)
-                .debug_selector(move || format!("measure-kind-{}", k as usize))
-                .cursor_pointer()
-                .on_click(cx.listener(move |this, _, _, cx| this.set_measure_kind(k, cx)))
-                .into_any_element()
-        }));
+        let kinds = div()
+            .flex()
+            .gap(px(2.))
+            .children(measure::Kind::ALL.iter().map(|&k| {
+                pill_keyed(("measure-kind", k as usize), k.label(), k == kind)
+                    .debug_selector(move || format!("measure-kind-{}", k as usize))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_measure_kind(k, cx)))
+                    .into_any_element()
+            }));
         let rows = self.measurements.iter().enumerate().filter_map(|(i, m)| {
             let s = self.shown(m.which).or_else(|| {
                 // A hidden structure's measurements stay listed.
-                if m.which == 0 { self.structure.as_ref() } else { self.compare.as_ref() }
+                if m.which == 0 {
+                    self.structure.as_ref()
+                } else {
+                    self.compare.as_ref()
+                }
             })?;
-            let tags = m.atoms.iter().map(|&a| s.atom_tag(a)).collect::<Vec<_>>().join(" – ");
+            let tags = m
+                .atoms
+                .iter()
+                .map(|&a| s.atom_tag(a))
+                .collect::<Vec<_>>()
+                .join(" – ");
             let value = m.kind.format(m.value(s)?);
             Some(
                 div()
@@ -8450,7 +9376,9 @@ impl Viewer {
                             .cursor_pointer()
                             .hover(|d| d.bg(theme::sunken()).text_color(theme::ink()))
                             .child("×")
-                            .on_click(cx.listener(move |this, _, _, cx| this.remove_measurement(i, cx))),
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.remove_measurement(i, cx)),
+                            ),
                     ),
             )
         });
@@ -8470,23 +9398,30 @@ impl Viewer {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_move(cx.listener(Self::over_card))
                 .child(kinds)
-                .child(div().text_size(px(10.)).text_color(theme::faint()).child(hint))
+                .child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(theme::faint())
+                        .child(hint),
+                )
                 .child(div().flex().flex_col().children(rows))
                 .when(!self.measurements.is_empty(), |d| {
-                    d.child(div().flex().justify_end().child(
-                        div()
-                            .id("clear-measurements")
-                            .debug_selector(|| "clear-measurements".into())
-                            .text_size(px(9.5))
-                            .text_color(theme::muted())
-                            .cursor_pointer()
-                            .hover(|d| d.text_color(theme::ink()))
-                            .child("Clear")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.measurements.clear();
-                                this.compose(cx);
-                            })),
-                    ))
+                    d.child(
+                        div().flex().justify_end().child(
+                            div()
+                                .id("clear-measurements")
+                                .debug_selector(|| "clear-measurements".into())
+                                .text_size(px(9.5))
+                                .text_color(theme::muted())
+                                .cursor_pointer()
+                                .hover(|d| d.text_color(theme::ink()))
+                                .child("Clear")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.measurements.clear();
+                                    this.compose(cx);
+                                })),
+                        ),
+                    )
                 })
                 .into_any_element(),
         )
@@ -8536,16 +9471,20 @@ impl Viewer {
                                 .on_click(cx.listener(|this, _, _, cx| this.focus_selected(cx))),
                         )
                         .when(t.which == 0, |d| {
-                            let labelled = self.labels.iter().any(|l| l.atom as usize == t.picked.atom);
+                            let labelled =
+                                self.labels.iter().any(|l| l.atom as usize == t.picked.atom);
                             d.child(
-                                action("label-selected", if labelled { "Unlabel" } else { "Label" })
-                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_label(cx))),
+                                action(
+                                    "label-selected",
+                                    if labelled { "Unlabel" } else { "Label" },
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.toggle_label(cx))),
                             )
                         })
                         .when(ligand, |d| {
-                            d.child(action("site-selected", "Binding site").on_click(cx.listener(
-                                move |this, _, _, cx| this.show_site(residue, cx),
-                            )))
+                            d.child(action("site-selected", "Binding site").on_click(
+                                cx.listener(move |this, _, _, cx| this.show_site(residue, cx)),
+                            ))
                         }),
                 )
                 .into_any_element(),
@@ -8558,7 +9497,11 @@ impl Viewer {
         let site = self.site.as_ref()?;
         let s = self.shown(0)?;
         let r = &s.residues[site.ligand];
-        let chain = s.chains.get(r.chain as usize).map(|c| c.id.trim().to_string()).unwrap_or_default();
+        let chain = s
+            .chains
+            .get(r.chain as usize)
+            .map(|c| c.id.trim().to_string())
+            .unwrap_or_default();
         let copies = s.copies(&r.name);
         let at = copies.iter().position(|&c| c == site.ligand).unwrap_or(0);
         let name = r.name.clone();
@@ -8608,10 +9551,17 @@ impl Viewer {
                         .when(copies.len() > 1, |d| {
                             d.child(
                                 link("next-site", format!("{} of {} →", at + 1, copies.len()))
-                                    .on_click(cx.listener(move |this, _, _, cx| this.next_site(&name, cx))),
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.next_site(&name, cx)
+                                        }),
+                                    ),
                             )
                         })
-                        .child(link("close-site", "×".into()).on_click(cx.listener(|this, _, _, cx| this.close_site(cx)))),
+                        .child(
+                            link("close-site", "×".into())
+                                .on_click(cx.listener(|this, _, _, cx| this.close_site(cx))),
+                        ),
                 )
                 .child(
                     div()
@@ -8623,8 +9573,12 @@ impl Viewer {
                         )),
                 )
                 .child(
-                    div().flex().flex_wrap().gap_x(px(10.)).gap_y(px(2.)).children(
-                        contacts::Kind::ALL.iter().filter_map(|&kind| {
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_x(px(10.))
+                        .gap_y(px(2.))
+                        .children(contacts::Kind::ALL.iter().filter_map(|&kind| {
                             let n = site.contacts.iter().filter(|c| c.kind == kind).count();
                             if n == 0 {
                                 return None;
@@ -8646,16 +9600,23 @@ impl Viewer {
                                             .h(px(3.))
                                             .rounded(px(1.5))
                                             .when(shown, |d| d.bg(gpui::rgb(kind.color())))
-                                            .when(!shown, |d| d.border_1().border_color(theme::faint())),
+                                            .when(!shown, |d| {
+                                                d.border_1().border_color(theme::faint())
+                                            }),
                                     )
                                     .child(format!("{n} {}", kind.label(n)))
                                     .tooltip(move |_, cx| {
-                                        cx.new(|_| Tip(if shown { "Hide these" } else { "Show these" }.into())).into()
+                                        cx.new(|_| {
+                                            Tip(if shown { "Hide these" } else { "Show these" }
+                                                .into())
+                                        })
+                                        .into()
                                     })
-                                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_contacts(kind, cx))),
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_contacts(kind, cx)
+                                    })),
                             )
-                        }),
-                    ),
+                        })),
                 )
                 .into_any_element(),
         )
@@ -8664,7 +9625,9 @@ impl Viewer {
     /// The binding site's residues, each named beside its side chain.
     /// The labels pinned to atoms, where the atoms are drawn.
     fn atom_labels(&self) -> Vec<gpui::AnyElement> {
-        let Some(s) = self.shown(0) else { return Vec::new() };
+        let Some(s) = self.shown(0) else {
+            return Vec::new();
+        };
         self.labels
             .iter()
             .filter_map(|l| {
@@ -8692,7 +9655,11 @@ impl Viewer {
     /// chain where there are several.
     fn residue_label(s: &Structure, r: usize) -> String {
         let res = &s.residues[r];
-        let chain = s.chains.get(res.chain as usize).map(|c| c.id.trim()).filter(|c| !c.is_empty() && s.chains.len() > 1);
+        let chain = s
+            .chains
+            .get(res.chain as usize)
+            .map(|c| c.id.trim())
+            .filter(|c| !c.is_empty() && s.chains.len() > 1);
         match chain {
             Some(c) => format!("{} {}:{c}", res.name, res.seq),
             None => format!("{} {}", res.name, res.seq),
@@ -8702,20 +9669,43 @@ impl Viewer {
     /// Label what `selection` takes: a residue each, at its alpha carbon or
     /// first atom; with `atoms`, each atom by name; with `text`, the first
     /// atom with that. How many labels it added.
-    pub(super) fn add_labels(&mut self, selection: &Selection, atoms: bool, text: Option<String>, cx: &mut Context<Self>) -> usize {
-        let Some(s) = self.structure.clone() else { return 0 };
+    pub(super) fn add_labels(
+        &mut self,
+        selection: &Selection,
+        atoms: bool,
+        text: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let Some(s) = self.structure.clone() else {
+            return 0;
+        };
         let taken = selection.atoms(&s);
-        let chosen: Vec<usize> = taken.iter().enumerate().filter(|(_, t)| **t).map(|(i, _)| i).collect();
+        let chosen: Vec<usize> = taken
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| **t)
+            .map(|(i, _)| i)
+            .collect();
         let before = self.labels.len();
         if let Some(text) = text {
             if let Some(&a) = chosen.first() {
-                self.labels.push(Label { atom: a as u32, text });
+                self.labels.push(Label {
+                    atom: a as u32,
+                    text,
+                });
             }
         } else if atoms || !s.has_polymer() {
             for a in chosen {
                 let name = s.atoms[a].name();
-                let text = if name.is_empty() { format!("{} {}", s.atoms[a].element.symbol(), a + 1) } else { name.to_string() };
-                self.labels.push(Label { atom: a as u32, text });
+                let text = if name.is_empty() {
+                    format!("{} {}", s.atoms[a].element.symbol(), a + 1)
+                } else {
+                    name.to_string()
+                };
+                self.labels.push(Label {
+                    atom: a as u32,
+                    text,
+                });
             }
         } else {
             let mut seen = std::collections::HashSet::new();
@@ -8723,13 +9713,21 @@ impl Viewer {
                 let r = s.atoms[a].residue as usize;
                 if seen.insert(r) {
                     let at = s.residues[r].ca.map_or(a, |c| c as usize);
-                    self.labels.push(Label { atom: at as u32, text: Self::residue_label(&s, r) });
+                    self.labels.push(Label {
+                        atom: at as u32,
+                        text: Self::residue_label(&s, r),
+                    });
                 }
             }
         }
         // One label to an atom: a new one replaces what was there.
         let mut seen = std::collections::HashSet::new();
-        let mut kept: Vec<Label> = self.labels.drain(..).rev().filter(|l| seen.insert(l.atom)).collect();
+        let mut kept: Vec<Label> = self
+            .labels
+            .drain(..)
+            .rev()
+            .filter(|l| seen.insert(l.atom))
+            .collect();
         kept.reverse();
         let added = kept.len().saturating_sub(before.min(kept.len()));
         self.labels = kept;
@@ -8739,8 +9737,12 @@ impl Viewer {
 
     /// Label the picked residue or atom, or take its label off again.
     fn toggle_label(&mut self, cx: &mut Context<Self>) {
-        let Some(t) = self.selected.filter(|t| t.which == 0) else { return };
-        let Some(s) = self.structure.clone() else { return };
+        let Some(t) = self.selected.filter(|t| t.which == 0) else {
+            return;
+        };
+        let Some(s) = self.structure.clone() else {
+            return;
+        };
         let atom = t.picked.atom as u32;
         if let Some(i) = self.labels.iter().position(|l| l.atom == atom) {
             self.labels.remove(i);
@@ -8749,7 +9751,11 @@ impl Viewer {
             let text = if t.picked.residue || s.residues[r].ca == Some(atom) {
                 Self::residue_label(&s, r)
             } else {
-                format!("{} {}", s.atoms[t.picked.atom].name(), Self::residue_label(&s, r))
+                format!(
+                    "{} {}",
+                    s.atoms[t.picked.atom].name(),
+                    Self::residue_label(&s, r)
+                )
             };
             self.labels.push(Label { atom, text });
         }
@@ -8897,9 +9903,13 @@ impl Viewer {
                     })),
             )
             .child(
-                pill("play", if self.playing { "Pause" } else { "Play" }, self.playing)
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
+                pill(
+                    "play",
+                    if self.playing { "Pause" } else { "Play" },
+                    self.playing,
+                )
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
             )
             .child(
                 pill("step-forward", "›", false)
@@ -8972,7 +9982,11 @@ impl Render for Viewer {
         let vertical = theme::vertical();
         let width = f32::from(window.viewport_size().width);
         self.narrow = width < 2. * PANEL_WIDTH + 40.;
-        let stage = if vertical { width } else { width - theme::side_width() };
+        let stage = if vertical {
+            width
+        } else {
+            width - theme::side_width()
+        };
         self.compact = stage < 640.;
 
         div()
@@ -8987,7 +10001,9 @@ impl Render for Viewer {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
             // A fold tab has nothing in its toolbar until it has a prediction.
-            .when(!folding || structure.is_some(), |d| d.child(self.toolbar(cx)))
+            .when(!folding || structure.is_some(), |d| {
+                d.child(self.toolbar(cx))
+            })
             .child(
                 div()
                     .flex()
@@ -8996,10 +10012,16 @@ impl Render for Viewer {
                     .min_h_0()
                     .overflow_hidden()
                     .children({
-                        let panel = self.panel(folding, focused, structure, vertical, cx).into_any_element();
+                        let panel = self
+                            .panel(folding, focused, structure, vertical, cx)
+                            .into_any_element();
                         let divider = self.divider(vertical, cx).into_any_element();
                         let stage = self.stage(cx).into_any_element();
-                        if vertical { [stage, divider, panel] } else { [panel, divider, stage] }
+                        if vertical {
+                            [stage, divider, panel]
+                        } else {
+                            [panel, divider, stage]
+                        }
                     }),
             )
     }
@@ -9032,7 +10054,9 @@ mod ui_tests {
     }
 
     fn colors(view: &Entity<Viewer>, cx: &mut VisualTestContext) -> Vec<[f32; 3]> {
-        view.update(cx, |this, _| this.scene.spheres.iter().map(|s| s.color).collect())
+        view.update(cx, |this, _| {
+            this.scene.spheres.iter().map(|s| s.color).collect()
+        })
     }
 
     /// Where in the window the atom nearest the viewer is drawn.
@@ -9045,11 +10069,20 @@ mod ui_tests {
             let (w, h) = cache.size;
             let k = w as f32 / f32::from(cache.bounds.size.width);
             let view = |p: [f32; 3]| {
-                let q = [p[0] - cam.center[0], p[1] - cam.center[1], p[2] - cam.center[2]];
+                let q = [
+                    p[0] - cam.center[0],
+                    p[1] - cam.center[1],
+                    p[2] - cam.center[2],
+                ];
                 let d = |r: [f32; 3]| r[0] * q[0] + r[1] * q[1] + r[2] * q[2];
                 [d(m[0]), d(m[1]), d(m[2])]
             };
-            let v = s.atoms.iter().map(|a| view(a.pos)).max_by(|a, b| a[2].total_cmp(&b[2])).unwrap();
+            let v = s
+                .atoms
+                .iter()
+                .map(|a| view(a.pos))
+                .max_by(|a, b| a[2].total_cmp(&b[2]))
+                .unwrap();
             let scale = w.min(h) as f32 / (2.2 * cam.radius) * cam.zoom;
             let x = w as f32 * 0.5 + cam.pan[0] + v[0] * scale;
             let y = h as f32 * 0.5 + cam.pan[1] - v[1] * scale;
@@ -9068,7 +10101,9 @@ mod ui_tests {
         assert_eq!(hover.which, 0);
 
         let glows = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
-            view.update(cx, |this, _| this.scene.spheres.iter().filter(|s| s.alpha < 1.0).count())
+            view.update(cx, |this, _| {
+                this.scene.spheres.iter().filter(|s| s.alpha < 1.0).count()
+            })
         };
         assert_eq!(glows(&view, cx), 0);
         cx.simulate_click(at, Modifiers::none());
@@ -9078,13 +10113,22 @@ mod ui_tests {
 
         // A drag turns the view and picks nothing.
         cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
-        cx.simulate_mouse_move(at + gpui::point(px(40.), px(0.)), MouseButton::Left, Modifiers::none());
-        cx.simulate_mouse_up(at + gpui::point(px(40.), px(0.)), MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(
+            at + gpui::point(px(40.), px(0.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            at + gpui::point(px(40.), px(0.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
         cx.run_until_parked();
         assert_eq!(view.update(cx, |this, _| this.selected), Some(hover));
 
         // Clicking empty space lets go.
-        let corner = view.update(cx, |this, _| this.cache.borrow().bounds.origin) + gpui::point(px(3.), px(120.));
+        let corner = view.update(cx, |this, _| this.cache.borrow().bounds.origin)
+            + gpui::point(px(3.), px(120.));
         cx.simulate_click(corner, Modifiers::none());
         cx.run_until_parked();
         assert_eq!(view.update(cx, |this, _| this.selected), None);
@@ -9101,10 +10145,16 @@ mod ui_tests {
         cx.run_until_parked();
         let (picked, centre) = view.update(cx, |this, _| {
             let t = this.selected.expect("nothing picked");
-            (this.structure.as_ref().unwrap().atoms[t.picked.atom].pos, this.camera.center)
+            (
+                this.structure.as_ref().unwrap().atoms[t.picked.atom].pos,
+                this.camera.center,
+            )
         });
         assert_ne!(centre, before, "the view did not move");
-        let off = (0..3).map(|i| (centre[i] - picked[i]).powi(2)).sum::<f32>().sqrt();
+        let off = (0..3)
+            .map(|i| (centre[i] - picked[i]).powi(2))
+            .sum::<f32>()
+            .sqrt();
         assert!(off < 0.5, "the view is {off} Å from the atom");
 
         // Again on the same atom keeps it picked, rather than letting go.
@@ -9121,7 +10171,10 @@ mod ui_tests {
         assert!(view.update(cx, |this, _| this.recording()));
         let light = cx.debug_bounds("recording").expect("no recording light");
         let controls = cx.debug_bounds("top-controls").expect("no controls");
-        assert!(!light.intersects(&controls), "the light {light:?} sits on the controls {controls:?}");
+        assert!(
+            !light.intersects(&controls),
+            "the light {light:?} sits on the controls {controls:?}"
+        );
         click(cx, "recording");
         assert!(!view.update(cx, |this, _| this.recording()));
     }
@@ -9129,26 +10182,41 @@ mod ui_tests {
     #[gpui::test]
     fn a_box_is_replicated_wrapped_and_put_back_from_the_console(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
-        let melt = SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+        let melt = SAMPLES
+            .iter()
+            .find(|s| s.file.ends_with("lammpstrj.gz"))
+            .unwrap();
         view.update(cx, |this, cx| {
             let s = formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap();
             this.show(s, cx);
         });
         cx.run_until_parked();
         let atoms = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
-            view.update(cx, |this, _| this.structure.as_ref().map_or(0, |s| s.atoms.len()))
+            view.update(cx, |this, _| {
+                this.structure.as_ref().map_or(0, |s| s.atoms.len())
+            })
         };
         let n = atoms(&view, cx);
-        view.update(cx, |this, cx| this.run_command("replicate 2 1 1", cx)).unwrap();
+        view.update(cx, |this, cx| this.run_command("replicate 2 1 1", cx))
+            .unwrap();
         assert_eq!(atoms(&view, cx), 2 * n);
-        view.update(cx, |this, cx| this.run_command("unwrap", cx)).unwrap();
-        view.update(cx, |this, cx| this.run_command("wrap", cx)).unwrap();
-        view.update(cx, |this, cx| this.run_command("original", cx)).unwrap();
+        view.update(cx, |this, cx| this.run_command("unwrap", cx))
+            .unwrap();
+        view.update(cx, |this, cx| this.run_command("wrap", cx))
+            .unwrap();
+        view.update(cx, |this, cx| this.run_command("original", cx))
+            .unwrap();
         assert_eq!(atoms(&view, cx), n);
-        assert!(view.update(cx, |this, cx| this.run_command("original", cx)).is_err());
-        assert!(view.update(cx, |this, cx| this.run_command("replicate 2 2", cx)).is_err());
+        assert!(view
+            .update(cx, |this, cx| this.run_command("original", cx))
+            .is_err());
+        assert!(view
+            .update(cx, |this, cx| this.run_command("replicate 2 2", cx))
+            .is_err());
         // A box of plain beads has no properties to colour by.
-        assert!(view.update(cx, |this, cx| this.run_command("color property", cx)).is_err());
+        assert!(view
+            .update(cx, |this, cx| this.run_command("color property", cx))
+            .is_err());
     }
 
     /// A cube file of one carbon with a p orbital about it: positive above,
@@ -9186,7 +10254,12 @@ mod ui_tests {
         cx.run_until_parked();
         let colours = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
             view.update(cx, |this, _| {
-                let mut c: Vec<[u32; 3]> = this.base.tris.iter().map(|t| t.c.map(|x| (x * 100.0) as u32)).collect();
+                let mut c: Vec<[u32; 3]> = this
+                    .base
+                    .tris
+                    .iter()
+                    .map(|t| t.c.map(|x| (x * 100.0) as u32))
+                    .collect();
                 c.dedup();
                 c.sort();
                 c.dedup();
@@ -9194,16 +10267,33 @@ mod ui_tests {
             })
         };
         assert_eq!(colours(&view, cx), 2, "a blue lobe and a red one");
-        view.update(cx, |this, cx| this.run_command("iso mesh", cx)).unwrap();
-        assert!(view.update(cx, |this, _| this.base.tris.is_empty() && this.base.capsules.len() > 100));
-        view.update(cx, |this, cx| this.run_command("iso off", cx)).unwrap();
+        view.update(cx, |this, cx| this.run_command("iso mesh", cx))
+            .unwrap();
+        assert!(view.update(cx, |this, _| this.base.tris.is_empty()
+            && this.base.capsules.len() > 100));
+        view.update(cx, |this, cx| this.run_command("iso off", cx))
+            .unwrap();
         // The grid's box is all that is left of rods.
-        assert!(view.update(cx, |this, _| this.base.capsules.len() <= 12 && this.base.tris.is_empty()));
-        assert!(view.update(cx, |this, cx| this.run_command("iso high", cx)).is_err());
+        assert!(view.update(cx, |this, _| this.base.capsules.len() <= 12
+            && this.base.tris.is_empty()));
+        assert!(view
+            .update(cx, |this, cx| this.run_command("iso high", cx))
+            .is_err());
 
         // A map with no atoms opens on its own, as its surface in its box.
         let mut map = vec![0u8; 1024];
-        for (o, v) in [(0, 8i32), (4, 8), (8, 8), (12, 2), (28, 8), (32, 8), (36, 8), (64, 1), (68, 2), (72, 3)] {
+        for (o, v) in [
+            (0, 8i32),
+            (4, 8),
+            (8, 8),
+            (12, 2),
+            (28, 8),
+            (32, 8),
+            (36, 8),
+            (64, 1),
+            (68, 2),
+            (72, 3),
+        ] {
             map[o..o + 4].copy_from_slice(&v.to_le_bytes());
         }
         for (o, v) in [(40, 8.0f32), (44, 8.0), (48, 8.0)] {
@@ -9213,7 +10303,9 @@ mod ui_tests {
             for j in 0..8 {
                 for i in 0..8 {
                     let d = [i, j, k].map(|q| q as f32 - 3.5);
-                    map.extend((4.0 - (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()).to_le_bytes());
+                    map.extend(
+                        (4.0 - (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()).to_le_bytes(),
+                    );
                 }
             }
         }
@@ -9231,14 +10323,19 @@ mod ui_tests {
         let frames: Vec<crate::protein::Snapshot> = (0..6)
             .map(|k| crate::protein::Snapshot {
                 step: None,
-                pos: crambin.atoms.iter().map(|a| [a.pos[0] * (1.0 + 0.02 * k as f32), a.pos[1], a.pos[2]]).collect(),
+                pos: crambin
+                    .atoms
+                    .iter()
+                    .map(|a| [a.pos[0] * (1.0 + 0.02 * k as f32), a.pos[1], a.pos[2]])
+                    .collect(),
                 cell: None,
             })
             .collect();
         let moving = crambin.with_frames(frames).unwrap();
         view.update(cx, |this, cx| this.show(moving, cx));
         cx.run_until_parked();
-        view.update(cx, |this, cx| this.run_command("analyse", cx)).unwrap();
+        view.update(cx, |this, cx| this.run_command("analyse", cx))
+            .unwrap();
         for _ in 0..20 {
             cx.executor().advance_clock(Duration::from_millis(300));
             cx.run_until_parked();
@@ -9261,9 +10358,13 @@ mod ui_tests {
         // last frame.
         assert!(cx.debug_bounds("analysis-plot").is_some());
         view.update(cx, |this, cx| this.go_to_plotted(0.98, cx));
-        assert_eq!(view.update(cx, |this, _| this.structure.as_ref().unwrap().frame), 5);
+        assert_eq!(
+            view.update(cx, |this, _| this.structure.as_ref().unwrap().frame),
+            5
+        );
         // Fitting changes the frames, so the analysis is worked out again.
-        view.update(cx, |this, cx| this.run_command("fit", cx)).unwrap();
+        view.update(cx, |this, cx| this.run_command("fit", cx))
+            .unwrap();
         assert!(view.update(cx, |this, _| this.analysis_task.is_some()));
     }
 
@@ -9275,21 +10376,33 @@ mod ui_tests {
             this.show(s, cx);
         });
         cx.run_until_parked();
-        let labels = |view: &Entity<Viewer>, cx: &mut VisualTestContext| view.update(cx, |this, _| this.labels.clone());
-        view.update(cx, |this, cx| this.run_command("label resi 1-3", cx)).unwrap();
+        let labels = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.labels.clone())
+        };
+        view.update(cx, |this, cx| this.run_command("label resi 1-3", cx))
+            .unwrap();
         let l = labels(&view, cx);
         assert_eq!(l.len(), 3);
         assert_eq!(l[0].text, "THR 1");
-        view.update(cx, |this, cx| this.run_command("label atoms resi 5 and name CA+CB", cx)).unwrap();
+        view.update(cx, |this, cx| {
+            this.run_command("label atoms resi 5 and name CA+CB", cx)
+        })
+        .unwrap();
         assert_eq!(labels(&view, cx).len(), 5);
         // Text of one's own, on the first atom taken; it replaces a label there.
-        view.update(cx, |this, cx| this.run_command("label resi 1 and name CA \"the start\"", cx)).unwrap();
+        view.update(cx, |this, cx| {
+            this.run_command("label resi 1 and name CA \"the start\"", cx)
+        })
+        .unwrap();
         let l = labels(&view, cx);
         assert_eq!(l.len(), 5);
         assert!(l.iter().any(|l| l.text == "the start"));
-        view.update(cx, |this, cx| this.run_command("label clear", cx)).unwrap();
+        view.update(cx, |this, cx| this.run_command("label clear", cx))
+            .unwrap();
         assert!(labels(&view, cx).is_empty());
-        assert!(view.update(cx, |this, cx| this.run_command("label", cx)).is_err());
+        assert!(view
+            .update(cx, |this, cx| this.run_command("label", cx))
+            .is_err());
     }
 
     #[gpui::test]
@@ -9305,7 +10418,11 @@ mod ui_tests {
             // from the scene with nothing marked.
             view.update(cx, |this, _| {
                 let (now, base) = (&this.scene, &this.base);
-                now.tris.iter().zip(&base.tris).filter(|(a, b)| a.c != b.c).count()
+                now.tris
+                    .iter()
+                    .zip(&base.tris)
+                    .filter(|(a, b)| a.c != b.c)
+                    .count()
                     + now.spheres.iter().filter(|s| s.alpha < 1.0).count()
             })
         };
@@ -9317,7 +10434,8 @@ mod ui_tests {
         cx.run_until_parked();
         assert_eq!(view.update(cx, |this, _| this.seq_hover), Some(3));
         assert!(glows(&view, cx) > 0, "the residue pointed at does not glow");
-        let away = view.update(cx, |this, _| this.cache.borrow().bounds.origin) + gpui::point(px(3.), px(120.));
+        let away = view.update(cx, |this, _| this.cache.borrow().bounds.origin)
+            + gpui::point(px(3.), px(120.));
         cx.simulate_mouse_move(away, None, Modifiers::none());
         cx.run_until_parked();
         assert_eq!(view.update(cx, |this, _| this.seq_hover), None);
@@ -9335,13 +10453,21 @@ mod ui_tests {
         cx.run_until_parked();
         let (picked, hit) = view.update(cx, |this, _| {
             let s = this.structure.as_ref().unwrap();
-            (this.selected_residue(), this.selected.map(|t| s.atoms[t.picked.atom].residue as usize))
+            (
+                this.selected_residue(),
+                this.selected
+                    .map(|t| s.atoms[t.picked.atom].residue as usize),
+            )
         });
         assert_eq!(picked, hit);
     }
 
     /// Where in the window atom `i` is drawn.
-    fn atom_on_screen(view: &Entity<Viewer>, cx: &mut VisualTestContext, i: usize) -> Point<Pixels> {
+    fn atom_on_screen(
+        view: &Entity<Viewer>,
+        cx: &mut VisualTestContext,
+        i: usize,
+    ) -> Point<Pixels> {
         view.update(cx, |this, _| {
             let p = this.structure.as_ref().unwrap().atoms[i].pos;
             this.cache.borrow().bounds.origin + this.project(p).unwrap()
@@ -9356,12 +10482,19 @@ mod ui_tests {
 
         // Two atoms that are each the nearest under their own point.
         let first = front_atom(&view, cx);
-        let a = view.update(cx, |this, _| this.pick_at(first)).unwrap().picked.atom;
+        let a = view
+            .update(cx, |this, _| this.pick_at(first))
+            .unwrap()
+            .picked
+            .atom;
         let atoms = view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms.len());
         let mut found = None;
         for i in (0..atoms).filter(|&i| i != a) {
             let at = atom_on_screen(&view, cx, i);
-            if view.update(cx, |this, _| this.pick_at(at)).is_some_and(|t| t.picked.atom == i) {
+            if view
+                .update(cx, |this, _| this.pick_at(at))
+                .is_some_and(|t| t.picked.atom == i)
+            {
                 found = Some((i, at));
                 break;
             }
@@ -9371,7 +10504,10 @@ mod ui_tests {
         cx.simulate_click(first, Modifiers::none());
         cx.run_until_parked();
         assert_eq!(view.update(cx, |this, _| this.pending.clone()), vec![a]);
-        assert!(view.update(cx, |this, _| this.selected.is_none()), "measuring picked the atom out");
+        assert!(
+            view.update(cx, |this, _| this.selected.is_none()),
+            "measuring picked the atom out"
+        );
         cx.simulate_click(second, Modifiers::none());
         cx.run_until_parked();
 
@@ -9396,11 +10532,15 @@ mod ui_tests {
 
         // An angle wants a third.
         click(cx, "measure-kind-1");
-        assert_eq!(view.update(cx, |this, _| this.measure_kind), measure::Kind::Angle);
+        assert_eq!(
+            view.update(cx, |this, _| this.measure_kind),
+            measure::Kind::Angle
+        );
         cx.simulate_click(first, Modifiers::none());
         cx.simulate_click(second, Modifiers::none());
         cx.run_until_parked();
-        assert!(view.update(cx, |this, _| this.measurements.is_empty() && this.pending.len() == 2));
+        assert!(view.update(cx, |this, _| this.measurements.is_empty()
+            && this.pending.len() == 2));
 
         // Done measuring, a click picks atoms out again.
         click(cx, "measure");
@@ -9419,11 +10559,14 @@ mod ui_tests {
         cx.run_until_parked();
         let zoom = view.update(cx, |this, _| this.camera.zoom);
         let extra = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
-            view.update(cx, |this, _| this.scene.capsules.len() - this.base.capsules.len())
+            view.update(cx, |this, _| {
+                this.scene.capsules.len() - this.base.capsules.len()
+            })
         };
 
         click(cx, "ligand-site-HEM");
-        let (first, labels) = view.update(cx, |this, _| (this.site.clone(), this.site_labels().len()));
+        let (first, labels) =
+            view.update(cx, |this, _| (this.site.clone(), this.site_labels().len()));
         let first = first.expect("no binding site shown");
         assert!(!first.residues.is_empty());
         assert_eq!(labels, first.residues.len());
@@ -9435,7 +10578,12 @@ mod ui_tests {
         assert!(zoom_now > zoom, "the camera did not come closer");
         let haem = view.update(cx, |this, _| {
             let s = this.structure.as_ref().unwrap();
-            spread(s.residue_atoms(first.ligand).iter().map(|&i| s.atoms[i].pos)).0
+            spread(
+                s.residue_atoms(first.ligand)
+                    .iter()
+                    .map(|&i| s.atoms[i].pos),
+            )
+            .0
         });
         assert!((0..3).all(|k| (centre[k] - haem[k]).abs() < 1e-3));
 
@@ -9443,15 +10591,27 @@ mod ui_tests {
         // hidden from the card.
         let (kinds, lines) = view.update(cx, |this, _| {
             let site = this.site.as_ref().unwrap();
-            (site.contacts.iter().map(|c| c.kind).collect::<Vec<_>>(), this.contact_segments().len())
+            (
+                site.contacts.iter().map(|c| c.kind).collect::<Vec<_>>(),
+                this.contact_segments().len(),
+            )
         });
         assert!(kinds.contains(&contacts::Kind::Metal), "{kinds:?}");
         assert_eq!(lines, kinds.len());
         click(cx, "contacts-Metal");
-        let metals = kinds.iter().filter(|k| **k == contacts::Kind::Metal).count();
-        assert_eq!(view.update(cx, |this, _| this.contact_segments().len()), lines - metals);
+        let metals = kinds
+            .iter()
+            .filter(|k| **k == contacts::Kind::Metal)
+            .count();
+        assert_eq!(
+            view.update(cx, |this, _| this.contact_segments().len()),
+            lines - metals
+        );
         click(cx, "contacts-Metal");
-        assert_eq!(view.update(cx, |this, _| this.contact_segments().len()), lines);
+        assert_eq!(
+            view.update(cx, |this, _| this.contact_segments().len()),
+            lines
+        );
 
         // On to the next haem, and back out.
         click(cx, "next-site");
@@ -9468,7 +10628,8 @@ mod ui_tests {
     fn an_assembly_is_shown_in_place_of_the_deposited_chains(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
         view.update(cx, |this, cx| {
-            let s = formats::parse(DIMER, formats::Format::Pdb, "dimer".into(), Source::File).unwrap();
+            let s =
+                formats::parse(DIMER, formats::Format::Pdb, "dimer".into(), Source::File).unwrap();
             this.show(s, cx);
         });
         cx.run_until_parked();
@@ -9497,7 +10658,10 @@ mod ui_tests {
         click(cx, "tab-open");
         click(cx, "overlay-entry");
         assert!(view.update(cx, |this, _| this.overlay_next));
-        assert!(cx.debug_bounds("overlay-cancel").is_some(), "nothing says the next is overlaid");
+        assert!(
+            cx.debug_bounds("overlay-cancel").is_some(),
+            "nothing says the next is overlaid"
+        );
 
         // What comes next, turned and moved, lands back on the first.
         let mut moved = haemoglobin.clone();
@@ -9508,16 +10672,28 @@ mod ui_tests {
         }
         view.update(cx, |this, cx| this.finish(Ok(moved), cx));
         cx.run_until_parked();
-        let (fit, comparing, armed) = view.update(cx, |this, _| (this.fit, this.compare.is_some(), this.overlay_next));
+        let (fit, comparing, armed) = view.update(cx, |this, _| {
+            (this.fit, this.compare.is_some(), this.overlay_next)
+        });
         let (rmsd, matched) = fit.expect("nothing was laid over");
         assert!(comparing && !armed);
         assert!(rmsd < 0.01, "{rmsd}");
         assert!(matched > 500);
-        let p = view.update(cx, |this, _| (this.structure.as_ref().unwrap().atoms[10].pos, this.compare.as_ref().unwrap().atoms[10].pos));
+        let p = view.update(cx, |this, _| {
+            (
+                this.structure.as_ref().unwrap().atoms[10].pos,
+                this.compare.as_ref().unwrap().atoms[10].pos,
+            )
+        });
         assert!((0..3).all(|k| (p.0[k] - p.1[k]).abs() < 0.01));
 
         click(cx, "comparison-close");
-        let (comparing, tint) = view.update(cx, |this, _| (this.compare.is_some(), this.structure.as_ref().unwrap().tint));
+        let (comparing, tint) = view.update(cx, |this, _| {
+            (
+                this.compare.is_some(),
+                this.structure.as_ref().unwrap().tint,
+            )
+        });
         assert!(!comparing && tint.is_none());
     }
 
@@ -9533,8 +10709,19 @@ mod ui_tests {
             this.camera.rotate(0.7, -0.3);
             this.camera.zoom = 2.5;
             Arc::make_mut(this.structure.as_mut().unwrap()).chains[1].color = Some([0.1, 0.2, 0.3]);
-            this.measurements.push(Measurement { kind: measure::Kind::Distance, which: 0, atoms: vec![10, 400] });
-            this.selected = Some(Target { which: 0, picked: Picked { atom: 55, residue: true, depth: 0.0 } });
+            this.measurements.push(Measurement {
+                kind: measure::Kind::Distance,
+                which: 0,
+                atoms: vec![10, 400],
+            });
+            this.selected = Some(Target {
+                which: 0,
+                picked: Picked {
+                    atom: 55,
+                    residue: true,
+                    depth: 0.0,
+                },
+            });
             this.rebuild(cx);
             this.next_site("HEM", cx);
         });
@@ -9542,11 +10729,18 @@ mod ui_tests {
         cx.run_until_parked();
         let json = view.update(cx, |this, _| this.session_json()).unwrap();
         let before = view.update(cx, |this, _| {
-            (this.camera.orientation, this.camera.zoom, this.site.as_ref().map(|s| s.ligand), this.structure.as_ref().unwrap().atoms.len())
+            (
+                this.camera.orientation,
+                this.camera.zoom,
+                this.site.as_ref().map(|s| s.ligand),
+                this.structure.as_ref().unwrap().atoms.len(),
+            )
         });
 
         let (other, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
-        other.update(cx, |this, cx| this.open_session(&json, cx)).unwrap();
+        other
+            .update(cx, |this, cx| this.open_session(&json, cx))
+            .unwrap();
         cx.run_until_parked();
         other.update(cx, |this, _| {
             let s = this.structure.as_ref().unwrap();
@@ -9557,7 +10751,9 @@ mod ui_tests {
             assert_eq!(this.palette, Palette::Viridis);
             assert_eq!(s.chains[1].color, Some([0.1, 0.2, 0.3]));
             assert!((this.camera.zoom - before.1).abs() < 1e-5);
-            assert!((0..3).all(|i| (0..3).all(|j| (this.camera.orientation[i][j] - before.0[i][j]).abs() < 1e-5)));
+            assert!((0..3)
+                .all(|i| (0..3)
+                    .all(|j| (this.camera.orientation[i][j] - before.0[i][j]).abs() < 1e-5)));
             assert_eq!(this.measurements.len(), 1);
             assert_eq!(this.measurements[0].atoms, vec![10, 400]);
             assert_eq!(this.selected.map(|t| t.picked.atom), Some(55));
@@ -9565,7 +10761,9 @@ mod ui_tests {
         });
         // A session from a newer profold is refused, not misread.
         let newer = json.replacen("\"profold\": 1", "\"profold\": 99", 1);
-        assert!(other.update(cx, |this, cx| this.open_session(&newer, cx)).is_err());
+        assert!(other
+            .update(cx, |this, cx| this.open_session(&newer, cx))
+            .is_err());
     }
 
     #[gpui::test]
@@ -9578,15 +10776,24 @@ mod ui_tests {
         cx.run_until_parked();
         let (waters, hidden) = view.update(cx, |this, _| {
             let s = this.structure.as_ref().unwrap();
-            (s.residues.iter().filter(|r| r.name == "HOH").count(), this.appearance.hide_solvent)
+            (
+                s.residues.iter().filter(|r| r.name == "HOH").count(),
+                this.appearance.hide_solvent,
+            )
         });
         assert!(waters > 100, "haemoglobin's waters were dropped");
         assert!(hidden);
-        let spheres = |view: &Entity<Viewer>, cx: &mut VisualTestContext| view.update(cx, |this, _| this.base.spheres.len());
+        let spheres = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.base.spheres.len())
+        };
         let without = spheres(&view, cx);
         click(cx, "show-water");
         assert!(view.update(cx, |this, _| !this.appearance.hide_solvent));
-        assert_eq!(spheres(&view, cx), without + waters, "each water is one oxygen drawn");
+        assert_eq!(
+            spheres(&view, cx),
+            without + waters,
+            "each water is one oxygen drawn"
+        );
         click(cx, "show-water");
         assert_eq!(spheres(&view, cx), without);
     }
@@ -9594,7 +10801,9 @@ mod ui_tests {
     #[gpui::test]
     fn the_camera_spins_and_rocks_until_touched(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
-        let angle = |view: &Entity<Viewer>, cx: &mut VisualTestContext| view.update(cx, |this, _| this.camera.angles()[1]);
+        let angle = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.camera.angles()[1])
+        };
         let start = angle(&view, cx);
         click(cx, "tab-camera");
         click(cx, "spin");
@@ -9640,19 +10849,31 @@ mod ui_tests {
         assert!(view.update(cx, |this, _| this.camera.perspective));
         // A double-click reframes, and keeps the lens.
         let middle = view.update(cx, |this, _| this.cache.borrow().bounds.center());
-        cx.simulate_event(MouseDownEvent { position: middle, button: MouseButton::Left, modifiers: Modifiers::none(), click_count: 2, first_mouse: false });
+        cx.simulate_event(MouseDownEvent {
+            position: middle,
+            button: MouseButton::Left,
+            modifiers: Modifiers::none(),
+            click_count: 2,
+            first_mouse: false,
+        });
         cx.simulate_mouse_up(middle, MouseButton::Left, Modifiers::none());
         cx.run_until_parked();
         assert!(view.update(cx, |this, _| this.camera.perspective));
 
         click(cx, "tab-camera");
         click(cx, "slab");
-        let slab = view.update(cx, |this, _| this.camera.slab).expect("no slab");
+        let slab = view
+            .update(cx, |this, _| this.camera.slab)
+            .expect("no slab");
         let scroll = |cx: &mut VisualTestContext, shift: bool| {
             cx.simulate_event(ScrollWheelEvent {
                 position: middle,
                 delta: ScrollDelta::Pixels(gpui::point(px(0.), px(40.))),
-                modifiers: Modifiers { alt: true, shift, ..Modifiers::none() },
+                modifiers: Modifiers {
+                    alt: true,
+                    shift,
+                    ..Modifiers::none()
+                },
                 ..Default::default()
             });
             cx.run_until_parked();
@@ -9660,9 +10881,19 @@ mod ui_tests {
         let zoom = view.update(cx, |this, _| this.camera.zoom);
         scroll(cx, false);
         let moved = view.update(cx, |this, _| this.camera.slab).unwrap();
-        assert!(moved[0] > slab[0] && moved[1] > slab[1], "{slab:?} to {moved:?}");
-        assert!(((moved[0] - moved[1]) - (slab[0] - slab[1])).abs() < 1e-4, "it changed thickness");
-        assert_eq!(view.update(cx, |this, _| this.camera.zoom), zoom, "it zoomed as well");
+        assert!(
+            moved[0] > slab[0] && moved[1] > slab[1],
+            "{slab:?} to {moved:?}"
+        );
+        assert!(
+            ((moved[0] - moved[1]) - (slab[0] - slab[1])).abs() < 1e-4,
+            "it changed thickness"
+        );
+        assert_eq!(
+            view.update(cx, |this, _| this.camera.zoom),
+            zoom,
+            "it zoomed as well"
+        );
         scroll(cx, true);
         let thick = view.update(cx, |this, _| this.camera.slab).unwrap();
         assert!(thick[0] - thick[1] > moved[0] - moved[1]);
@@ -9685,11 +10916,14 @@ mod ui_tests {
             this.show(s, cx);
         });
         cx.run_until_parked();
-        let (tris, capsules) = view.update(cx, |this, _| (this.base.tris.len(), this.base.capsules.len()));
+        let (tris, capsules) = view.update(cx, |this, _| {
+            (this.base.tris.len(), this.base.capsules.len())
+        });
 
         // A bad one says what is wrong, and adds nothing.
         assert!(!view.update(cx, |this, cx| this.add_layer("resn HIS and", cx)));
-        assert!(view.update(cx, |this, _| this.select_error.is_some() && this.layers.is_empty()));
+        assert!(view.update(cx, |this, _| this.select_error.is_some()
+            && this.layers.is_empty()));
 
         // Typed into its field: the histidines by the irons, as sticks.
         let field = cx.debug_bounds("select-field").expect("no selection field");
@@ -9698,7 +10932,12 @@ mod ui_tests {
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         let (n, more) = view.update(cx, |this, _| {
-            (this.layers.first().map(|l| l.atoms.iter().filter(|a| **a).count()), this.base.capsules.len() > capsules)
+            (
+                this.layers
+                    .first()
+                    .map(|l| l.atoms.iter().filter(|a| **a).count()),
+                this.base.capsules.len() > capsules,
+            )
         });
         assert_eq!(n, Some(40), "four histidines of ten atoms");
         assert!(more, "the sticks are not drawn");
@@ -9707,19 +10946,40 @@ mod ui_tests {
         // Hidden, chain A's ribbon goes.
         assert!(view.update(cx, |this, cx| this.add_layer("chain A", cx)));
         click(cx, "layer-1-Hide");
-        let (hidden, now) = view.update(cx, |this, _| (this.appearance.hidden.is_some(), this.base.tris.len()));
+        let (hidden, now) = view.update(cx, |this, _| {
+            (this.appearance.hidden.is_some(), this.base.tris.len())
+        });
         assert!(hidden && now < tris * 4 / 5, "{now} of {tris}");
         click(cx, "layer-1-color");
-        assert_eq!(view.update(cx, |this, _| this.layers[1].color), LAYER_COLORS[1]);
+        assert_eq!(
+            view.update(cx, |this, _| this.layers[1].color),
+            LAYER_COLORS[1]
+        );
         click(cx, "layer-1-remove");
-        assert!(view.update(cx, |this, _| this.appearance.hidden.is_none() && this.base.tris.len() == tris));
+        assert!(view.update(cx, |this, _| this.appearance.hidden.is_none()
+            && this.base.tris.len() == tris));
 
         // And it is kept in a session.
         let json = view.update(cx, |this, _| this.session_json()).unwrap();
         let (other, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
-        other.update(cx, |this, cx| this.open_session(&json, cx)).unwrap();
-        let kept = other.update(cx, |this, _| this.layers.iter().map(|l| (l.selection.text().to_string(), l.atoms.iter().filter(|a| **a).count())).collect::<Vec<_>>());
-        assert_eq!(kept, vec![("byres (resn HIS and within 3 of elem Fe)".to_string(), 40)]);
+        other
+            .update(cx, |this, cx| this.open_session(&json, cx))
+            .unwrap();
+        let kept = other.update(cx, |this, _| {
+            this.layers
+                .iter()
+                .map(|l| {
+                    (
+                        l.selection.text().to_string(),
+                        l.atoms.iter().filter(|a| **a).count(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            kept,
+            vec![("byres (resn HIS and within 3 of elem Fe)".to_string(), 40)]
+        );
     }
 
     #[gpui::test]
@@ -9729,8 +10989,14 @@ mod ui_tests {
             let mut s = formats::load_bytes(SAMPLES[2].file, SAMPLES[2].bytes.to_vec()).unwrap();
             // A made-up error, small along the diagonal.
             let n = s.residues.iter().filter(|r| !r.outside_polymer()).count();
-            let values = (0..n * n).map(|k| ((k / n) as f32 - (k % n) as f32).abs()).collect();
-            s.pae = Some(Arc::new(crate::protein::Pae { n, values, max: 30.0 }));
+            let values = (0..n * n)
+                .map(|k| ((k / n) as f32 - (k % n) as f32).abs())
+                .collect();
+            s.pae = Some(Arc::new(crate::protein::Pae {
+                n,
+                values,
+                max: 30.0,
+            }));
             this.show(s, cx);
         });
         // Tall enough for both plots to be in view in the panel.
@@ -9739,11 +11005,16 @@ mod ui_tests {
         // Both start closed, under rows of their own.
         assert!(cx.debug_bounds("ramachandran").is_none() && cx.debug_bounds("pae").is_none());
         for row in ["open-ramachandran", "open-pae"] {
-            let at = cx.debug_bounds(row).expect("no row to open a plot by").center();
+            let at = cx
+                .debug_bounds(row)
+                .expect("no row to open a plot by")
+                .center();
             cx.simulate_click(at, Modifiers::none());
             cx.run_until_parked();
         }
-        let plot = cx.debug_bounds("ramachandran").expect("no Ramachandran plot");
+        let plot = cx
+            .debug_bounds("ramachandran")
+            .expect("no Ramachandran plot");
         // A dot to point at: residue 10's, where the plot puts it.
         let (r, phi, psi) = view.update(cx, |this, _| {
             let t = this.structure.as_ref().unwrap().torsions();
@@ -9769,16 +11040,24 @@ mod ui_tests {
         let quarter = pae.origin + gpui::point(pae.size.width * 0.25, pae.size.height * 0.75);
         cx.simulate_mouse_move(quarter, None, Modifiers::none());
         cx.run_until_parked();
-        let (i, j) = view.update(cx, |this, _| this.pae_hover).expect("nothing pointed at in the PAE");
+        let (i, j) = view
+            .update(cx, |this, _| this.pae_hover)
+            .expect("nothing pointed at in the PAE");
         assert!(i > j, "rows run down, columns across: {i} {j}");
     }
 
     #[gpui::test]
     fn the_film_dialog_sets_up_a_turning_trajectory(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
-        let melt = SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+        let melt = SAMPLES
+            .iter()
+            .find(|s| s.file.ends_with("lammpstrj.gz"))
+            .unwrap();
         view.update(cx, |this, cx| {
-            this.show(formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap(), cx);
+            this.show(
+                formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap(),
+                cx,
+            );
             this.open_movie(cx);
         });
         cx.run_until_parked();
@@ -9812,7 +11091,10 @@ mod ui_tests {
         cx.run_until_parked();
         let motion = view.update(cx, |this, _| this.options().motion);
         assert_eq!(motion, crate::movie::Motion::Recorded);
-        assert!(view.update(cx, |this, _| this.movie.open && !this.recording()), "the dialog did not come back");
+        assert!(
+            view.update(cx, |this, _| this.movie.open && !this.recording()),
+            "the dialog did not come back"
+        );
     }
 
     #[gpui::test]
@@ -9823,32 +11105,62 @@ mod ui_tests {
         cx.run_until_parked();
         // Three frames, each shifted a little further along x.
         let frames: Vec<crate::protein::Snapshot> = (0..3)
-            .map(|k| crate::protein::Snapshot { step: None, pos: crambin.atoms.iter().map(|a| [a.pos[0] + k as f32, a.pos[1], a.pos[2]]).collect(), cell: None })
+            .map(|k| crate::protein::Snapshot {
+                step: None,
+                pos: crambin
+                    .atoms
+                    .iter()
+                    .map(|a| [a.pos[0] + k as f32, a.pos[1], a.pos[2]])
+                    .collect(),
+                cell: None,
+            })
             .collect();
         let traj = Structure::beads("run.dcd", crambin.atoms.len(), frames);
         view.update(cx, |this, cx| this.finish(Ok(traj), cx));
         cx.run_until_parked();
         let (count, name, first) = view.update(cx, |this, _| {
             let s = this.structure.as_ref().unwrap();
-            (s.frame_count(), s.atoms[1].name().to_string(), s.atoms[0].pos)
+            (
+                s.frame_count(),
+                s.atoms[1].name().to_string(),
+                s.atoms[0].pos,
+            )
         });
         assert_eq!(count, 3);
-        assert_eq!(name, crambin.atoms[1].name(), "the atoms are no longer the structure's");
+        assert_eq!(
+            name,
+            crambin.atoms[1].name(),
+            "the atoms are no longer the structure's"
+        );
         assert_eq!(first, crambin.atoms[0].pos);
         view.update(cx, |this, cx| this.set_frame(2, cx));
         let moved = view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms[0].pos);
         assert!((moved[0] - crambin.atoms[0].pos[0] - 2.0).abs() < 1e-5);
 
         // One that does not fit opens on its own, as beads.
-        let other = Structure::beads("other.xtc", 10, vec![crate::protein::Snapshot { step: None, pos: vec![[0.0; 3]; 10], cell: None }]);
+        let other = Structure::beads(
+            "other.xtc",
+            10,
+            vec![crate::protein::Snapshot {
+                step: None,
+                pos: vec![[0.0; 3]; 10],
+                cell: None,
+            }],
+        );
         view.update(cx, |this, cx| this.finish(Ok(other), cx));
-        assert_eq!(view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms.len()), 10);
+        assert_eq!(
+            view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms.len()),
+            10
+        );
     }
 
     #[test]
     fn a_trajectory_turning_is_written_as_a_looping_gif() {
         use image::AnimationDecoder;
-        let melt = SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+        let melt = SAMPLES
+            .iter()
+            .find(|s| s.file.ends_with("lammpstrj.gz"))
+            .unwrap();
         let s = formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap();
         assert!(s.frame_count() > 4);
         let options = crate::movie::Options {
@@ -9871,7 +11183,17 @@ mod ui_tests {
         let job = crate::movie::Job {
             structure: s,
             build: Arc::new(|s: &Structure| {
-                render::build_scene(s, Repr::Spacefill, Coloring::Element, 1.0, Style::Soft, Palette::Spectrum, true, false, &Appearance::default())
+                render::build_scene(
+                    s,
+                    Repr::Spacefill,
+                    Coloring::Element,
+                    1.0,
+                    Style::Soft,
+                    Palette::Spectrum,
+                    true,
+                    false,
+                    &Appearance::default(),
+                )
             }),
             style: Style::Soft,
             page: [1.0; 3],
@@ -9887,10 +11209,18 @@ mod ui_tests {
         let path = crate::movie::export(&job, &dir.join("melt.gif"), &progress).unwrap();
         assert_eq!(progress.done.load(std::sync::atomic::Ordering::Relaxed), 4);
         let bytes = std::fs::read(&path).unwrap();
-        let decoded = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).unwrap().into_frames().collect_frames().unwrap();
+        let decoded = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes))
+            .unwrap()
+            .into_frames()
+            .collect_frames()
+            .unwrap();
         assert_eq!(decoded.len(), 4);
         assert_eq!(decoded[0].buffer().dimensions(), (120, 90));
-        assert_ne!(decoded[0].buffer().as_raw(), decoded[2].buffer().as_raw(), "every frame the same");
+        assert_ne!(
+            decoded[0].buffer().as_raw(),
+            decoded[2].buffer().as_raw(),
+            "every frame the same"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -9899,9 +11229,15 @@ mod ui_tests {
         let (view, cx) = open(cx);
         // Each change after a pause, so none is folded into the last.
         let pause = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
-            view.update(cx, |this, _| this.last_change = std::time::Instant::now() - UNDO_PAUSE * 2)
+            view.update(cx, |this, _| {
+                this.last_change = std::time::Instant::now() - UNDO_PAUSE * 2
+            })
         };
-        let state = |view: &Entity<Viewer>, cx: &mut VisualTestContext| view.update(cx, |this, _| (this.repr, this.coloring, this.measurements.len()));
+        let state = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| {
+                (this.repr, this.coloring, this.measurements.len())
+            })
+        };
         let start = state(&view, cx);
         pause(&view, cx);
         view.update(cx, |this, cx| this.set_repr(Repr::Spacefill, cx));
@@ -9912,7 +11248,11 @@ mod ui_tests {
         });
         pause(&view, cx);
         view.update(cx, |this, cx| {
-            this.measurements.push(Measurement { kind: measure::Kind::Distance, which: 0, atoms: vec![0, 1] });
+            this.measurements.push(Measurement {
+                kind: measure::Kind::Distance,
+                which: 0,
+                atoms: vec![0, 1],
+            });
             this.compose(cx);
         });
         assert_eq!(state(&view, cx), (Repr::Spacefill, Coloring::Rainbow, 1));
@@ -9937,12 +11277,21 @@ mod ui_tests {
         pause(&view, cx);
         for size in [1.1, 1.3, 1.6] {
             view.update(cx, |this, cx| {
-                this.appearance.set(Species::Element(6), Look { size, ..Look::default() });
+                this.appearance.set(
+                    Species::Element(6),
+                    Look {
+                        size,
+                        ..Look::default()
+                    },
+                );
                 this.rebuild(cx);
             });
         }
         view.update(cx, |this, cx| this.undo(false, cx));
-        assert_eq!(view.update(cx, |this, _| this.appearance.get(&Species::Element(6)).size), 1.0);
+        assert_eq!(
+            view.update(cx, |this, _| this.appearance.get(&Species::Element(6)).size),
+            1.0
+        );
     }
 
     #[gpui::test]
@@ -9967,7 +11316,9 @@ mod ui_tests {
         cx.run_until_parked();
         let now = view.update(cx, |this, _| this.camera);
         assert!((now.zoom - saved.zoom).abs() < 1e-4);
-        assert!((0..3).all(|i| (0..3).all(|j| (now.orientation[i][j] - saved.orientation[i][j]).abs() < 1e-4)));
+        assert!((0..3).all(
+            |i| (0..3).all(|j| (now.orientation[i][j] - saved.orientation[i][j]).abs() < 1e-4)
+        ));
 
         // What was opened is offered again.
         view.update(cx, |this, cx| {
@@ -9975,9 +11326,15 @@ mod ui_tests {
             let s = formats::load_bytes(SAMPLES[3].file, SAMPLES[3].bytes.to_vec()).unwrap();
             this.finish(Ok(s), cx);
         });
-        assert_eq!(crate::settings::recent().first().map(String::as_str), Some("sample:1ubq.pdb.gz"));
+        assert_eq!(
+            crate::settings::recent().first().map(String::as_str),
+            Some("sample:1ubq.pdb.gz")
+        );
         click(cx, "tab-samples");
-        assert!(cx.debug_bounds("recent-0").is_some(), "no recent entry in the menu");
+        assert!(
+            cx.debug_bounds("recent-0").is_some(),
+            "no recent entry in the menu"
+        );
     }
 
     #[gpui::test]
@@ -9986,15 +11343,22 @@ mod ui_tests {
         theme::set_vertical(true);
         cx.simulate_resize(gpui::size(px(400.), px(820.)));
         cx.run_until_parked();
-        assert!(view.update(cx, |this, _| this.compact), "no menus in a narrow window");
+        assert!(
+            view.update(cx, |this, _| this.compact),
+            "no menus in a narrow window"
+        );
         click(cx, "repr-menu");
         assert!(view.update(cx, |this, _| this.open == Some(Dropdown::Repr)));
         click(cx, "repr-item-Spacefill");
-        assert!(view.update(cx, |this, _| this.repr == Repr::Spacefill && this.open.is_none()));
+        assert!(view.update(cx, |this, _| this.repr == Repr::Spacefill
+            && this.open.is_none()));
 
         cx.simulate_resize(gpui::size(px(1180.), px(760.)));
         cx.run_until_parked();
-        assert!(!view.update(cx, |this, _| this.compact), "a wide window keeps its rows");
+        assert!(
+            !view.update(cx, |this, _| this.compact),
+            "a wide window keeps its rows"
+        );
         theme::set_vertical(false);
     }
 
@@ -10046,7 +11410,8 @@ mod ui_tests {
         cx.run_until_parked();
         click(cx, "tab-camera");
         click(cx, "reset-view");
-        let (orientation, zoom) = view.update(cx, |this, _| (this.camera.orientation, this.camera.zoom));
+        let (orientation, zoom) =
+            view.update(cx, |this, _| (this.camera.orientation, this.camera.zoom));
         assert_eq!(orientation, Camera::home(), "not back at the opening view");
         assert_eq!(zoom, 1.0);
     }
@@ -10085,16 +11450,21 @@ mod ui_tests {
     fn picking_a_colour_paints_the_element(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
         click(cx, "dot-C");
-        assert!(view.update(cx, |this, _| this.picking.is_some()), "the picker did not open");
+        assert!(
+            view.update(cx, |this, _| this.picking.is_some()),
+            "the picker did not open"
+        );
         click(cx, "swatch-1");
         let carbon = view.update(cx, |this, _| {
             this.appearance.get(&Species::Element(6)).color
         });
         assert_eq!(carbon, Some(SWATCHES[0]));
-        assert!(colors(&view, cx).contains(&SWATCHES[0]) || {
-            // The inked styles tone colours; the scene holds the toned one.
-            view.update(cx, |this, _| this.style.inked())
-        });
+        assert!(
+            colors(&view, cx).contains(&SWATCHES[0]) || {
+                // The inked styles tone colours; the scene holds the toned one.
+                view.update(cx, |this, _| this.style.inked())
+            }
+        );
     }
 
     #[gpui::test]
@@ -10123,7 +11493,9 @@ mod ui_tests {
         });
         cx.run_until_parked();
         click(cx, "reset-chains");
-        let chain = view.update(cx, |this, _| this.structure.as_ref().unwrap().chains[1].color);
+        let chain = view.update(cx, |this, _| {
+            this.structure.as_ref().unwrap().chains[1].color
+        });
         assert_eq!(chain, None);
     }
 
@@ -10145,11 +11517,15 @@ mod ui_tests {
     #[gpui::test]
     fn a_palette_change_keeps_picked_colours_until_reset(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
-        view.update(cx, |this, cx| this.set_color(Species::Element(6), Some(SWATCHES[0]), cx));
+        view.update(cx, |this, cx| {
+            this.set_color(Species::Element(6), Some(SWATCHES[0]), cx)
+        });
         click(cx, "palette-button");
         click(cx, "palette-Viridis");
         let carbon = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
-            view.update(cx, |this, _| this.appearance.get(&Species::Element(6)).color)
+            view.update(cx, |this, _| {
+                this.appearance.get(&Species::Element(6)).color
+            })
         };
         assert_eq!(carbon(&view, cx), Some(SWATCHES[0]));
         // Said straight away, with a way back.
@@ -10164,12 +11540,16 @@ mod ui_tests {
         assert!(view.update(cx, |this, _| this.kept.is_none()));
 
         // The menu's own Reset, and a row's own.
-        view.update(cx, |this, cx| this.set_color(Species::Element(6), Some(SWATCHES[0]), cx));
+        view.update(cx, |this, cx| {
+            this.set_color(Species::Element(6), Some(SWATCHES[0]), cx)
+        });
         click(cx, "palette-button");
         click(cx, "reset-colours");
         assert_eq!(carbon(&view, cx), None);
         click(cx, "palette-button");
-        view.update(cx, |this, cx| this.set_color(Species::Element(6), Some(SWATCHES[0]), cx));
+        view.update(cx, |this, cx| {
+            this.set_color(Species::Element(6), Some(SWATCHES[0]), cx)
+        });
         cx.run_until_parked();
         let row = view.update(cx, |this, _| {
             let s = this.structure.as_ref().unwrap();
@@ -10215,7 +11595,9 @@ mod ui_tests {
 
         // Phosphate has no carbons, so it goes solid.
         assert!(cx.debug_bounds("ligand-PO4-Carbons").is_none());
-        view.update(cx, |this, cx| this.paint(Pick::Ligand("PO4".into()), Some(SWATCHES[0]), cx));
+        view.update(cx, |this, cx| {
+            this.paint(Pick::Ligand("PO4".into()), Some(SWATCHES[0]), cx)
+        });
         let phosphate = view.update(cx, |this, _| this.ligand_paint("PO4"));
         assert_eq!(phosphate, Some(LigandPaint::Solid(SWATCHES[0])));
     }
@@ -10229,10 +11611,15 @@ mod ui_tests {
         cx.update(crate::ui::input::bind_keys);
         let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
         cx.simulate_input("green fluorescent protein");
-        let (detected, searching) =
-            view.update(cx, |this, _| (this.detected.clone(), this.searching.clone()));
+        let (detected, searching) = view.update(cx, |this, _| {
+            (this.detected.clone(), this.searching.clone())
+        });
         assert_eq!(detected, Input::Query("green fluorescent protein".into()));
-        assert_eq!(searching.as_deref(), Some("green fluorescent protein"), "no search was started");
+        assert_eq!(
+            searching.as_deref(),
+            Some("green fluorescent protein"),
+            "no search was started"
+        );
 
         // Stand in for the network: results arrive for what is typed.
         view.update(cx, |this, cx| {
@@ -10248,18 +11635,29 @@ mod ui_tests {
             cx.notify();
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("hit-2").is_some(), "the results list is not on screen");
+        assert!(
+            cx.debug_bounds("hit-2").is_some(),
+            "the results list is not on screen"
+        );
 
         // Down twice, up once: the AlphaFold model.
         cx.simulate_keystrokes("down down up");
         assert_eq!(view.update(cx, |this, _| this.highlight), 1);
         cx.simulate_keystrokes("escape");
-        assert!(!view.update(cx, |this, _| this.dropdown), "escape left the list up");
+        assert!(
+            !view.update(cx, |this, _| this.dropdown),
+            "escape left the list up"
+        );
         cx.simulate_keystrokes("down");
-        assert!(view.update(cx, |this, _| this.dropdown), "down did not bring the list back");
+        assert!(
+            view.update(cx, |this, _| this.dropdown),
+            "down did not bring the list back"
+        );
 
         click(cx, "hit-0");
-        let busy = view.update(cx, |this, _| (this.dropdown, this.busy.is_some(), this.log.last().cloned()));
+        let busy = view.update(cx, |this, _| {
+            (this.dropdown, this.busy.is_some(), this.log.last().cloned())
+        });
         assert!(!busy.0, "the list stayed up after a pick");
         assert!(busy.1, "picking a result started nothing");
         assert!(busy.2.is_some_and(|l| l.contains("1GFL")));
@@ -10277,9 +11675,15 @@ mod ui_tests {
             this.show(s, cx);
         });
         cx.run_until_parked();
-        assert!(cx.debug_bounds("source-link").is_some(), "no link to PubChem");
+        assert!(
+            cx.debug_bounds("source-link").is_some(),
+            "no link to PubChem"
+        );
         let page = view.update(cx, |this, _| this.structure.as_ref().unwrap().page());
-        assert_eq!(page.as_deref(), Some("https://pubchem.ncbi.nlm.nih.gov/compound/2519"));
+        assert_eq!(
+            page.as_deref(),
+            Some("https://pubchem.ncbi.nlm.nih.gov/compound/2519")
+        );
     }
 
     #[gpui::test]
@@ -10317,7 +11721,9 @@ mod ui_tests {
             ];
             this.receive("caffeine".into(), Ok(hits), cx);
         });
-        let (busy, last) = view.update(cx, |this, _| (this.busy.is_some(), this.log.last().cloned()));
+        let (busy, last) = view.update(cx, |this, _| {
+            (this.busy.is_some(), this.log.last().cloned())
+        });
         assert!(busy, "the exact name did not open");
         assert!(last.is_some_and(|l| l.contains("CID 2519")));
     }
@@ -10352,8 +11758,9 @@ mod ui_tests {
     fn a_fold_tab_takes_sequences_and_never_searches(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::Fold, window, cx));
         cx.simulate_input("green fluorescent protein");
-        let (detected, searching) =
-            view.update(cx, |this, _| (this.detected.clone(), this.searching.clone()));
+        let (detected, searching) = view.update(cx, |this, _| {
+            (this.detected.clone(), this.searching.clone())
+        });
         assert!(matches!(detected, Input::Sequence(_)));
         assert!(searching.is_none(), "a fold tab searched");
     }
@@ -10362,7 +11769,10 @@ mod ui_tests {
     fn a_viewer_never_offers_to_fold(cx: &mut TestAppContext) {
         let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
         cx.simulate_input("1CRN");
-        assert_eq!(view.update(cx, |this, _| this.detected.clone()), Input::Pdb("1CRN".into()));
+        assert_eq!(
+            view.update(cx, |this, _| this.detected.clone()),
+            Input::Pdb("1CRN".into())
+        );
         assert!(cx.debug_bounds("compare").is_none());
         assert!(cx.debug_bounds("model").is_none());
     }

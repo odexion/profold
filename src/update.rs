@@ -41,11 +41,21 @@ pub enum Status {
     UpToDate,
     /// A newer release this build cannot install itself: a build from
     /// source, or one installed somewhere it cannot write.
-    Available { version: String, page: String },
-    Downloading { version: String, fraction: Option<f32> },
-    Installing { version: String },
+    Available {
+        version: String,
+        page: String,
+    },
+    Downloading {
+        version: String,
+        fraction: Option<f32>,
+    },
+    Installing {
+        version: String,
+    },
     /// Installed; it takes over at the next start.
-    Ready { version: String },
+    Ready {
+        version: String,
+    },
     Failed(String),
 }
 
@@ -90,7 +100,10 @@ fn save_prefs(v: &Value) {
 
 /// Whether to look for a new release on launch. On unless turned off.
 pub fn automatic() -> bool {
-    prefs().get("automatic").and_then(Value::as_bool).unwrap_or(true)
+    prefs()
+        .get("automatic")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
 pub fn set_automatic(on: bool) {
@@ -131,7 +144,11 @@ pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     let s = s.trim().trim_start_matches('v');
     let core = s.split(['-', '+']).next()?;
     let mut parts = core.split('.').map(|p| p.parse::<u64>().ok());
-    let v = (parts.next()??, parts.next().unwrap_or(Some(0))?, parts.next().unwrap_or(Some(0))?);
+    let v = (
+        parts.next()??,
+        parts.next().unwrap_or(Some(0))?,
+        parts.next().unwrap_or(Some(0))?,
+    );
     Some(v)
 }
 
@@ -189,9 +206,19 @@ fn parse_release(text: &str, target: Option<&str>) -> Result<Release> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|a| Some((a.get("name")?.as_str()?, a.get("browser_download_url")?.as_str()?)))
+        .filter_map(|a| {
+            Some((
+                a.get("name")?.as_str()?,
+                a.get("browser_download_url")?.as_str()?,
+            ))
+        })
         .collect();
-    let find = |name: &str| assets.iter().find(|(n, _)| *n == name).map(|(_, u)| u.to_string());
+    let find = |name: &str| {
+        assets
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, u)| u.to_string())
+    };
     let archive = target.and_then(|t| {
         let name = archive_name(t);
         Some((find(&name)?, find(&format!("{name}.sha256"))?))
@@ -219,7 +246,11 @@ fn download(url: &str, mut progress: impl FnMut(Option<f32>)) -> Result<Vec<u8>>
             break;
         }
         out.extend_from_slice(&buf[..n]);
-        progress(total.filter(|t| *t > 0).map(|t| out.len() as f32 / t as f32));
+        progress(
+            total
+                .filter(|t| *t > 0)
+                .map(|t| out.len() as f32 / t as f32),
+        );
     }
     Ok(out)
 }
@@ -231,7 +262,10 @@ fn verify(bytes: &[u8], sums: &str) -> Result<()> {
         .next()
         .ok_or_else(|| anyhow!("the checksum file is empty"))?
         .to_ascii_lowercase();
-    let got: String = Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect();
+    let got: String = Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     if got != want {
         bail!("the download is damaged (checksum mismatch)");
     }
@@ -277,7 +311,11 @@ pub fn layout() -> Option<&'static Layout> {
             let exe = std::env::current_exe().ok()?;
             // Through any symlink to the real file; not on Windows, where
             // that gives a `\\?\` path other programs choke on.
-            let exe = if cfg!(windows) { exe } else { exe.canonicalize().ok()? };
+            let exe = if cfg!(windows) {
+                exe
+            } else {
+                exe.canonicalize().ok()?
+            };
             let bundle = exe
                 .parent()
                 .and_then(Path::parent)
@@ -339,8 +377,7 @@ pub fn install(layout: &Layout, archive: &[u8]) -> Result<()> {
 /// `current` back if the second step fails.
 fn swap(current: &Path, new: &Path, old: &Path) -> Result<()> {
     remove(old).ok();
-    std::fs::rename(current, old)
-        .with_context(|| format!("moving {} aside", current.display()))?;
+    std::fs::rename(current, old).with_context(|| format!("moving {} aside", current.display()))?;
     if let Err(e) = std::fs::rename(new, current) {
         let _ = std::fs::rename(old, current);
         return Err(e).with_context(|| format!("putting the update at {}", current.display()));
@@ -371,19 +408,39 @@ pub fn run(status: Shared) {
         }
         let version = release.version.clone();
         let (Some((url, sums_url)), Some(layout)) = (release.archive.as_ref(), layout()) else {
-            return Ok(Status::Available { version, page: release.page });
+            return Ok(Status::Available {
+                version,
+                page: release.page,
+            });
         };
-        set(&status, Status::Downloading { version: version.clone(), fraction: None });
+        set(
+            &status,
+            Status::Downloading {
+                version: version.clone(),
+                fraction: None,
+            },
+        );
         let sums = String::from_utf8(download(sums_url, |_| {})?)?;
         let mut last = std::time::Instant::now();
         let bytes = download(url, |fraction| {
             if last.elapsed() > Duration::from_millis(100) {
                 last = std::time::Instant::now();
-                set(&status, Status::Downloading { version: version.clone(), fraction });
+                set(
+                    &status,
+                    Status::Downloading {
+                        version: version.clone(),
+                        fraction,
+                    },
+                );
             }
         })?;
         verify(&bytes, &sums)?;
-        set(&status, Status::Installing { version: version.clone() });
+        set(
+            &status,
+            Status::Installing {
+                version: version.clone(),
+            },
+        );
         install(layout, &bytes)?;
         Ok(Status::Ready { version })
     })();
@@ -445,7 +502,10 @@ mod tests {
         }"#;
         let r = parse_release(text, Some("x86_64-unknown-linux-gnu")).unwrap();
         assert_eq!(r.version, "0.2.0");
-        assert_eq!(r.archive, Some(("https://x/a".into(), "https://x/a.sha256".into())));
+        assert_eq!(
+            r.archive,
+            Some(("https://x/a".into(), "https://x/a.sha256".into()))
+        );
         // No checksum, no archive: an unverifiable download is not installed.
         let r = parse_release(text, Some("aarch64-apple-darwin")).unwrap();
         assert_eq!(r.archive, None);
@@ -454,7 +514,10 @@ mod tests {
 
     #[test]
     fn a_damaged_download_is_refused() {
-        let sum: String = Sha256::digest(b"hello").iter().map(|b| format!("{b:02x}")).collect();
+        let sum: String = Sha256::digest(b"hello")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         assert!(verify(b"hello", &format!("{sum}  profold.tar.gz\n")).is_ok());
         assert!(verify(b"hellp", &sum).is_err());
     }
@@ -478,13 +541,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("profold-update-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let exe = dir.join(if cfg!(windows) { "profold.exe" } else { "profold" });
+        let exe = dir.join(if cfg!(windows) {
+            "profold.exe"
+        } else {
+            "profold"
+        });
         std::fs::write(&exe, b"old").unwrap();
         let layout = Layout::Binary(exe.clone());
 
         install(&layout, &archive_of(layout.entry(), b"new")).unwrap();
         assert_eq!(std::fs::read(&exe).unwrap(), b"new");
-        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(left.len(), 1, "left behind: {left:?}");
 
         // An archive without the app in it changes nothing.
@@ -504,7 +574,10 @@ mod tests {
 
         let archive = archive_of("profold.app/Contents/MacOS/profold", b"new");
         install(&Layout::Bundle(app.clone()), &archive).unwrap();
-        assert_eq!(std::fs::read(app.join("Contents/MacOS/profold")).unwrap(), b"new");
+        assert_eq!(
+            std::fs::read(app.join("Contents/MacOS/profold")).unwrap(),
+            b"new"
+        );
         assert!(!app.join("Contents/stale").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }

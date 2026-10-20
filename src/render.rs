@@ -115,7 +115,10 @@ impl Appearance {
 
     /// The hidden atoms, when they are this structure's.
     fn mask(&self, s: &Structure) -> Option<&[bool]> {
-        self.hidden.as_deref().map(Vec::as_slice).filter(|m| m.len() == s.atoms.len())
+        self.hidden
+            .as_deref()
+            .map(Vec::as_slice)
+            .filter(|m| m.len() == s.atoms.len())
     }
 
     fn resolve_species(&self, s: &Structure) -> Vec<Look> {
@@ -636,7 +639,11 @@ impl Style {
             Style::Flat => 0.2,
             Style::Studio => 0.1,
         };
-        if crate::theme::dark() { fog * 0.5 } else { fog }
+        if crate::theme::dark() {
+            fog * 0.5
+        } else {
+            fog
+        }
     }
 
     /// The style as the GPU shader reads it.
@@ -752,7 +759,10 @@ impl Camera {
     /// does, so the molecule sits where it did.
     pub fn resized(&self, from: (usize, usize), to: (usize, usize)) -> Self {
         let k = to.0.min(to.1) as f32 / from.0.min(from.1).max(1) as f32;
-        Camera { pan: [self.pan[0] * k, self.pan[1] * k], ..*self }
+        Camera {
+            pan: [self.pan[0] * k, self.pan[1] * k],
+            ..*self
+        }
     }
 
     pub fn frame(structure: &Structure) -> Self {
@@ -801,11 +811,7 @@ impl Camera {
         let mut r2: f32 = 0.0;
         for s in structures {
             for p in points(s) {
-                let d = [
-                    p[0] - center[0],
-                    p[1] - center[1],
-                    p[2] - center[2],
-                ];
+                let d = [p[0] - center[0], p[1] - center[1], p[2] - center[2]];
                 r2 = r2.max(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
             }
         }
@@ -832,9 +838,21 @@ impl Camera {
         let (s, c) = angle.sin_cos();
         let t = 1.0 - c;
         let r = [
-            [t * a[0] * a[0] + c, t * a[0] * a[1] - s * a[2], t * a[0] * a[2] + s * a[1]],
-            [t * a[0] * a[1] + s * a[2], t * a[1] * a[1] + c, t * a[1] * a[2] - s * a[0]],
-            [t * a[0] * a[2] - s * a[1], t * a[1] * a[2] + s * a[0], t * a[2] * a[2] + c],
+            [
+                t * a[0] * a[0] + c,
+                t * a[0] * a[1] - s * a[2],
+                t * a[0] * a[2] + s * a[1],
+            ],
+            [
+                t * a[0] * a[1] + s * a[2],
+                t * a[1] * a[1] + c,
+                t * a[1] * a[2] - s * a[0],
+            ],
+            [
+                t * a[0] * a[2] - s * a[1],
+                t * a[1] * a[2] + s * a[0],
+                t * a[2] * a[2] + c,
+            ],
         ];
         orthonormal(mul(r, self.orientation))
     }
@@ -844,7 +862,9 @@ impl Camera {
     pub fn turn_to(&self, target: [[f32; 3]; 3]) -> ([f32; 3], f32) {
         // R = target · orientationᵀ, as a rotation of view space.
         let o = self.orientation;
-        let r: [[f32; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| target[i][k] * o[j][k]).sum()));
+        let r: [[f32; 3]; 3] = std::array::from_fn(|i| {
+            std::array::from_fn(|j| (0..3).map(|k| target[i][k] * o[j][k]).sum())
+        });
         let cos = ((r[0][0] + r[1][1] + r[2][2] - 1.0) * 0.5).clamp(-1.0, 1.0);
         let angle = cos.acos();
         if angle < 1e-5 {
@@ -856,7 +876,11 @@ impl Camera {
         }
         // Half a turn: the axis is the column of R + I that is not nothing.
         let k = (0..3).max_by(|&a, &b| r[a][a].total_cmp(&r[b][b])).unwrap();
-        let col = [r[0][k] + if k == 0 { 1.0 } else { 0.0 }, r[1][k] + if k == 1 { 1.0 } else { 0.0 }, r[2][k] + if k == 2 { 1.0 } else { 0.0 }];
+        let col = [
+            r[0][k] + if k == 0 { 1.0 } else { 0.0 },
+            r[1][k] + if k == 1 { 1.0 } else { 0.0 },
+            r[2][k] + if k == 2 { 1.0 } else { 0.0 },
+        ];
         (unit(col), angle)
     }
 
@@ -1127,23 +1151,18 @@ fn deviation_color(d: f32, palette: Palette) -> [f32; 3] {
     palette.ramp(t)
 }
 
-fn residue_color(
-    s: &Structure,
-    residue: usize,
-    coloring: Coloring,
-    palette: Palette,
-) -> [f32; 3] {
+fn residue_color(s: &Structure, residue: usize, coloring: Coloring, palette: Palette) -> [f32; 3] {
     let r = &s.residues[residue];
     match coloring {
         // A residue by its first backbone atom's value, for ribbons and tubes.
-        Coloring::Property => r
-            .ca
-            .or(r.n)
-            .and_then(|atom| {
-                let i = s.prop_color.map_or(0, |p| p.index);
-                s.prop_fraction(i, atom as usize, s.prop_span(i)?)
-            })
-            .map_or([0.74, 0.73, 0.71], |t| palette.ramp(t)),
+        Coloring::Property => {
+            r.ca.or(r.n)
+                .and_then(|atom| {
+                    let i = s.prop_color.map_or(0, |p| p.index);
+                    s.prop_fraction(i, atom as usize, s.prop_span(i)?)
+                })
+                .map_or([0.74, 0.73, 0.71], |t| palette.ramp(t))
+        }
         Coloring::Pair => s.tint.unwrap_or(s.chain_color(r.chain as usize, palette)),
         Coloring::Deviation => match s.deviation.get(residue) {
             Some(d) if *d >= 0.0 => deviation_color(*d, palette),
@@ -1235,7 +1254,11 @@ fn charge_of(s: &Structure, i: usize) -> f32 {
         (_, "OXT") => -1.0,
         // A strand's phosphates, one charge each.
         (_, "OP1" | "OP2" | "O1P" | "O2P") if r.nucleic.is_some() => -0.5,
-        _ if r.outside_polymer() && matches!(a.element.0, 12 | 20 | 25 | 26 | 27 | 28 | 29 | 30) => 2.0,
+        _ if r.outside_polymer()
+            && matches!(a.element.0, 12 | 20 | 25 | 26 | 27 | 28 | 29 | 30) =>
+        {
+            2.0
+        }
         _ if r.outside_polymer() && matches!(a.element.0, 3 | 11 | 19) => 1.0,
         _ => 0.0,
     }
@@ -1250,7 +1273,10 @@ const DEBYE: f32 = 8.0;
 /// distance: the usual quick picture, not a Poisson-Boltzmann solution.
 fn potentials(s: &Structure, points: &[[f32; 3]]) -> Vec<f32> {
     use rayon::prelude::*;
-    let charges: Vec<(usize, f32)> = (0..s.atoms.len()).map(|i| (i, charge_of(s, i))).filter(|(_, q)| *q != 0.0).collect();
+    let charges: Vec<(usize, f32)> = (0..s.atoms.len())
+        .map(|i| (i, charge_of(s, i)))
+        .filter(|(_, q)| *q != 0.0)
+        .collect();
     let cell = 2.0 * DEBYE;
     let key = |p: [f32; 3]| [0, 1, 2].map(|k| (p[k] / cell).floor() as i32);
     let mut grid: HashMap<[i32; 3], Vec<(usize, f32)>> = HashMap::new();
@@ -1265,7 +1291,11 @@ fn potentials(s: &Structure, points: &[[f32; 3]]) -> Vec<f32> {
             for dx in -1..=1 {
                 for dy in -1..=1 {
                     for dz in -1..=1 {
-                        for &(i, q) in grid.get(&[c[0] + dx, c[1] + dy, c[2] + dz]).into_iter().flatten() {
+                        for &(i, q) in grid
+                            .get(&[c[0] + dx, c[1] + dy, c[2] + dz])
+                            .into_iter()
+                            .flatten()
+                        {
                             let d = sub(p, s.atoms[i].pos);
                             let r = dot(d, d).sqrt().max(1.0);
                             if r < cell {
@@ -1292,11 +1322,19 @@ pub const SS_COLORS: [(Ss, &str, [f32; 3]); 3] = [
 ];
 
 fn ss_color(ss: Ss) -> [f32; 3] {
-    SS_COLORS.iter().find(|(s, _, _)| *s == ss).map_or([0.78; 3], |(_, _, c)| *c)
+    SS_COLORS
+        .iter()
+        .find(|(s, _, _)| *s == ss)
+        .map_or([0.78; 3], |(_, _, c)| *c)
 }
 
 /// pLDDT's bands, from the top down, as AlphaFold DB shows them.
-pub const PLDDT_BANDS: [(&str, f32); 4] = [("Very high", 95.0), ("Confident", 80.0), ("Low", 60.0), ("Very low", 30.0)];
+pub const PLDDT_BANDS: [(&str, f32); 4] = [
+    ("Very high", 95.0),
+    ("Confident", 80.0),
+    ("Low", 60.0),
+    ("Very low", 30.0),
+];
 
 pub fn plddt_band_color(v: f32) -> [f32; 3] {
     plddt_color(v)
@@ -1399,7 +1437,10 @@ impl Paint<'_> {
         }
         match self.coloring {
             Coloring::Property => Some(self.s.prop_color.map_or(0, |p| p.index))
-                .and_then(|k| self.s.prop_fraction(k, self.source(i), self.s.prop_span(k)?))
+                .and_then(|k| {
+                    self.s
+                        .prop_fraction(k, self.source(i), self.s.prop_span(k)?)
+                })
                 .map_or([0.74, 0.73, 0.71], |t| self.palette.ramp(t)),
             Coloring::Rainbow if !self.polymer => self
                 .palette
@@ -1426,7 +1467,6 @@ impl Paint<'_> {
         self.looks[i].alpha
     }
 }
-
 
 /// Build the drawable primitives for a structure. `quality` in 0..=1 trades
 /// tube smoothness for speed on very long chains.
@@ -1485,7 +1525,12 @@ fn settle(scene: &mut Scene, style: Style) {
         .spheres
         .iter_mut()
         .map(|p| &mut p.color)
-        .chain(scene.capsules.iter_mut().flat_map(|c| [&mut c.ca, &mut c.cb]))
+        .chain(
+            scene
+                .capsules
+                .iter_mut()
+                .flat_map(|c| [&mut c.ca, &mut c.cb]),
+        )
         .chain(scene.tris.iter_mut().map(|t| &mut t.c))
     {
         *c = tone(*c);
@@ -1527,12 +1572,16 @@ fn build_primitives(paint: &Paint, repr: Repr, quality: f32) -> Scene {
         Repr::Tube | Repr::Cartoon => {
             let mut scene = Scene::default();
             if repr == Repr::Tube {
-                (scene.capsules, scene.capsule_residue) = build_tube(s, coloring, quality, palette, paint.hidden);
+                (scene.capsules, scene.capsule_residue) =
+                    build_tube(s, coloring, quality, palette, paint.hidden);
             } else {
-                (scene.tris, scene.tri_residue) = build_cartoon(s, coloring, quality, palette, paint.hidden);
+                (scene.tris, scene.tri_residue) =
+                    build_cartoon(s, coloring, quality, palette, paint.hidden);
             }
             let (capsules, owners) = build_nucleic(s, coloring, quality, palette, paint.hidden);
-            scene.capsule_residue.resize(scene.capsules.len(), NO_RESIDUE);
+            scene
+                .capsule_residue
+                .resize(scene.capsules.len(), NO_RESIDUE);
             scene.capsules.extend(capsules);
             scene.capsule_residue.extend(owners);
             // Ligands, ions and nucleic acids have no alpha carbons to draw a
@@ -1574,9 +1623,14 @@ fn build_surface(paint: &Paint, quality: f32) -> Scene {
     // A fixed share of the structure's width, so a molecule framed close
     // up is as smooth as a protein framed whole; past the size of a large
     // protein, the grid's own cap takes over.
-    let (lo, hi) = points.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), p| {
-        ([0, 1, 2].map(|k| lo[k].min(p[k])), [0, 1, 2].map(|k| hi[k].max(p[k])))
-    });
+    let (lo, hi) = points
+        .iter()
+        .fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), p| {
+            (
+                [0, 1, 2].map(|k| lo[k].min(p[k])),
+                [0, 1, 2].map(|k| hi[k].max(p[k])),
+            )
+        });
     let width = (0..3).map(|k| hi[k] - lo[k]).fold(0.0, f32::max);
     let spacing = (width / 100.0).clamp(0.15, 1.2) / quality.max(0.5);
     let facets = crate::surface::gaussian(&points, &radii, spacing);
@@ -1608,7 +1662,9 @@ fn build_surface(paint: &Paint, quality: f32) -> Scene {
         scene.tri_residue.push(s.atoms[atom].residue);
     }
     if polymer {
-        let ligand: Vec<bool> = (0..s.atoms.len()).map(|i| !under_skin(s, polymer, i)).collect();
+        let ligand: Vec<bool> = (0..s.atoms.len())
+            .map(|i| !under_skin(s, polymer, i))
+            .collect();
         if ligand.iter().any(|l| *l) {
             scene.merge(build_sticks(paint, &ligand, false));
         }
@@ -1770,7 +1826,11 @@ pub fn pick(
     let mut offer = |depth: Option<f32>, atom: usize, residue: bool| {
         if let Some(depth) = depth {
             if best.is_none_or(|b| depth > b.depth) {
-                best = Some(Picked { atom, residue, depth });
+                best = Some(Picked {
+                    atom,
+                    residue,
+                    depth,
+                });
             }
         }
     };
@@ -1804,8 +1864,14 @@ pub fn pick(
     // Under a skin, each atom stands for the patch over it, which is its
     // residue's in a polymer.
     if surface {
-        for i in (0..s.atoms.len()).filter(|&i| under_skin(s, polymer, i) && !paint.looks[i].hidden()) {
-            offer(ball(s.atoms[i].pos, paint.radius(i) + crate::surface::SWELL), i, polymer);
+        for i in
+            (0..s.atoms.len()).filter(|&i| under_skin(s, polymer, i) && !paint.looks[i].hidden())
+        {
+            offer(
+                ball(s.atoms[i].pos, paint.radius(i) + crate::surface::SWELL),
+                i,
+                polymer,
+            );
         }
     }
     match repr {
@@ -1842,11 +1908,18 @@ pub fn pick(
                     let at = s.residues[ri].nucleic.unwrap() as usize;
                     offer(ball(s.atoms[at].pos, NUCLEIC_RADIUS + 0.3), at, true);
                     if let Some(tip) = base_tip(s, ri) {
-                        offer(rod(s.atoms[at].pos, s.atoms[tip].pos, RUNG_RADIUS + 0.3), at, true);
+                        offer(
+                            rod(s.atoms[at].pos, s.atoms[tip].pos, RUNG_RADIUS + 0.3),
+                            at,
+                            true,
+                        );
                     }
                 }
                 for w in run.windows(2) {
-                    let (a, b) = (s.residues[w[0]].nucleic.unwrap() as usize, s.residues[w[1]].nucleic.unwrap() as usize);
+                    let (a, b) = (
+                        s.residues[w[0]].nucleic.unwrap() as usize,
+                        s.residues[w[1]].nucleic.unwrap() as usize,
+                    );
                     let mid = mix(s.atoms[a].pos, s.atoms[b].pos, 0.5);
                     offer(rod(s.atoms[a].pos, mid, NUCLEIC_RADIUS + 0.3), a, true);
                     offer(rod(mid, s.atoms[b].pos, NUCLEIC_RADIUS + 0.3), b, true);
@@ -1860,7 +1933,11 @@ pub fn pick(
                     if k + 1 < run.len() {
                         let mid = mix(here, s.atoms[ca(k + 1)].pos, 0.5);
                         offer(rod(here, mid, BACKBONE_PICK_RADIUS), ca(k), true);
-                        offer(rod(mid, s.atoms[ca(k + 1)].pos, BACKBONE_PICK_RADIUS), ca(k + 1), true);
+                        offer(
+                            rod(mid, s.atoms[ca(k + 1)].pos, BACKBONE_PICK_RADIUS),
+                            ca(k + 1),
+                            true,
+                        );
                     }
                 }
             }
@@ -1893,7 +1970,11 @@ const HIGHLIGHT: [f32; 3] = [1.0, 1.0, 1.0];
 /// The highlight's colour as a scene in `style` shows it.
 fn highlight_color(style: Style) -> [f32; 3] {
     let mut one = Scene {
-        tris: vec![Tri { p: [[0.0; 3]; 3], n: [[0.0; 3]; 3], c: HIGHLIGHT }],
+        tris: vec![Tri {
+            p: [[0.0; 3]; 3],
+            n: [[0.0; 3]; 3],
+            c: HIGHLIGHT,
+        }],
         ..Scene::default()
     };
     settle(&mut one, style);
@@ -1965,7 +2046,6 @@ pub fn build_highlight(
     scene
 }
 
-
 /// A binding site's side chains, as sticks in their elements' colours, from
 /// the alpha carbon out. Only a backbone style needs them: the atomistic
 /// styles draw every atom already.
@@ -1985,7 +2065,9 @@ pub fn build_site(
     let mut keep = vec![false; s.atoms.len()];
     let atoms_of = s.atoms_by_residue();
     for &r in residues {
-        let Some(res) = s.residues.get(r) else { continue };
+        let Some(res) = s.residues.get(r) else {
+            continue;
+        };
         let backbone = [res.n, res.c, res.o];
         for &i in atoms_of.of(r) {
             keep[i as usize] = !backbone.contains(&Some(i));
@@ -2060,7 +2142,12 @@ pub fn build_layer(
         _ => Scene {
             spheres: (0..s.atoms.len())
                 .filter(|&i| atoms[i] && !paint.looks[i].hidden())
-                .map(|i| Sphere { c: s.atoms[i].pos, r: paint.radius(i), color: paint.atom(i), alpha: paint.alpha(i) })
+                .map(|i| Sphere {
+                    c: s.atoms[i].pos,
+                    r: paint.radius(i),
+                    color: paint.atom(i),
+                    alpha: paint.alpha(i),
+                })
                 .collect(),
             ..Scene::default()
         },
@@ -2142,8 +2229,11 @@ fn with_boundary(s: &Structure) -> Option<(Structure, Vec<u32>)> {
     }
     // The structure's own bonds stand; the copies take theirs from distance.
     let own = s.atoms.len() as u32;
-    out.bonds
-        .extend(crate::bonds::infer(&out.atoms).into_iter().filter(|&[x, y]| x >= own || y >= own));
+    out.bonds.extend(
+        crate::bonds::infer(&out.atoms)
+            .into_iter()
+            .filter(|&[x, y]| x >= own || y >= own),
+    );
     Some((out, images))
 }
 
@@ -2203,7 +2293,11 @@ fn mix(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 }
 
 /// Alpha-carbon runs for one chain, split wherever the trace jumps.
-fn ca_runs(s: &Structure, chain: &crate::protein::Chain, hidden: Option<&[bool]>) -> Vec<Vec<usize>> {
+fn ca_runs(
+    s: &Structure,
+    chain: &crate::protein::Chain,
+    hidden: Option<&[bool]>,
+) -> Vec<Vec<usize>> {
     let mut runs: Vec<Vec<usize>> = Vec::new();
     let mut run: Vec<usize> = Vec::new();
     let cut = |run: &mut Vec<usize>, runs: &mut Vec<Vec<usize>>| {
@@ -2216,7 +2310,10 @@ fn ca_runs(s: &Structure, chain: &crate::protein::Chain, hidden: Option<&[bool]>
     for &ri in &chain.residues {
         let ri = ri as usize;
         // A residue hidden breaks the trace there, as a gap would.
-        let Some(ca) = s.residues[ri].ca.filter(|&ca| !hidden.is_some_and(|h| h[ca as usize])) else {
+        let Some(ca) = s.residues[ri]
+            .ca
+            .filter(|&ca| !hidden.is_some_and(|h| h[ca as usize]))
+        else {
             cut(&mut run, &mut runs);
             continue;
         };
@@ -2278,7 +2375,12 @@ fn spline_tube(
     // Each sample belongs to the nearer of the two residues it lies between.
     let mut belongs: Vec<u32> = Vec::with_capacity(run.len() * steps + 1);
     for i in 0..run.len() - 1 {
-        let (p0, p1, p2, p3) = (at(i as isize - 1), at(i as isize), at(i as isize + 1), at(i as isize + 2));
+        let (p0, p1, p2, p3) = (
+            at(i as isize - 1),
+            at(i as isize),
+            at(i as isize + 1),
+            at(i as isize + 2),
+        );
         let c0 = residue_color(s, run[i].0, coloring, palette);
         let c1 = residue_color(s, run[i + 1].0, coloring, palette);
         for k in 0..steps {
@@ -2292,7 +2394,14 @@ fn spline_tube(
     belongs.push(last.0 as u32);
     out.1.extend(&belongs[..belongs.len() - 1]);
     for pair in points.windows(2) {
-        out.0.push(Capsule { a: pair[0].0, b: pair[1].0, r: radius, ca: pair[0].1, cb: pair[1].1, alpha: 1.0 });
+        out.0.push(Capsule {
+            a: pair[0].0,
+            b: pair[1].0,
+            r: radius,
+            ca: pair[0].1,
+            cb: pair[1].1,
+            alpha: 1.0,
+        });
     }
 }
 
@@ -2302,12 +2411,18 @@ const RUNG_RADIUS: f32 = 0.45;
 
 /// The runs of a chain's nucleic acid, residue by residue, where each is
 /// linked to the next and none is hidden.
-fn nucleic_runs(s: &Structure, chain: &crate::protein::Chain, hidden: Option<&[bool]>) -> Vec<Vec<usize>> {
+fn nucleic_runs(
+    s: &Structure,
+    chain: &crate::protein::Chain,
+    hidden: Option<&[bool]>,
+) -> Vec<Vec<usize>> {
     let mut runs: Vec<Vec<usize>> = Vec::new();
     let mut run: Vec<usize> = Vec::new();
     for &ri in &chain.residues {
         let ri = ri as usize;
-        let at = s.residues[ri].nucleic.filter(|&a| !hidden.is_some_and(|h| h[a as usize]));
+        let at = s.residues[ri]
+            .nucleic
+            .filter(|&a| !hidden.is_some_and(|h| h[a as usize]));
         match at {
             Some(a) => {
                 // Neighbouring phosphates sit 6 to 7 Å apart.
@@ -2359,11 +2474,26 @@ fn build_nucleic(
                 .iter()
                 .map(|&ri| (ri, s.atoms[s.residues[ri].nucleic.unwrap() as usize].pos))
                 .collect();
-            spline_tube(s, &trace, NUCLEIC_RADIUS, coloring, quality, palette, &mut out);
+            spline_tube(
+                s,
+                &trace,
+                NUCLEIC_RADIUS,
+                coloring,
+                quality,
+                palette,
+                &mut out,
+            );
             for &(ri, p) in &trace {
                 if let Some(tip) = base_tip(s, ri) {
                     let c = residue_color(s, ri, coloring, palette);
-                    out.0.push(Capsule { a: p, b: s.atoms[tip].pos, r: RUNG_RADIUS, ca: c, cb: c, alpha: 1.0 });
+                    out.0.push(Capsule {
+                        a: p,
+                        b: s.atoms[tip].pos,
+                        r: RUNG_RADIUS,
+                        ca: c,
+                        cb: c,
+                        alpha: 1.0,
+                    });
                     out.1.push(ri as u32);
                 }
             }
@@ -2371,7 +2501,6 @@ fn build_nucleic(
     }
     out
 }
-
 
 // ---------------------------------------------------------------------------
 // Cartoon
@@ -2446,10 +2575,17 @@ fn build_cartoon(
                     _ if k > 0 && k + 1 < n => cross(sub(p[k + 1], p[k]), sub(p[k - 1], p[k])),
                     _ => [0.0, 0.0, 1.0],
                 };
-                let mut w = unit(sub(raw, [t[0] * dot(raw, t), t[1] * dot(raw, t), t[2] * dot(raw, t)]));
+                let mut w = unit(sub(
+                    raw,
+                    [t[0] * dot(raw, t), t[1] * dot(raw, t), t[2] * dot(raw, t)],
+                ));
                 if dot(w, w) < 0.5 {
                     // Degenerate: any vector perpendicular to the tangent.
-                    let a = if t[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+                    let a = if t[0].abs() < 0.9 {
+                        [1.0, 0.0, 0.0]
+                    } else {
+                        [0.0, 1.0, 0.0]
+                    };
                     w = unit(cross(t, a));
                 }
                 // A strand alternates its carbonyls; keep the face continuous.
@@ -2586,13 +2722,14 @@ fn build_cartoon(
             // Close both ends so the ribbon is not hollow.
             for (ring, color, residue) in [
                 (&rings[0], samples[0].color, samples[0].residue),
-                (&rings[count - 1], samples[count - 1].color, samples[count - 1].residue),
+                (
+                    &rings[count - 1],
+                    samples[count - 1].color,
+                    samples[count - 1].residue,
+                ),
             ] {
                 owners.extend(std::iter::repeat_n(residue, SIDES - 2));
-                let nrm = unit(cross(
-                    sub(ring[1].0, ring[0].0),
-                    sub(ring[2].0, ring[0].0),
-                ));
+                let nrm = unit(cross(sub(ring[1].0, ring[0].0), sub(ring[2].0, ring[0].0)));
                 for j in 1..SIDES - 1 {
                     tris.push(Tri {
                         p: [ring[0].0, ring[j].0, ring[j + 1].0],
@@ -2633,7 +2770,13 @@ fn shade(n: [f32; 3], base: [f32; 3], style: Style) -> [f32; 3] {
 /// what the ray tracer knows and the rasterizer does not. Both at one, it is
 /// `shade` exactly.
 #[inline]
-pub(crate) fn shade_lit(n: [f32; 3], base: [f32; 3], style: Style, lit: f32, open: f32) -> [f32; 3] {
+pub(crate) fn shade_lit(
+    n: [f32; 3],
+    base: [f32; 3],
+    style: Style,
+    lit: f32,
+    open: f32,
+) -> [f32; 3] {
     let diff = (n[0] * LIGHT[0] + n[1] * LIGHT[1] + n[2] * LIGHT[2]).max(0.0) * lit;
     let nh = (n[0] * HALF[0] + n[1] * HALF[1] + n[2] * HALF[2]).max(0.0);
     let n2 = nh * nh;
@@ -2792,7 +2935,13 @@ pub fn render(
 /// once on black, and the difference read as how much of the page shows
 /// through each pixel. That holds for everything laid over the page,
 /// edges, fog and glass alike, and needs nothing of either renderer.
-pub fn render_transparent(scene: &Scene, cam: &Camera, width: usize, height: usize, style: Style) -> Vec<u8> {
+pub fn render_transparent(
+    scene: &Scene,
+    cam: &Camera,
+    width: usize,
+    height: usize,
+    style: Style,
+) -> Vec<u8> {
     let white = render(scene, cam, width, height, [1.0; 3], style);
     let black = render(scene, cam, width, height, [0.0; 3], style);
     unmix(&white, &black)
@@ -2802,13 +2951,24 @@ pub fn render_transparent(scene: &Scene, cam: &Camera, width: usize, height: usi
 pub(crate) fn unmix(white: &Frame, black: &Frame) -> Vec<u8> {
     let (width, height) = (white.width, white.height);
     let mut out = vec![0u8; width * height * 4];
-    for ((o, w), b) in out.chunks_exact_mut(4).zip(white.bgra.chunks_exact(4)).zip(black.bgra.chunks_exact(4)) {
+    for ((o, w), b) in out
+        .chunks_exact_mut(4)
+        .zip(white.bgra.chunks_exact(4))
+        .zip(black.bgra.chunks_exact(4))
+    {
         // BGRA in, RGBA out.
-        let (w, b) = ([w[2], w[1], w[0]].map(|v| v as f32 / 255.0), [b[2], b[1], b[0]].map(|v| v as f32 / 255.0));
+        let (w, b) = (
+            [w[2], w[1], w[0]].map(|v| v as f32 / 255.0),
+            [b[2], b[1], b[0]].map(|v| v as f32 / 255.0),
+        );
         let through = (0..3).map(|k| (w[k] - b[k]).clamp(0.0, 1.0)).sum::<f32>() / 3.0;
         let alpha = 1.0 - through;
         for k in 0..3 {
-            let c = if alpha > 1e-3 { (b[k] / alpha).clamp(0.0, 1.0) } else { 0.0 };
+            let c = if alpha > 1e-3 {
+                (b[k] / alpha).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             o[k] = (c * 255.0 + 0.5) as u8;
         }
         o[3] = (alpha * 255.0 + 0.5) as u8;
@@ -2834,7 +2994,9 @@ pub fn render_cpu(
     let n = width * height;
     let mut color = vec![0.0; n * 3];
     let mut depth = vec![f32::NEG_INFINITY; n];
-    color.par_chunks_mut(3).for_each(|c| c.copy_from_slice(&page));
+    color
+        .par_chunks_mut(3)
+        .for_each(|c| c.copy_from_slice(&page));
 
     if scene.is_empty() || width == 0 || height == 0 {
         return to_bgra(&color, width, height);
@@ -2847,7 +3009,11 @@ pub fn render_cpu(
     let inv = 1.0 / scale;
 
     let to_view = |p: [f32; 3]| {
-        let q = [p[0] - cam.center[0], p[1] - cam.center[1], p[2] - cam.center[2]];
+        let q = [
+            p[0] - cam.center[0],
+            p[1] - cam.center[1],
+            p[2] - cam.center[2],
+        ];
         [
             m[0][0] * q[0] + m[0][1] * q[1] + m[0][2] * q[2],
             m[1][0] * q[0] + m[1][1] * q[1] + m[1][2] * q[2],
@@ -2996,7 +3162,9 @@ pub fn render_cpu(
         });
 
     let span = (zmax - zmin).max(1e-3);
-    finish(&mut color, &depth, width, height, page, style, zmin, span, scale, true, 1);
+    finish(
+        &mut color, &depth, width, height, page, style, zmin, span, scale, true, 1,
+    );
     let fog_strength = style.fog();
 
     // -- translucent atoms and bonds ----------------------------------------
@@ -3014,33 +3182,31 @@ pub fn render_cpu(
                 let top = b * rows;
                 let offset = top * width;
                 let grid = grid.rows(top, (top + rows).min(height));
-                let mut blend = |idx: usize,
-                                 z: f32,
-                                 n: [f32; 3],
-                                 base: [f32; 3],
-                                 alpha: f32,
-                                 edge: bool| {
-                    let idx = idx - offset;
-                    if z <= depth[idx] || z > near || z < far {
-                        return;
-                    }
-                    let mut c = shade(n, base, style);
-                    let d = ((z - zmin) / span).clamp(0.0, 1.0);
-                    let fog = (1.0 - d) * fog_strength;
-                    for k in 0..3 {
-                        c[k] += (page[k] - c[k]) * fog;
-                    }
-                    let (c, alpha) = match (edge, style) {
-                        (true, Style::Illustrative | Style::Flat) => ([0.07, 0.07, 0.09], alpha.max(0.45)),
-                        (true, Style::Soft) => (c.map(|x| x * 0.8), alpha),
-                        _ => (c, alpha),
+                let mut blend =
+                    |idx: usize, z: f32, n: [f32; 3], base: [f32; 3], alpha: f32, edge: bool| {
+                        let idx = idx - offset;
+                        if z <= depth[idx] || z > near || z < far {
+                            return;
+                        }
+                        let mut c = shade(n, base, style);
+                        let d = ((z - zmin) / span).clamp(0.0, 1.0);
+                        let fog = (1.0 - d) * fog_strength;
+                        for k in 0..3 {
+                            c[k] += (page[k] - c[k]) * fog;
+                        }
+                        let (c, alpha) = match (edge, style) {
+                            (true, Style::Illustrative | Style::Flat) => {
+                                ([0.07, 0.07, 0.09], alpha.max(0.45))
+                            }
+                            (true, Style::Soft) => (c.map(|x| x * 0.8), alpha),
+                            _ => (c, alpha),
+                        };
+                        // The card clamps what it blends in to eight bits.
+                        let o = idx * 3;
+                        for k in 0..3 {
+                            color[o + k] = c[k].min(1.0) * alpha + color[o + k] * (1.0 - alpha);
+                        }
                     };
-                    // The card clamps what it blends in to eight bits.
-                    let o = idx * 3;
-                    for k in 0..3 {
-                        color[o + k] = c[k].min(1.0) * alpha + color[o + k] * (1.0 - alpha);
-                    }
-                };
                 for &i in bin {
                     match &translucent[i as usize].1 {
                         Prim::Sphere(k, v, r) => {
@@ -3192,11 +3358,9 @@ pub(crate) fn finish(
                             // The silhouette is inked from both sides, so the
                             // line reads the same against the page and
                             // against the body.
-                            let silhouette =
-                                (z == f32::NEG_INFINITY) != (nz == f32::NEG_INFINITY);
-                            let overlap = z != f32::NEG_INFINITY
-                                && nz != f32::NEG_INFINITY
-                                && nz - z > jump;
+                            let silhouette = (z == f32::NEG_INFINITY) != (nz == f32::NEG_INFINITY);
+                            let overlap =
+                                z != f32::NEG_INFINITY && nz != f32::NEG_INFINITY && nz - z > jump;
                             silhouette || overlap
                         });
                 }
@@ -3458,16 +3622,9 @@ impl Grid {
     }
 }
 
-
 /// The four pixels sharing an edge with this one.
 #[inline]
-fn neighbours(
-    idx: usize,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-) -> [Option<usize>; 4] {
+fn neighbours(idx: usize, x: usize, y: usize, width: usize, height: usize) -> [Option<usize>; 4] {
     [
         (x > 0).then(|| idx - 1),
         (x + 1 < width).then_some(idx + 1),
@@ -3501,12 +3658,14 @@ fn bbox(
 pub(crate) fn to_bgra(color: &[f32], width: usize, height: usize) -> Frame {
     use rayon::prelude::*;
     let mut bgra = vec![0u8; width * height * 4];
-    bgra.par_chunks_mut(4).zip(color.par_chunks(3)).for_each(|(q, c)| {
-        q[0] = (c[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        q[1] = (c[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        q[2] = (c[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        q[3] = 255;
-    });
+    bgra.par_chunks_mut(4)
+        .zip(color.par_chunks(3))
+        .for_each(|(q, c)| {
+            q[0] = (c[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            q[1] = (c[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            q[2] = (c[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            q[3] = 255;
+        });
     Frame {
         width,
         height,
@@ -3524,25 +3683,45 @@ mod tests {
     }
 
     fn sample(name: &str) -> Structure {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(name);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples")
+            .join(name);
         crate::formats::load_bytes(name, std::fs::read(path).unwrap()).unwrap()
     }
 
     fn scene(s: &Structure, repr: Repr, coloring: Coloring, cell: bool) -> Scene {
         build_scene(
-            s, repr, coloring, 1.0, Style::Soft, Palette::Spectrum, false, cell,
+            s,
+            repr,
+            coloring,
+            1.0,
+            Style::Soft,
+            Palette::Spectrum,
+            false,
+            cell,
             &Appearance::default(),
         )
     }
 
     #[test]
     fn a_positive_roll_turns_the_view_clockwise() {
-        let mut cam = Camera { orientation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], zoom: 1.0, pan: [0.0; 2], center: [0.0; 3], radius: 10.0, perspective: false, slab: None };
+        let mut cam = Camera {
+            orientation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            zoom: 1.0,
+            pan: [0.0; 2],
+            center: [0.0; 3],
+            radius: 10.0,
+            perspective: false,
+            slab: None,
+        };
         cam.roll(std::f32::consts::FRAC_PI_2);
         // What was to the right now points down the screen (view y is up).
         let m = cam.basis();
         let v = [m[0][0], m[1][0], m[2][0]];
-        assert!(v[0].abs() < 1e-5 && (v[1] + 1.0).abs() < 1e-5 && v[2].abs() < 1e-5, "{v:?}");
+        assert!(
+            v[0].abs() < 1e-5 && (v[1] + 1.0).abs() < 1e-5 && v[2].abs() < 1e-5,
+            "{v:?}"
+        );
     }
 
     #[test]
@@ -3564,13 +3743,21 @@ mod tests {
         for p in &full.spheres {
             for k in 0..3 {
                 let x = p.c[k] - c.origin[k];
-                assert!((-1e-3..=edge + 1e-3).contains(&x), "an atom left the cell: {:?}", p.c);
+                assert!(
+                    (-1e-3..=edge + 1e-3).contains(&x),
+                    "an atom left the cell: {:?}",
+                    p.c
+                );
             }
         }
         // The copies wear their originals' colours, and the colours do not
         // change when the cell is shown.
         let colours = |sc: &Scene| {
-            let mut v: Vec<[u32; 3]> = sc.spheres.iter().map(|p| p.color.map(f32::to_bits)).collect();
+            let mut v: Vec<[u32; 3]> = sc
+                .spheres
+                .iter()
+                .map(|p| p.color.map(f32::to_bits))
+                .collect();
             v.sort();
             v.dedup();
             v
@@ -3584,16 +3771,34 @@ mod tests {
     fn only_crystals_take_boundary_copies() {
         // Proteins, molecules and simulation boxes draw the same atoms with
         // the cell shown as without; at most the cell's twelve edges are added.
-        for name in ["1crn.pdb.gz", "caffeine.sdf", "c60.xyz", "lj-melt.lammpstrj.gz"] {
+        for name in [
+            "1crn.pdb.gz",
+            "caffeine.sdf",
+            "c60.xyz",
+            "lj-melt.lammpstrj.gz",
+        ] {
             let s = sample(name);
-            for repr in [Repr::Spacefill, Repr::BallAndStick, Repr::Licorice, Repr::Cartoon] {
+            for repr in [
+                Repr::Spacefill,
+                Repr::BallAndStick,
+                Repr::Licorice,
+                Repr::Cartoon,
+            ] {
                 for coloring in [Coloring::Element, Coloring::Rainbow, Coloring::Chain] {
                     let bare = scene(&s, repr, coloring, false);
                     let full = scene(&s, repr, coloring, true);
                     assert_eq!(bare.spheres.len(), full.spheres.len(), "{name} {repr:?}");
-                    assert!(bare.spheres.iter().zip(&full.spheres).all(|(a, b)| a.c == b.c && a.color == b.color));
+                    assert!(bare
+                        .spheres
+                        .iter()
+                        .zip(&full.spheres)
+                        .all(|(a, b)| a.c == b.c && a.color == b.color));
                     let edges = if s.cell.is_some() { 12 } else { 0 };
-                    assert_eq!(full.capsules.len(), bare.capsules.len() + edges, "{name} {repr:?}");
+                    assert_eq!(
+                        full.capsules.len(),
+                        bare.capsules.len() + edges,
+                        "{name} {repr:?}"
+                    );
                 }
             }
         }
@@ -3669,7 +3874,10 @@ mod tests {
         assert_eq!(colors(Palette::Viridis, true), standard);
         // Otherwise each palette paints them its own way.
         assert_ne!(colors(Palette::Viridis, false), standard);
-        assert_ne!(colors(Palette::Magma, false), colors(Palette::Viridis, false));
+        assert_ne!(
+            colors(Palette::Magma, false),
+            colors(Palette::Viridis, false)
+        );
     }
 
     #[test]
@@ -3682,7 +3890,13 @@ mod tests {
         assert!(s.has_ligands());
         let pink = [1.0, 0.0, 1.0];
         let mut looks = Appearance::default();
-        looks.set(Species::Element(6), Look { color: Some(pink), ..Look::default() });
+        looks.set(
+            Species::Element(6),
+            Look {
+                color: Some(pink),
+                ..Look::default()
+            },
+        );
         let colors = build_scene(
             &s,
             Repr::Spacefill,
@@ -3716,8 +3930,14 @@ mod tests {
             include_bytes!("../samples/4hhb.pdb.gz").to_vec(),
         )
         .unwrap();
-        assert_eq!(s.ligands().iter().find(|(n, _)| n == "HEM").map(|l| l.1), Some(4));
-        assert!(s.ligands().iter().all(|(n, _)| n != "HOH"), "water is no ligand");
+        assert_eq!(
+            s.ligands().iter().find(|(n, _)| n == "HEM").map(|l| l.1),
+            Some(4)
+        );
+        assert!(
+            s.ligands().iter().all(|(n, _)| n != "HOH"),
+            "water is no ligand"
+        );
         let gold = [0.98, 0.78, 0.20];
         let paint = |s: &Structure| {
             build_scene(
@@ -3741,7 +3961,8 @@ mod tests {
             s.residues[a.residue as usize].name == "HEM" && a.element.0 == z
         };
 
-        s.ligand_paint.insert("HEM".into(), LigandPaint::Carbons(gold));
+        s.ligand_paint
+            .insert("HEM".into(), LigandPaint::Carbons(gold));
         let colors = paint(&s);
         let nitrogen = rich(crate::elements::Element(7).color());
         for (i, c) in colors.iter().enumerate() {
@@ -3752,7 +3973,8 @@ mod tests {
             }
         }
 
-        s.ligand_paint.insert("HEM".into(), LigandPaint::Solid(gold));
+        s.ligand_paint
+            .insert("HEM".into(), LigandPaint::Solid(gold));
         let colors = paint(&s);
         for (i, c) in colors.iter().enumerate() {
             let r = &s.residues[s.atoms[i].residue as usize];
@@ -3771,7 +3993,11 @@ mod tests {
         let v = [dot(m[0], q), dot(m[1], q), dot(m[2], q)];
         let scale = size as f32 / (2.2 * cam.radius) * cam.zoom;
         let half = size as f32 * 0.5;
-        (half + cam.pan[0] + v[0] * scale, half + cam.pan[1] - v[1] * scale, v[2])
+        (
+            half + cam.pan[0] + v[0] * scale,
+            half + cam.pan[1] - v[1] * scale,
+            v[2],
+        )
     }
 
     #[test]
@@ -3781,7 +4007,11 @@ mod tests {
         let look = Appearance::default();
         // The atom nearest the viewer of all: nothing can be in front of it.
         let front = (0..s.atoms.len())
-            .max_by(|&a, &b| on_screen(&cam, 400, s.atoms[a].pos).2.total_cmp(&on_screen(&cam, 400, s.atoms[b].pos).2))
+            .max_by(|&a, &b| {
+                on_screen(&cam, 400, s.atoms[a].pos)
+                    .2
+                    .total_cmp(&on_screen(&cam, 400, s.atoms[b].pos).2)
+            })
             .unwrap();
         let (x, y, _) = on_screen(&cam, 400, s.atoms[front].pos);
         let hit = pick(&s, Repr::Spacefill, &look, &cam, 400, 400, x, y).unwrap();
@@ -3790,10 +4020,23 @@ mod tests {
         // Panned, the same atom is wherever it was panned to.
         let mut moved = cam;
         moved.pan = [37.0, -21.0];
-        let hit = pick(&s, Repr::Spacefill, &look, &moved, 400, 400, x + 37.0, y - 21.0).unwrap();
+        let hit = pick(
+            &s,
+            Repr::Spacefill,
+            &look,
+            &moved,
+            400,
+            400,
+            x + 37.0,
+            y - 21.0,
+        )
+        .unwrap();
         assert_eq!(hit.atom, front);
         // A corner of the frame is empty.
-        assert_eq!(pick(&s, Repr::Spacefill, &look, &cam, 400, 400, 2.0, 2.0), None);
+        assert_eq!(
+            pick(&s, Repr::Spacefill, &look, &cam, 400, 400, 2.0, 2.0),
+            None
+        );
     }
 
     #[test]
@@ -3808,11 +4051,20 @@ mod tests {
         assert!(hit.residue);
         // A residue in front may hide this one, but whatever is hit is an
         // alpha carbon standing for its residue.
-        assert_eq!(s.residues[s.atoms[hit.atom].residue as usize].ca, Some(hit.atom as u32));
+        assert_eq!(
+            s.residues[s.atoms[hit.atom].residue as usize].ca,
+            Some(hit.atom as u32)
+        );
         // Hidden atoms are not there to be picked.
         let mut gone = Appearance::default();
         for z in 0..=255u8 {
-            gone.set(Species::Element(z), Look { size: 0.0, ..Look::default() });
+            gone.set(
+                Species::Element(z),
+                Look {
+                    size: 0.0,
+                    ..Look::default()
+                },
+            );
         }
         assert_eq!(pick(&s, Repr::Spacefill, &gone, &cam, 400, 400, x, y), None);
     }
@@ -3821,7 +4073,11 @@ mod tests {
     fn a_picked_residue_glows_without_new_atoms() {
         let s = sample("1crn.pdb.gz");
         let ca = s.residues[20].ca.unwrap() as usize;
-        let picked = Picked { atom: ca, residue: true, depth: 0.0 };
+        let picked = Picked {
+            atom: ca,
+            residue: true,
+            depth: 0.0,
+        };
         let look = Appearance::default();
         // On a ribbon nothing is added: the ribbon itself is painted.
         let ribbon = build_highlight(&s, picked, Repr::Cartoon, Style::Soft, &look);
@@ -3831,7 +4087,16 @@ mod tests {
         let sticks = build_highlight(&s, picked, Repr::BallAndStick, Style::Soft, &look);
         assert_eq!(sticks.spheres.len(), atoms);
         assert!(sticks.capsules.is_empty());
-        let one = build_highlight(&s, Picked { residue: false, ..picked }, Repr::Spacefill, Style::Soft, &look);
+        let one = build_highlight(
+            &s,
+            Picked {
+                residue: false,
+                ..picked
+            },
+            Repr::Spacefill,
+            Style::Soft,
+            &look,
+        );
         assert_eq!(one.spheres.len(), 1);
         assert!(one.spheres[0].alpha < 1.0);
     }
@@ -3844,7 +4109,13 @@ mod tests {
             assert_eq!(base.tri_residue.len(), base.tris.len());
             assert_eq!(base.capsule_residue.len(), base.capsules.len());
             let mut painted = base.clone();
-            painted.paint_residue(0..base.tris.len(), 0..base.capsules.len(), 20, Style::Soft, false);
+            painted.paint_residue(
+                0..base.tris.len(),
+                0..base.capsules.len(),
+                20,
+                Style::Soft,
+                false,
+            );
             let white = highlight_color(Style::Soft);
             let changed: Vec<u32> = (0..base.tris.len())
                 .filter(|&i| painted.tris[i].c != base.tris[i].c)
@@ -3856,11 +4127,24 @@ mod tests {
                 )
                 .collect();
             assert!(!changed.is_empty(), "{repr:?}: nothing painted");
-            assert!(changed.iter().all(|&r| r == 20), "{repr:?}: another residue painted");
-            assert!(painted.tris.iter().filter(|t| t.c == white).count() + painted.capsules.iter().filter(|c| c.ca == white).count() > 0);
+            assert!(
+                changed.iter().all(|&r| r == 20),
+                "{repr:?}: another residue painted"
+            );
+            assert!(
+                painted.tris.iter().filter(|t| t.c == white).count()
+                    + painted.capsules.iter().filter(|c| c.ca == white).count()
+                    > 0
+            );
             // Most of the way is neither the ribbon's colour nor the highlight's.
             let mut faint = base.clone();
-            faint.paint_residue(0..base.tris.len(), 0..base.capsules.len(), 20, Style::Soft, true);
+            faint.paint_residue(
+                0..base.tris.len(),
+                0..base.capsules.len(),
+                20,
+                Style::Soft,
+                true,
+            );
             assert!(faint.tris.iter().all(|t| t.c != white));
             assert!(faint.capsules.iter().all(|c| c.ca != white));
         }
@@ -3868,15 +4152,38 @@ mod tests {
         let mut both = scene(&s, Repr::BallAndStick, Coloring::Chain, false);
         both.merge(scene(&s, Repr::Tube, Coloring::Chain, false));
         assert_eq!(both.capsule_residue.len(), both.capsules.len());
-        assert_eq!(both.capsule_residue.iter().filter(|&&r| r != NO_RESIDUE).count(), scene(&s, Repr::Tube, Coloring::Chain, false).capsules.len());
+        assert_eq!(
+            both.capsule_residue
+                .iter()
+                .filter(|&&r| r != NO_RESIDUE)
+                .count(),
+            scene(&s, Repr::Tube, Coloring::Chain, false).capsules.len()
+        );
     }
 
     #[test]
     fn a_turn_brings_a_direction_to_face_the_viewer() {
-        let cam = Camera { orientation: Camera::home(), zoom: 1.0, pan: [0.0; 2], center: [0.0; 3], radius: 10.0, perspective: false, slab: None };
-        for d in [[1.0, 0.0, 0.0], [0.3, -0.8, 0.2], [0.0, 0.0, -1.0], [-0.5, 0.5, 0.7]] {
+        let cam = Camera {
+            orientation: Camera::home(),
+            zoom: 1.0,
+            pan: [0.0; 2],
+            center: [0.0; 3],
+            radius: 10.0,
+            perspective: false,
+            slab: None,
+        };
+        for d in [
+            [1.0, 0.0, 0.0],
+            [0.3, -0.8, 0.2],
+            [0.0, 0.0, -1.0],
+            [-0.5, 0.5, 0.7],
+        ] {
             let (axis, angle) = cam.turn_to_face(d);
-            let m = Camera { orientation: cam.turned(axis, angle), ..cam }.basis();
+            let m = Camera {
+                orientation: cam.turned(axis, angle),
+                ..cam
+            }
+            .basis();
             let n = unit(d);
             let z = dot(m[2], n);
             // Straight behind has no one axis to turn about; anything else faces.
@@ -3895,7 +4202,10 @@ mod tests {
         assert!(base.tris.len() > 10_000);
         assert_eq!(base.tri_residue.len(), base.tris.len());
         // Water is left out of the skin.
-        assert!(base.tri_residue.iter().all(|&r| !is_solvent(&s.residues[r as usize].name)));
+        assert!(base
+            .tri_residue
+            .iter()
+            .all(|&r| !is_solvent(&s.residues[r as usize].name)));
 
         // A point on the skin picks the residue under it.
         let hit = (100..300)
@@ -3909,7 +4219,9 @@ mod tests {
         assert!(glow.is_empty());
         let mut painted = base.clone();
         painted.paint_residue(0..base.tris.len(), 0..0, residue, Style::Soft, false);
-        let changed = (0..base.tris.len()).filter(|&i| painted.tris[i].c != base.tris[i].c).count();
+        let changed = (0..base.tris.len())
+            .filter(|&i| painted.tris[i].c != base.tris[i].c)
+            .count();
         assert!(changed > 0);
     }
 
@@ -3918,19 +4230,45 @@ mod tests {
         let s = sample("1crn.pdb.gz");
         let (lo, hi) = s.b_span().expect("crambin has B-factors");
         assert!(hi > lo);
-        let polymer: Vec<usize> = (0..s.residues.len()).filter(|&r| !s.residues[r].outside_polymer()).collect();
-        let stillest = *polymer.iter().min_by(|&&a, &&b| s.residues[a].b.total_cmp(&s.residues[b].b)).unwrap();
-        let floppiest = *polymer.iter().max_by(|&&a, &&b| s.residues[a].b.total_cmp(&s.residues[b].b)).unwrap();
+        let polymer: Vec<usize> = (0..s.residues.len())
+            .filter(|&r| !s.residues[r].outside_polymer())
+            .collect();
+        let stillest = *polymer
+            .iter()
+            .min_by(|&&a, &&b| s.residues[a].b.total_cmp(&s.residues[b].b))
+            .unwrap();
+        let floppiest = *polymer
+            .iter()
+            .max_by(|&&a, &&b| s.residues[a].b.total_cmp(&s.residues[b].b))
+            .unwrap();
         let p = Palette::Viridis;
-        assert_eq!(residue_color(&s, stillest, Coloring::BFactor, p), p.ramp(0.0));
-        assert_eq!(residue_color(&s, floppiest, Coloring::BFactor, p), p.ramp(1.0));
+        assert_eq!(
+            residue_color(&s, stillest, Coloring::BFactor, p),
+            p.ramp(0.0)
+        );
+        assert_eq!(
+            residue_color(&s, floppiest, Coloring::BFactor, p),
+            p.ramp(1.0)
+        );
 
-        let helix = polymer.iter().find(|&&r| s.residues[r].ss == Ss::Helix).unwrap();
-        let strand = polymer.iter().find(|&&r| s.residues[r].ss == Ss::Sheet).unwrap();
-        let (h, e) = (residue_color(&s, *helix, Coloring::Structure, p), residue_color(&s, *strand, Coloring::Structure, p));
+        let helix = polymer
+            .iter()
+            .find(|&&r| s.residues[r].ss == Ss::Helix)
+            .unwrap();
+        let strand = polymer
+            .iter()
+            .find(|&&r| s.residues[r].ss == Ss::Sheet)
+            .unwrap();
+        let (h, e) = (
+            residue_color(&s, *helix, Coloring::Structure, p),
+            residue_color(&s, *strand, Coloring::Structure, p),
+        );
         assert_ne!(h, e);
         // The palette does not move them.
-        assert_eq!(h, residue_color(&s, *helix, Coloring::Structure, Palette::Magma));
+        assert_eq!(
+            h,
+            residue_color(&s, *helix, Coloring::Structure, Palette::Magma)
+        );
     }
 
     #[test]
@@ -3950,7 +4288,9 @@ mod tests {
         let s = sample("caffeine.sdf");
         let cam = Camera::frame(&s);
         let sc = scene(&s, Repr::Spacefill, Coloring::Element, false);
-        let px = |rgba: &[u8], x: usize, y: usize| -> [u8; 4] { rgba[(y * 200 + x) * 4..][..4].try_into().unwrap() };
+        let px = |rgba: &[u8], x: usize, y: usize| -> [u8; 4] {
+            rgba[(y * 200 + x) * 4..][..4].try_into().unwrap()
+        };
         // Without fog, the molecule is solid and the page clear.
         let rgba = render_transparent(&sc, &cam, 200, 200, Style::Illustrative);
         assert_eq!(px(&rgba, 2, 2)[3], 0, "the corner is not clear");
@@ -3966,7 +4306,10 @@ mod tests {
             let d = &drawn.bgra[(y * 200 + x) * 4..][..3];
             for (k, want) in [d[2], d[1], d[0]].into_iter().enumerate() {
                 let over = m[k] as f32 * a + page[k] * 255.0 * (1.0 - a);
-                assert!((over - want as f32).abs() <= 3.0, "({x}, {y}) {over} for {want}");
+                assert!(
+                    (over - want as f32).abs() <= 3.0,
+                    "({x}, {y}) {over} for {want}"
+                );
             }
         }
     }
@@ -3979,34 +4322,85 @@ mod tests {
         let page = [0.97, 0.96, 0.94];
         let covered = |cam: &Camera| {
             let f = render_cpu(&sc, cam, 300, 300, page, Style::Flat);
-            f.bgra.chunks_exact(4).filter(|p| p[2] != (page[0] * 255.0 + 0.5) as u8 || p[1] != (page[1] * 255.0 + 0.5) as u8).count()
+            f.bgra
+                .chunks_exact(4)
+                .filter(|p| {
+                    p[2] != (page[0] * 255.0 + 0.5) as u8 || p[1] != (page[1] * 255.0 + 0.5) as u8
+                })
+                .count()
         };
         let whole = covered(&base);
         let r = base.radius;
         // A thin slab through the middle leaves less of it, and one out past
         // the structure leaves nothing.
-        let thin = covered(&Camera { slab: Some([0.1 * r, -0.1 * r]), ..base });
+        let thin = covered(&Camera {
+            slab: Some([0.1 * r, -0.1 * r]),
+            ..base
+        });
         assert!(thin < whole * 9 / 10, "{thin} of {whole}");
-        assert_eq!(covered(&Camera { slab: Some([3.0 * r, 2.5 * r]), ..base }), 0);
+        assert_eq!(
+            covered(&Camera {
+                slab: Some([3.0 * r, 2.5 * r]),
+                ..base
+            }),
+            0
+        );
         // In perspective the near half of the structure, spread wider, covers
         // more than it does flat.
-        let near = |perspective| covered(&Camera { perspective, slab: Some([2.0 * r, 0.0]), ..base });
-        assert!(near(true) > near(false), "{} vs {}", near(true), near(false));
+        let near = |perspective| {
+            covered(&Camera {
+                perspective,
+                slab: Some([2.0 * r, 0.0]),
+                ..base
+            })
+        };
+        assert!(
+            near(true) > near(false),
+            "{} vs {}",
+            near(true),
+            near(false)
+        );
         // And a pick finds what is drawn: the nearest atom, at its warped place.
-        let cam = Camera { perspective: true, ..base };
+        let cam = Camera {
+            perspective: true,
+            ..base
+        };
         let m = cam.basis();
         let view = |p: [f32; 3]| {
             let q = sub(p, cam.center);
             [dot(m[0], q), dot(m[1], q), dot(m[2], q)]
         };
-        let front = (0..s.atoms.len()).max_by(|&a, &b| view(s.atoms[a].pos)[2].total_cmp(&view(s.atoms[b].pos)[2])).unwrap();
+        let front = (0..s.atoms.len())
+            .max_by(|&a, &b| view(s.atoms[a].pos)[2].total_cmp(&view(s.atoms[b].pos)[2]))
+            .unwrap();
         let (v, _) = cam.warp(view(s.atoms[front].pos));
         let scale = 400.0 / (2.2 * cam.radius) * cam.zoom;
-        let hit = pick(&s, Repr::Spacefill, &Appearance::default(), &cam, 400, 400, 200.0 + v[0] * scale, 200.0 - v[1] * scale);
+        let hit = pick(
+            &s,
+            Repr::Spacefill,
+            &Appearance::default(),
+            &cam,
+            400,
+            400,
+            200.0 + v[0] * scale,
+            200.0 - v[1] * scale,
+        );
         assert_eq!(hit.map(|h| h.atom), Some(front));
         // A slab in front of it hides it from the pick too.
-        let cut = Camera { slab: Some([v[2] - 2.0, v[2] - 6.0]), ..cam };
-        let hit = pick(&s, Repr::Spacefill, &Appearance::default(), &cut, 400, 400, 200.0 + v[0] * scale, 200.0 - v[1] * scale);
+        let cut = Camera {
+            slab: Some([v[2] - 2.0, v[2] - 6.0]),
+            ..cam
+        };
+        let hit = pick(
+            &s,
+            Repr::Spacefill,
+            &Appearance::default(),
+            &cut,
+            400,
+            400,
+            200.0 + v[0] * scale,
+            200.0 - v[1] * scale,
+        );
         assert_ne!(hit.map(|h| h.atom), Some(front));
     }
 
@@ -4016,18 +4410,65 @@ mod tests {
         let mask: Vec<bool> = s.atoms.iter().map(|a| a.residue < 5).collect();
         let n = mask.iter().filter(|x| **x).count();
         let look = Appearance::default();
-        let spheres = build_layer(&s, &mask, LayerStyle::Spheres, None, Style::Soft, Palette::Spectrum, false, &look);
+        let spheres = build_layer(
+            &s,
+            &mask,
+            LayerStyle::Spheres,
+            None,
+            Style::Soft,
+            Palette::Spectrum,
+            false,
+            &look,
+        );
         assert_eq!(spheres.spheres.len(), n);
-        let sticks = build_layer(&s, &mask, LayerStyle::Sticks, Some([1.0, 0.0, 0.0]), Style::Soft, Palette::Spectrum, false, &look);
+        let sticks = build_layer(
+            &s,
+            &mask,
+            LayerStyle::Sticks,
+            Some([1.0, 0.0, 0.0]),
+            Style::Soft,
+            Palette::Spectrum,
+            false,
+            &look,
+        );
         assert!(!sticks.capsules.is_empty());
-        assert!(sticks.capsules.iter().all(|c| c.ca == sticks.capsules[0].ca), "not all in the one colour");
+        assert!(
+            sticks
+                .capsules
+                .iter()
+                .all(|c| c.ca == sticks.capsules[0].ca),
+            "not all in the one colour"
+        );
         // Hidden, those residues leave the ribbon.
         let whole = scene(&s, Repr::Cartoon, Coloring::Chain, false);
-        let hidden = Appearance { hidden: Some(std::sync::Arc::new(mask.clone())), ..Appearance::default() };
-        let cut = build_scene(&s, Repr::Cartoon, Coloring::Chain, 1.0, Style::Soft, Palette::Spectrum, false, false, &hidden);
+        let hidden = Appearance {
+            hidden: Some(std::sync::Arc::new(mask.clone())),
+            ..Appearance::default()
+        };
+        let cut = build_scene(
+            &s,
+            Repr::Cartoon,
+            Coloring::Chain,
+            1.0,
+            Style::Soft,
+            Palette::Spectrum,
+            false,
+            false,
+            &hidden,
+        );
         assert!(cut.tris.len() < whole.tris.len());
         assert!(cut.tri_residue.iter().all(|&r| r >= 5));
-        let atoms = build_scene(&s, Repr::Spacefill, Coloring::Chain, 1.0, Style::Soft, Palette::Spectrum, false, false, &hidden);
+        let atoms = build_scene(
+            &s,
+            Repr::Spacefill,
+            Coloring::Chain,
+            1.0,
+            Style::Soft,
+            Palette::Spectrum,
+            false,
+            false,
+            &hidden,
+        );
         assert_eq!(atoms.spheres.len(), s.atoms.len() - n);
     }
 
@@ -4036,28 +4477,62 @@ mod tests {
         // Haemoglobin's waters come after its chains in the file.
         let s = sample("4hhb.pdb.gz");
         assert!(s.residues.iter().any(|r| r.name == "HOH"));
-        let polymer: Vec<usize> = (0..s.residues.len()).filter(|&r| !s.residues[r].outside_polymer()).collect();
+        let polymer: Vec<usize> = (0..s.residues.len())
+            .filter(|&r| !s.residues[r].outside_polymer())
+            .collect();
         let p = Palette::Viridis;
-        assert_eq!(residue_color(&s, polymer[0], Coloring::Rainbow, p), p.ramp(0.0));
-        assert_eq!(residue_color(&s, *polymer.last().unwrap(), Coloring::Rainbow, p), p.ramp(1.0));
+        assert_eq!(
+            residue_color(&s, polymer[0], Coloring::Rainbow, p),
+            p.ramp(0.0)
+        );
+        assert_eq!(
+            residue_color(&s, *polymer.last().unwrap(), Coloring::Rainbow, p),
+            p.ramp(1.0)
+        );
     }
 
     #[test]
     fn hydrophobic_and_charged_residues_and_the_potential_over_a_skin() {
         let s = sample("1crn.pdb.gz");
-        let find = |name: &str| (0..s.residues.len()).find(|&r| s.residues[r].name == name).unwrap();
+        let find = |name: &str| {
+            (0..s.residues.len())
+                .find(|&r| s.residues[r].name == name)
+                .unwrap()
+        };
         let p = Palette::Spectrum;
-        assert_eq!(residue_color(&s, find("ILE"), Coloring::Hydrophobic, p), HYDROPHOBIC);
-        assert_eq!(residue_color(&s, find("ARG"), Coloring::Hydrophobic, p), HYDROPHILIC);
-        assert_eq!(residue_color(&s, find("ARG"), Coloring::Charge, p), POSITIVE);
-        assert_eq!(residue_color(&s, find("GLU"), Coloring::Charge, p), NEGATIVE);
+        assert_eq!(
+            residue_color(&s, find("ILE"), Coloring::Hydrophobic, p),
+            HYDROPHOBIC
+        );
+        assert_eq!(
+            residue_color(&s, find("ARG"), Coloring::Hydrophobic, p),
+            HYDROPHILIC
+        );
+        assert_eq!(
+            residue_color(&s, find("ARG"), Coloring::Charge, p),
+            POSITIVE
+        );
+        assert_eq!(
+            residue_color(&s, find("GLU"), Coloring::Charge, p),
+            NEGATIVE
+        );
         assert_eq!(residue_color(&s, find("THR"), Coloring::Charge, p), NEUTRAL);
 
         // Just off an arginine's guanidinium it is positive, off a
         // glutamate's carboxylate negative.
-        let atom = |r: usize, name: &str| s.atoms[s.residue_atoms(r).into_iter().find(|&i| s.atoms[i].name() == name).unwrap()].pos;
+        let atom = |r: usize, name: &str| {
+            s.atoms[s
+                .residue_atoms(r)
+                .into_iter()
+                .find(|&i| s.atoms[i].name() == name)
+                .unwrap()]
+            .pos
+        };
         let off = |p: [f32; 3]| [p[0] + 1.5, p[1], p[2]];
-        let phi = potentials(&s, &[off(atom(find("ARG"), "NH1")), off(atom(find("GLU"), "OE1"))]);
+        let phi = potentials(
+            &s,
+            &[off(atom(find("ARG"), "NH1")), off(atom(find("GLU"), "OE1"))],
+        );
         assert!(phi[0] > 0.0 && phi[1] < 0.0, "{phi:?}");
 
         // Over the skin the colours run both ways.
@@ -4069,7 +4544,15 @@ mod tests {
 
     #[test]
     fn a_turn_between_two_views_lands_on_the_second() {
-        let mut a = Camera { orientation: Camera::home(), zoom: 1.0, pan: [0.0; 2], center: [0.0; 3], radius: 10.0, perspective: false, slab: None };
+        let mut a = Camera {
+            orientation: Camera::home(),
+            zoom: 1.0,
+            pan: [0.0; 2],
+            center: [0.0; 3],
+            radius: 10.0,
+            perspective: false,
+            slab: None,
+        };
         let mut b = a;
         b.rotate(1.2, -0.7);
         for (from, to) in [(a, b), (b, a)] {
@@ -4083,7 +4566,10 @@ mod tests {
         half.rotate(std::f32::consts::PI, 0.0);
         let (axis, angle) = a.turn_to(half.orientation);
         let m = a.turned(axis, angle);
-        assert!((0..3).all(|i| (0..3).all(|j| (m[i][j] - half.orientation[i][j]).abs() < 1e-3)), "{m:?}");
+        assert!(
+            (0..3).all(|i| (0..3).all(|j| (m[i][j] - half.orientation[i][j]).abs() < 1e-3)),
+            "{m:?}"
+        );
     }
 
     #[test]
@@ -4094,17 +4580,26 @@ mod tests {
         assert!((x - Camera::HOME_PITCH.to_degrees()).abs() < 1e-3, "{x}");
         assert!((y - Camera::HOME_YAW.to_degrees()).abs() < 1e-3, "{y}");
         cam.set_angles([0.0, 0.0]);
-        assert_eq!(cam.orientation, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert_eq!(
+            cam.orientation,
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        );
         cam.rotate(std::f32::consts::FRAC_PI_2, 0.0);
         cam.rotate(0.0, -10f32.to_radians());
         let [x, y] = cam.angles();
-        assert!((y - 90.0).abs() < 1e-3 && (x + 10.0).abs() < 1e-3, "{x} {y}");
+        assert!(
+            (y - 90.0).abs() < 1e-3 && (x + 10.0).abs() < 1e-3,
+            "{x} {y}"
+        );
         // A full turn comes back round.
         cam.rotate(std::f32::consts::TAU, 0.0);
         assert!((cam.angles()[1] - 90.0).abs() < 1e-2);
         cam.set_angles([30.0, -45.0]);
         let [x, y] = cam.angles();
-        assert!((x - 30.0).abs() < 1e-3 && (y + 45.0).abs() < 1e-3, "{x} {y}");
+        assert!(
+            (x - 30.0).abs() < 1e-3 && (y + 45.0).abs() < 1e-3,
+            "{x} {y}"
+        );
     }
 
     #[test]
@@ -4118,7 +4613,9 @@ mod tests {
             cam.rotate(0.0, step);
             let now = cam.basis();
             let turned = mul(now, transpose(last));
-            let angle = ((turned[0][0] + turned[1][1] + turned[2][2] - 1.0) / 2.0).clamp(-1.0, 1.0).acos();
+            let angle = ((turned[0][0] + turned[1][1] + turned[2][2] - 1.0) / 2.0)
+                .clamp(-1.0, 1.0)
+                .acos();
             assert!((angle - step).abs() < 1e-3, "a step turned {angle}");
             last = now;
         }
@@ -4200,7 +4697,13 @@ mod bench {
         let s = crate::formats::load_path(std::path::Path::new(&path)).unwrap();
         let mut glass = Appearance::default();
         if let Some(kind) = s.kinds.iter().find(|k| k.as_str() == "6") {
-            glass.set(Species::Kind(kind.clone()), Look { alpha: 0.02, ..Look::default() });
+            glass.set(
+                Species::Kind(kind.clone()),
+                Look {
+                    alpha: 0.02,
+                    ..Look::default()
+                },
+            );
         }
         for (label, repr, appearance) in [
             ("spacefill", Repr::Spacefill, &Appearance::default()),
@@ -4208,8 +4711,15 @@ mod bench {
             ("ball&stick", Repr::BallAndStick, &Appearance::default()),
         ] {
             let scene = build_scene(
-                &s, repr, Coloring::Element, 1.0, Style::Illustrative, Palette::Spectrum,
-                false, true, appearance,
+                &s,
+                repr,
+                Coloring::Element,
+                1.0,
+                Style::Illustrative,
+                Palette::Spectrum,
+                false,
+                true,
+                appearance,
             )
             .stamp();
             let mut cam = Camera::frame(&s);
@@ -4233,12 +4743,23 @@ mod bench {
         let path = std::env::var("PROFOLD_BENCH").expect("PROFOLD_BENCH names a structure");
         let t = Instant::now();
         let s = crate::formats::load_path(std::path::Path::new(&path)).unwrap();
-        println!("load: {:?}, {} atoms, {} bonds", t.elapsed(), s.atoms.len(), s.bonds.len());
+        println!(
+            "load: {:?}, {} atoms, {} bonds",
+            t.elapsed(),
+            s.atoms.len(),
+            s.bonds.len()
+        );
         // As well as everything opaque, the solvent turned almost to glass,
         // which is how a simulation box is usually looked into.
         let mut glass = Appearance::default();
         if let Some(kind) = s.kinds.iter().find(|k| k.as_str() == "6") {
-            glass.set(Species::Kind(kind.clone()), Look { alpha: 0.02, ..Look::default() });
+            glass.set(
+                Species::Kind(kind.clone()),
+                Look {
+                    alpha: 0.02,
+                    ..Look::default()
+                },
+            );
         }
         for (repr, appearance) in [
             (Repr::Spacefill, &Appearance::default()),
@@ -4248,7 +4769,14 @@ mod bench {
             for style in Style::ALL {
                 let t = Instant::now();
                 let scene = build_scene(
-                    &s, repr, Coloring::Element, 1.0, style, Palette::Spectrum, false, true,
+                    &s,
+                    repr,
+                    Coloring::Element,
+                    1.0,
+                    style,
+                    Palette::Spectrum,
+                    false,
+                    true,
                     appearance,
                 )
                 .stamp();
@@ -4270,8 +4798,15 @@ mod bench {
                     println!(
                         "{:?}{} {:?} build {:?}  {w}x{h}: cpu {:?}  gpu {:?}",
                         repr,
-                        if appearance.is_default() { "" } else { "+glass" },
-                        style, built, cpu, gpu
+                        if appearance.is_default() {
+                            ""
+                        } else {
+                            "+glass"
+                        },
+                        style,
+                        built,
+                        cpu,
+                        gpu
                     );
                 }
             }
@@ -4287,8 +4822,22 @@ mod gpu_tests {
     /// where the two round a pixel centre differently, the frames agree.
     #[test]
     fn a_panned_view_saved_larger_keeps_the_molecule_where_it_was() {
-        let s = crate::formats::load_bytes("1crn.pdb.gz", include_bytes!("../samples/1crn.pdb.gz").to_vec()).unwrap();
-        let scene = build_scene(&s, Repr::Spacefill, Coloring::Chain, 1.0, Style::Flat, Palette::Spectrum, false, false, &Appearance::default());
+        let s = crate::formats::load_bytes(
+            "1crn.pdb.gz",
+            include_bytes!("../samples/1crn.pdb.gz").to_vec(),
+        )
+        .unwrap();
+        let scene = build_scene(
+            &s,
+            Repr::Spacefill,
+            Coloring::Chain,
+            1.0,
+            Style::Flat,
+            Palette::Spectrum,
+            false,
+            false,
+            &Appearance::default(),
+        );
         let mut cam = Camera::frame(&s);
         cam.zoom = 0.5;
         cam.pan = [60.0, -30.0];
@@ -4306,8 +4855,18 @@ mod gpu_tests {
             (x / n / f.width as f32, y / n / f.height as f32)
         };
         let small = middle(&render_cpu(&scene, &cam, 300, 200, page, Style::Flat));
-        let big = middle(&render_cpu(&scene, &cam.resized((300, 200), (900, 600)), 900, 600, page, Style::Flat));
-        assert!((small.0 - big.0).abs() < 0.01 && (small.1 - big.1).abs() < 0.01, "{small:?} against {big:?}");
+        let big = middle(&render_cpu(
+            &scene,
+            &cam.resized((300, 200), (900, 600)),
+            900,
+            600,
+            page,
+            Style::Flat,
+        ));
+        assert!(
+            (small.0 - big.0).abs() < 0.01 && (small.1 - big.1).abs() < 0.01,
+            "{small:?} against {big:?}"
+        );
     }
 
     #[test]
@@ -4315,10 +4874,30 @@ mod gpu_tests {
         let dump = "ITEM: TIMESTEP\n0\nITEM: NUMBER OF ATOMS\n3\nITEM: BOX BOUNDS pp pp pp\n0 4\n0 4\n0 4\n\
                     ITEM: ATOMS id type x y z c_pe\n1 1 0 0 0 -4.0\n2 1 1.5 1.5 1.5 -2.5\n3 1 3 3 3 -1.0\n";
         let mut s = crate::formats::load_bytes("t.lammpstrj", dump.as_bytes().to_vec()).unwrap();
-        s.prop_color = Some(crate::protein::PropertyColor { index: 0, range: Some((-4.0, -1.0)) });
+        s.prop_color = Some(crate::protein::PropertyColor {
+            index: 0,
+            range: Some((-4.0, -1.0)),
+        });
         let p = Palette::Viridis;
-        let scene = build_scene(&s, Repr::Spacefill, Coloring::Property, 1.0, Style::Soft, p, true, false, &Appearance::default());
-        let colour_at = |x: f32| scene.spheres.iter().find(|a| (a.c[0] - x).abs() < 1e-3).unwrap().color;
+        let scene = build_scene(
+            &s,
+            Repr::Spacefill,
+            Coloring::Property,
+            1.0,
+            Style::Soft,
+            p,
+            true,
+            false,
+            &Appearance::default(),
+        );
+        let colour_at = |x: f32| {
+            scene
+                .spheres
+                .iter()
+                .find(|a| (a.c[0] - x).abs() < 1e-3)
+                .unwrap()
+                .color
+        };
         // Each style settles colours a little its own way.
         let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 0.08);
         assert!(near(colour_at(0.0), p.ramp(0.0)));
@@ -4333,9 +4912,18 @@ mod gpu_tests {
             return;
         };
         let samples = [
-            ("caffeine.sdf", include_bytes!("../samples/caffeine.sdf").to_vec()),
-            ("1crn.pdb.gz", include_bytes!("../samples/1crn.pdb.gz").to_vec()),
-            ("rocksalt.cif", include_bytes!("../samples/rocksalt.cif").to_vec()),
+            (
+                "caffeine.sdf",
+                include_bytes!("../samples/caffeine.sdf").to_vec(),
+            ),
+            (
+                "1crn.pdb.gz",
+                include_bytes!("../samples/1crn.pdb.gz").to_vec(),
+            ),
+            (
+                "rocksalt.cif",
+                include_bytes!("../samples/rocksalt.cif").to_vec(),
+            ),
         ];
         let out = std::env::var("PROFOLD_DIFF_DIR").ok();
         for (name, bytes) in samples {
@@ -4353,14 +4941,24 @@ mod gpu_tests {
                                 if i % 2 == 0 {
                                     appearance.set(
                                         Species::Element(e.0),
-                                        Look { alpha: 0.5, ..Look::default() },
+                                        Look {
+                                            alpha: 0.5,
+                                            ..Look::default()
+                                        },
                                     );
                                 }
                             }
                         }
                         let scene = build_scene(
-                            &s, repr, Coloring::Element, 1.0, style, Palette::Spectrum,
-                            false, true, &appearance,
+                            &s,
+                            repr,
+                            Coloring::Element,
+                            1.0,
+                            style,
+                            Palette::Spectrum,
+                            false,
+                            true,
+                            &appearance,
                         )
                         .stamp();
                         let mut cam = Camera::frame(&s);
@@ -4373,35 +4971,44 @@ mod gpu_tests {
                             &[(640, 480)]
                         };
                         for &(w, h) in sizes {
-                        let cpu = render_cpu(&scene, &cam, w, h, [0.97, 0.96, 0.94], style);
-                        let gpu = gpu
-                            .render(&scene, &cam, w, h, [0.97, 0.96, 0.94], style)
-                            .unwrap();
-                        // Glass is blended into eight bits a layer at a time on
-                        // the card, in floating point on the CPU, so stacked
-                        // layers drift a few levels apart.
-                        let tolerance = if see_through { 16 } else { 6 };
-                        let off = cpu
-                            .bgra
-                            .chunks_exact(4)
-                            .zip(gpu.bgra.chunks_exact(4))
-                            .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > tolerance))
-                            .count();
-                        let frac = off as f32 / (w * h) as f32;
-                        let label = format!("{name}-{repr:?}-{style:?}-{see_through}-{w}");
-                        println!("{label}: {:.3}% differ", frac * 100.0);
-                        if let Some(dir) = &out {
-                            for (tag, f) in [("cpu", &cpu), ("gpu", &gpu)] {
-                                let mut rgba = f.bgra.clone();
-                                rgba.chunks_exact_mut(4).for_each(|p| p.swap(0, 2));
-                                image::save_buffer(
-                                    format!("{dir}/{label}-{tag}.png"),
-                                    &rgba, w as u32, h as u32, image::ColorType::Rgba8,
-                                )
+                            let cpu = render_cpu(&scene, &cam, w, h, [0.97, 0.96, 0.94], style);
+                            let gpu = gpu
+                                .render(&scene, &cam, w, h, [0.97, 0.96, 0.94], style)
                                 .unwrap();
+                            // Glass is blended into eight bits a layer at a time on
+                            // the card, in floating point on the CPU, so stacked
+                            // layers drift a few levels apart.
+                            let tolerance = if see_through { 16 } else { 6 };
+                            let off = cpu
+                                .bgra
+                                .chunks_exact(4)
+                                .zip(gpu.bgra.chunks_exact(4))
+                                .filter(|(a, b)| {
+                                    a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > tolerance)
+                                })
+                                .count();
+                            let frac = off as f32 / (w * h) as f32;
+                            let label = format!("{name}-{repr:?}-{style:?}-{see_through}-{w}");
+                            println!("{label}: {:.3}% differ", frac * 100.0);
+                            if let Some(dir) = &out {
+                                for (tag, f) in [("cpu", &cpu), ("gpu", &gpu)] {
+                                    let mut rgba = f.bgra.clone();
+                                    rgba.chunks_exact_mut(4).for_each(|p| p.swap(0, 2));
+                                    image::save_buffer(
+                                        format!("{dir}/{label}-{tag}.png"),
+                                        &rgba,
+                                        w as u32,
+                                        h as u32,
+                                        image::ColorType::Rgba8,
+                                    )
+                                    .unwrap();
+                                }
                             }
-                        }
-                        assert!(frac < 0.01, "{label}: {:.2}% of pixels differ", frac * 100.0);
+                            assert!(
+                                frac < 0.01,
+                                "{label}: {:.2}% of pixels differ",
+                                frac * 100.0
+                            );
                         }
                     }
                 }
@@ -4422,10 +5029,30 @@ mod gallery {
             eprintln!("no GPU here; skipped");
             return;
         };
-        let s = crate::formats::load_bytes("1crn.pdb.gz", include_bytes!("../samples/1crn.pdb.gz").to_vec()).unwrap();
-        for repr in [Repr::Cartoon, Repr::BallAndStick, Repr::Spacefill, Repr::Surface] {
+        let s = crate::formats::load_bytes(
+            "1crn.pdb.gz",
+            include_bytes!("../samples/1crn.pdb.gz").to_vec(),
+        )
+        .unwrap();
+        for repr in [
+            Repr::Cartoon,
+            Repr::BallAndStick,
+            Repr::Spacefill,
+            Repr::Surface,
+        ] {
             for style in [Style::Illustrative, Style::Soft] {
-                let scene = build_scene(&s, repr, Coloring::Chain, 1.0, style, Palette::Spectrum, false, false, &Appearance::default()).stamp();
+                let scene = build_scene(
+                    &s,
+                    repr,
+                    Coloring::Chain,
+                    1.0,
+                    style,
+                    Palette::Spectrum,
+                    false,
+                    false,
+                    &Appearance::default(),
+                )
+                .stamp();
                 let mut cam = Camera::frame(&s);
                 cam.rotate(0.3, 0.2);
                 cam.perspective = true;
@@ -4440,7 +5067,11 @@ mod gallery {
                     .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > 6))
                     .count();
                 let frac = off as f32 / (640.0 * 480.0);
-                assert!(frac < 0.01, "{repr:?} {style:?}: {:.2}% of pixels differ", frac * 100.0);
+                assert!(
+                    frac < 0.01,
+                    "{repr:?} {style:?}: {:.2}% of pixels differ",
+                    frac * 100.0
+                );
             }
         }
     }
@@ -4451,29 +5082,165 @@ mod gallery {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
         std::fs::create_dir_all(&dir).unwrap();
         let shots: [(&str, &str, Repr, Coloring, Style, Palette, f32, bool); 14] = [
-            ("haemoglobin", "4hhb.pdb.gz", Repr::Cartoon, Coloring::Chain, Style::Illustrative, Palette::Spectrum, 0.0, false),
-            ("gfp", "1ema.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Style::Illustrative, Palette::Spectrum, 0.0, false),
-            ("ubiquitin-soft", "1ubq.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Style::Soft, Palette::Spectrum, 0.0, false),
-            ("crambin-tube", "1crn.pdb.gz", Repr::Tube, Coloring::Rainbow, Style::Illustrative, Palette::Viridis, 0.0, false),
-            ("crambin-ballstick", "1crn.pdb.gz", Repr::BallAndStick, Coloring::Element, Style::Illustrative, Palette::Spectrum, 0.0, false),
-            ("haemoglobin-spacefill", "4hhb.pdb.gz", Repr::Spacefill, Coloring::Chain, Style::Soft, Palette::Spectrum, 0.0, false),
-            ("caffeine", "caffeine.sdf", Repr::BallAndStick, Coloring::Element, Style::Illustrative, Palette::Spectrum, 0.0, false),
-            ("c60", "c60.xyz", Repr::Licorice, Coloring::Element, Style::Soft, Palette::Plasma, 0.0, false),
-            ("rocksalt", "rocksalt.cif", Repr::BallAndStick, Coloring::Element, Style::Illustrative, Palette::Spectrum, 0.0, true),
-            ("silicon", "silicon.vasp", Repr::BallAndStick, Coloring::Element, Style::Soft, Palette::Ice, 0.0, true),
-            ("melt", "lj-melt.lammpstrj.gz", Repr::Spacefill, Coloring::Element, Style::Illustrative, Palette::Spectrum, 1.0, true),
-            ("ubiquitin-viridis", "1ubq.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Style::Illustrative, Palette::Viridis, 0.0, false),
-            ("ubiquitin-magma", "1ubq.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Style::Illustrative, Palette::Magma, 0.0, false),
-            ("ubiquitin-mako", "1ubq.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Style::Illustrative, Palette::Mako, 0.0, false),
+            (
+                "haemoglobin",
+                "4hhb.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Chain,
+                Style::Illustrative,
+                Palette::Spectrum,
+                0.0,
+                false,
+            ),
+            (
+                "gfp",
+                "1ema.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Rainbow,
+                Style::Illustrative,
+                Palette::Spectrum,
+                0.0,
+                false,
+            ),
+            (
+                "ubiquitin-soft",
+                "1ubq.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Rainbow,
+                Style::Soft,
+                Palette::Spectrum,
+                0.0,
+                false,
+            ),
+            (
+                "crambin-tube",
+                "1crn.pdb.gz",
+                Repr::Tube,
+                Coloring::Rainbow,
+                Style::Illustrative,
+                Palette::Viridis,
+                0.0,
+                false,
+            ),
+            (
+                "crambin-ballstick",
+                "1crn.pdb.gz",
+                Repr::BallAndStick,
+                Coloring::Element,
+                Style::Illustrative,
+                Palette::Spectrum,
+                0.0,
+                false,
+            ),
+            (
+                "haemoglobin-spacefill",
+                "4hhb.pdb.gz",
+                Repr::Spacefill,
+                Coloring::Chain,
+                Style::Soft,
+                Palette::Spectrum,
+                0.0,
+                false,
+            ),
+            (
+                "caffeine",
+                "caffeine.sdf",
+                Repr::BallAndStick,
+                Coloring::Element,
+                Style::Illustrative,
+                Palette::Spectrum,
+                0.0,
+                false,
+            ),
+            (
+                "c60",
+                "c60.xyz",
+                Repr::Licorice,
+                Coloring::Element,
+                Style::Soft,
+                Palette::Plasma,
+                0.0,
+                false,
+            ),
+            (
+                "rocksalt",
+                "rocksalt.cif",
+                Repr::BallAndStick,
+                Coloring::Element,
+                Style::Illustrative,
+                Palette::Spectrum,
+                0.0,
+                true,
+            ),
+            (
+                "silicon",
+                "silicon.vasp",
+                Repr::BallAndStick,
+                Coloring::Element,
+                Style::Soft,
+                Palette::Ice,
+                0.0,
+                true,
+            ),
+            (
+                "melt",
+                "lj-melt.lammpstrj.gz",
+                Repr::Spacefill,
+                Coloring::Element,
+                Style::Illustrative,
+                Palette::Spectrum,
+                1.0,
+                true,
+            ),
+            (
+                "ubiquitin-viridis",
+                "1ubq.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Rainbow,
+                Style::Illustrative,
+                Palette::Viridis,
+                0.0,
+                false,
+            ),
+            (
+                "ubiquitin-magma",
+                "1ubq.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Rainbow,
+                Style::Illustrative,
+                Palette::Magma,
+                0.0,
+                false,
+            ),
+            (
+                "ubiquitin-mako",
+                "1ubq.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Rainbow,
+                Style::Illustrative,
+                Palette::Mako,
+                0.0,
+                false,
+            ),
         ];
         for (name, file, repr, coloring, style, palette, at, cell) in shots {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(file);
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("samples")
+                .join(file);
             let mut s = crate::formats::load_path(&path).unwrap();
             // `at` is how far through a trajectory to draw it, 0..=1.
             let last = s.frame_count() - 1;
             s.set_frame((at * last as f32).round() as usize);
             let scene = build_scene(
-                &s, repr, coloring, 1.0, style, palette, false, cell, &Appearance::default(),
+                &s,
+                repr,
+                coloring,
+                1.0,
+                style,
+                palette,
+                false,
+                cell,
+                &Appearance::default(),
             )
             .stamp();
             let cam = Camera::frame(&s);
@@ -4498,7 +5265,12 @@ mod gallery {
             let (pw, ph) = (side, side * 3 / 4);
             let mut page = image::RgbaImage::from_pixel(pw, ph, paper);
             let cut = image::imageops::crop_imm(&img, x0, y0, cw, ch).to_image();
-            image::imageops::overlay(&mut page, &cut, ((pw - cw) / 2) as i64, ((ph - ch) / 2) as i64);
+            image::imageops::overlay(
+                &mut page,
+                &cut,
+                ((pw - cw) / 2) as i64,
+                ((ph - ch) / 2) as i64,
+            );
             image::imageops::resize(&page, 1200, 900, image::imageops::FilterType::Lanczos3)
                 .save(dir.join(format!("{name}.png")))
                 .unwrap();
@@ -4510,19 +5282,84 @@ mod gallery {
     #[test]
     #[ignore]
     fn contact_sheet() {
-        let Some(dir) = std::env::var_os("PROFOLD_SHEET") else { return };
+        let Some(dir) = std::env::var_os("PROFOLD_SHEET") else {
+            return;
+        };
         let dir = std::path::PathBuf::from(dir);
         std::fs::create_dir_all(&dir).unwrap();
         let rows: [(&str, &str, Repr, Coloring, Palette, bool); 9] = [
-            ("haemoglobin", "4hhb.pdb.gz", Repr::Cartoon, Coloring::Chain, Palette::Spectrum, false),
-            ("gfp", "1ema.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Palette::Turbo, false),
-            ("ubq-magma", "1ubq.pdb.gz", Repr::Cartoon, Coloring::Rainbow, Palette::Magma, false),
-            ("ubq-mako", "1ubq.pdb.gz", Repr::Tube, Coloring::Rainbow, Palette::Mako, false),
-            ("crambin", "1crn.pdb.gz", Repr::BallAndStick, Coloring::Element, Palette::Spectrum, false),
-            ("hb-fill", "4hhb.pdb.gz", Repr::Spacefill, Coloring::Chain, Palette::Greyscale, false),
-            ("caffeine", "caffeine.sdf", Repr::BallAndStick, Coloring::Element, Palette::Spectrum, false),
-            ("rocksalt", "rocksalt.cif", Repr::BallAndStick, Coloring::Element, Palette::Spectrum, true),
-            ("silicon", "silicon.vasp", Repr::BallAndStick, Coloring::Element, Palette::Ice, true),
+            (
+                "haemoglobin",
+                "4hhb.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Chain,
+                Palette::Spectrum,
+                false,
+            ),
+            (
+                "gfp",
+                "1ema.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Rainbow,
+                Palette::Turbo,
+                false,
+            ),
+            (
+                "ubq-magma",
+                "1ubq.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Rainbow,
+                Palette::Magma,
+                false,
+            ),
+            (
+                "ubq-mako",
+                "1ubq.pdb.gz",
+                Repr::Tube,
+                Coloring::Rainbow,
+                Palette::Mako,
+                false,
+            ),
+            (
+                "crambin",
+                "1crn.pdb.gz",
+                Repr::BallAndStick,
+                Coloring::Element,
+                Palette::Spectrum,
+                false,
+            ),
+            (
+                "hb-fill",
+                "4hhb.pdb.gz",
+                Repr::Spacefill,
+                Coloring::Chain,
+                Palette::Greyscale,
+                false,
+            ),
+            (
+                "caffeine",
+                "caffeine.sdf",
+                Repr::BallAndStick,
+                Coloring::Element,
+                Palette::Spectrum,
+                false,
+            ),
+            (
+                "rocksalt",
+                "rocksalt.cif",
+                Repr::BallAndStick,
+                Coloring::Element,
+                Palette::Spectrum,
+                true,
+            ),
+            (
+                "silicon",
+                "silicon.vasp",
+                Repr::BallAndStick,
+                Coloring::Element,
+                Palette::Ice,
+                true,
+            ),
         ];
         let tile = 360u32;
         for dark in [false, true] {
@@ -4530,11 +5367,20 @@ mod gallery {
             let mut sheet =
                 image::RgbaImage::new(tile * Style::ALL.len() as u32, tile * rows.len() as u32);
             for (r, (_, file, repr, coloring, palette, cell)) in rows.iter().enumerate() {
-                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(file);
+                let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("samples")
+                    .join(file);
                 let s = crate::formats::load_path(&path).unwrap();
                 for (c, style) in Style::ALL.iter().enumerate() {
                     let scene = build_scene(
-                        &s, *repr, *coloring, 1.0, *style, *palette, false, *cell,
+                        &s,
+                        *repr,
+                        *coloring,
+                        1.0,
+                        *style,
+                        *palette,
+                        false,
+                        *cell,
                         &Appearance::default(),
                     )
                     .stamp();
@@ -4546,8 +5392,18 @@ mod gallery {
                         px.swap(0, 2);
                     }
                     let img = image::RgbaImage::from_raw(side as u32, side as u32, rgba).unwrap();
-                    let small = image::imageops::resize(&img, tile, tile, image::imageops::FilterType::Lanczos3);
-                    image::imageops::overlay(&mut sheet, &small, (c as u32 * tile) as i64, (r as u32 * tile) as i64);
+                    let small = image::imageops::resize(
+                        &img,
+                        tile,
+                        tile,
+                        image::imageops::FilterType::Lanczos3,
+                    );
+                    image::imageops::overlay(
+                        &mut sheet,
+                        &small,
+                        (c as u32 * tile) as i64,
+                        (r as u32 * tile) as i64,
+                    );
                 }
             }
             let name = if dark { "dark.png" } else { "light.png" };

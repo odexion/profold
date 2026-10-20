@@ -73,7 +73,9 @@ pub fn recent() -> Vec<String> {
 
 /// Put something opened at the head of the recent list.
 pub fn remember(origin: &str) {
-    let Ok(mut list) = recents().lock() else { return };
+    let Ok(mut list) = recents().lock() else {
+        return;
+    };
     list.retain(|o| o != origin);
     list.insert(0, origin.to_string());
     list.truncate(RECENT);
@@ -192,7 +194,12 @@ impl Settings {
                 s.palette = *p;
             }
         }
-        for entry in v.get("atoms").and_then(Value::as_array).into_iter().flatten() {
+        for entry in v
+            .get("atoms")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let species = if let Some(sym) = entry.get("element").and_then(Value::as_str) {
                 let e = Element::from_symbol(sym);
                 if !e.is_known() {
@@ -214,7 +221,10 @@ impl Settings {
             let look = Look {
                 size: number("size", 1.0).clamp(0.0, MAX_SIZE),
                 alpha: number("opacity", 1.0).clamp(0.0, 1.0),
-                color: entry.get("color").and_then(Value::as_str).and_then(parse_hex),
+                color: entry
+                    .get("color")
+                    .and_then(Value::as_str)
+                    .and_then(parse_hex),
             };
             s.appearance.set(species, look);
         }
@@ -299,7 +309,10 @@ pub fn parse_rgb(text: &str) -> Option<[f32; 3]> {
     if parts.len() != 3 {
         return None;
     }
-    let v: Vec<f32> = parts.iter().map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    let v: Vec<f32> = parts
+        .iter()
+        .map(|p| p.parse().ok())
+        .collect::<Option<_>>()?;
     let fractions = v.iter().all(|x| *x <= 1.0) && parts.iter().any(|p| p.contains('.'));
     let scale = if fractions { 1.0 } else { 255.0 };
     Some([
@@ -336,7 +349,10 @@ mod tests {
         assert_eq!(parse_zoom("0"), None);
         assert_eq!(parse_hex("#f80"), Some([1.0, 0x88 as f32 / 255.0, 0.0]));
         assert_eq!(parse_hex("ff8800").map(hex), Some("#ff8800".into()));
-        assert_eq!(parse_rgb("rgb(255, 128, 0)").map(hex), Some("#ff8000".into()));
+        assert_eq!(
+            parse_rgb("rgb(255, 128, 0)").map(hex),
+            Some("#ff8000".into())
+        );
         assert_eq!(parse_rgb("255 128 0").map(hex), Some("#ff8000".into()));
         assert_eq!(parse_rgb("1.0, 0.5, 0").map(hex), Some("#ff8000".into()));
         assert_eq!(parse_rgb("1, 2"), None);

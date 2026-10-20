@@ -26,7 +26,10 @@ enum Value {
 impl Value {
     fn get(&self, key: &str) -> Option<&Value> {
         match self {
-            Value::Map(m) => m.iter().find(|(k, _)| matches!(k, Value::Str(s) if s == key)).map(|(_, v)| v),
+            Value::Map(m) => m
+                .iter()
+                .find(|(k, _)| matches!(k, Value::Str(s) if s == key))
+                .map(|(_, v)| v),
             _ => None,
         }
     }
@@ -69,13 +72,19 @@ struct Reader<'a> {
 
 impl Reader<'_> {
     fn take(&mut self, n: usize) -> Result<&[u8]> {
-        let s = self.b.get(self.at..self.at + n).ok_or_else(|| anyhow!("the BinaryCIF file is truncated"))?;
+        let s = self
+            .b
+            .get(self.at..self.at + n)
+            .ok_or_else(|| anyhow!("the BinaryCIF file is truncated"))?;
         self.at += n;
         Ok(s)
     }
 
     fn uint(&mut self, n: usize) -> Result<u64> {
-        Ok(self.take(n)?.iter().fold(0u64, |acc, &b| (acc << 8) | b as u64))
+        Ok(self
+            .take(n)?
+            .iter()
+            .fold(0u64, |acc, &b| (acc << 8) | b as u64))
     }
 
     fn value(&mut self) -> Result<Value> {
@@ -144,15 +153,23 @@ impl Reader<'_> {
     }
 
     fn string(&mut self, n: usize) -> Result<Value> {
-        Ok(Value::Str(String::from_utf8_lossy(self.take(n)?).into_owned()))
+        Ok(Value::Str(
+            String::from_utf8_lossy(self.take(n)?).into_owned(),
+        ))
     }
 
     fn array(&mut self, n: usize) -> Result<Value> {
-        (0..n).map(|_| self.value()).collect::<Result<_>>().map(Value::Array)
+        (0..n)
+            .map(|_| self.value())
+            .collect::<Result<_>>()
+            .map(Value::Array)
     }
 
     fn map(&mut self, n: usize) -> Result<Value> {
-        (0..n).map(|_| Ok((self.value()?, self.value()?))).collect::<Result<_>>().map(Value::Map)
+        (0..n)
+            .map(|_| Ok((self.value()?, self.value()?)))
+            .collect::<Result<_>>()
+            .map(Value::Map)
     }
 }
 
@@ -186,7 +203,11 @@ impl Column {
             Column::Ints(v) => v[i].to_string(),
             Column::Floats(v) => {
                 let x = v[i];
-                if x.fract() == 0.0 && x.abs() < 1e9 { format!("{x:.1}") } else { format!("{x}") }
+                if x.fract() == 0.0 && x.abs() < 1e9 {
+                    format!("{x:.1}")
+                } else {
+                    format!("{x}")
+                }
             }
             Column::Strings(v) => v[i].clone(),
         }
@@ -200,25 +221,55 @@ fn decode(data: &Value) -> Result<Column> {
     if let Some(Value::Bin(b)) = data.get("data") {
         raw = Some(b);
     }
-    for e in data.get("encoding").map(Value::array).unwrap_or(&[]).iter().rev() {
+    for e in data
+        .get("encoding")
+        .map(Value::array)
+        .unwrap_or(&[])
+        .iter()
+        .rev()
+    {
         let kind = e.get("kind").and_then(Value::str).unwrap_or("");
         current = Some(match kind {
             "ByteArray" => {
-                let bytes = raw.take().ok_or_else(|| anyhow!("a ByteArray with no bytes"))?;
+                let bytes = raw
+                    .take()
+                    .ok_or_else(|| anyhow!("a ByteArray with no bytes"))?;
                 byte_array(bytes, e.get("type").and_then(Value::int).unwrap_or(0))?
             }
             "FixedPoint" => {
                 let factor = e.get("factor").and_then(Value::float).unwrap_or(1.0);
-                Column::Floats(current.take().ok_or_else(|| anyhow!("FixedPoint encoding has no input data"))?.ints()?.into_iter().map(|v| v as f64 / factor).collect())
+                Column::Floats(
+                    current
+                        .take()
+                        .ok_or_else(|| anyhow!("FixedPoint encoding has no input data"))?
+                        .ints()?
+                        .into_iter()
+                        .map(|v| v as f64 / factor)
+                        .collect(),
+                )
             }
             "IntervalQuantization" => {
-                let (min, max) = (e.get("min").and_then(Value::float).unwrap_or(0.0), e.get("max").and_then(Value::float).unwrap_or(1.0));
+                let (min, max) = (
+                    e.get("min").and_then(Value::float).unwrap_or(0.0),
+                    e.get("max").and_then(Value::float).unwrap_or(1.0),
+                );
                 let steps = e.get("numSteps").and_then(Value::int).unwrap_or(2).max(2) as f64;
                 let delta = (max - min) / (steps - 1.0);
-                Column::Floats(current.take().ok_or_else(|| anyhow!("IntervalQuantization encoding has no input data"))?.ints()?.into_iter().map(|v| min + delta * v as f64).collect())
+                Column::Floats(
+                    current
+                        .take()
+                        .ok_or_else(|| anyhow!("IntervalQuantization encoding has no input data"))?
+                        .ints()?
+                        .into_iter()
+                        .map(|v| min + delta * v as f64)
+                        .collect(),
+                )
             }
             "RunLength" => {
-                let pairs = current.take().ok_or_else(|| anyhow!("RunLength encoding has no input data"))?.ints()?;
+                let pairs = current
+                    .take()
+                    .ok_or_else(|| anyhow!("RunLength encoding has no input data"))?
+                    .ints()?;
                 let mut out = Vec::new();
                 for p in pairs.chunks_exact(2) {
                     out.extend(std::iter::repeat_n(p[0], p[1].max(0) as usize));
@@ -227,7 +278,10 @@ fn decode(data: &Value) -> Result<Column> {
             }
             "Delta" => {
                 let mut v = e.get("origin").and_then(Value::int).unwrap_or(0);
-                let deltas = current.take().ok_or_else(|| anyhow!("Delta encoding has no input data"))?.ints()?;
+                let deltas = current
+                    .take()
+                    .ok_or_else(|| anyhow!("Delta encoding has no input data"))?
+                    .ints()?;
                 Column::Ints(
                     deltas
                         .into_iter()
@@ -239,9 +293,15 @@ fn decode(data: &Value) -> Result<Column> {
                 )
             }
             "IntegerPacking" => {
-                let packed = current.take().ok_or_else(|| anyhow!("IntegerPacking encoding has no input data"))?.ints()?;
+                let packed = current
+                    .take()
+                    .ok_or_else(|| anyhow!("IntegerPacking encoding has no input data"))?
+                    .ints()?;
                 let unsigned = matches!(e.get("isUnsigned"), Some(Value::Bool(true)));
-                let (upper, lower) = match (e.get("byteCount").and_then(Value::int).unwrap_or(1), unsigned) {
+                let (upper, lower) = match (
+                    e.get("byteCount").and_then(Value::int).unwrap_or(1),
+                    unsigned,
+                ) {
                     (1, true) => (0xff, i64::MIN),
                     (1, false) => (0x7f, -0x80),
                     (_, true) => (0xffff, i64::MIN),
@@ -255,7 +315,9 @@ fn decode(data: &Value) -> Result<Column> {
                     while t == upper || t == lower {
                         value += t;
                         j += 1;
-                        t = *packed.get(j).ok_or_else(|| anyhow!("IntegerPacking exceeds the data length"))?;
+                        t = *packed
+                            .get(j)
+                            .ok_or_else(|| anyhow!("IntegerPacking exceeds the data length"))?;
                     }
                     out.push(value + t);
                     j += 1;
@@ -265,17 +327,49 @@ fn decode(data: &Value) -> Result<Column> {
             "StringArray" => {
                 let text = e.get("stringData").and_then(Value::str).unwrap_or("");
                 let offsets = decode(&Value::Map(vec![
-                    (Value::Str("data".into()), e.get("offsets").cloned().unwrap_or(Value::Nil)),
-                    (Value::Str("encoding".into()), e.get("offsetEncoding").cloned().unwrap_or(Value::Array(vec![]))),
+                    (
+                        Value::Str("data".into()),
+                        e.get("offsets").cloned().unwrap_or(Value::Nil),
+                    ),
+                    (
+                        Value::Str("encoding".into()),
+                        e.get("offsetEncoding")
+                            .cloned()
+                            .unwrap_or(Value::Array(vec![])),
+                    ),
                 ]))?
                 .ints()?;
                 let indices = decode(&Value::Map(vec![
-                    (Value::Str("data".into()), raw.take().map(|b| Value::Bin(b.to_vec())).unwrap_or(Value::Nil)),
-                    (Value::Str("encoding".into()), e.get("dataEncoding").cloned().unwrap_or(Value::Array(vec![]))),
+                    (
+                        Value::Str("data".into()),
+                        raw.take()
+                            .map(|b| Value::Bin(b.to_vec()))
+                            .unwrap_or(Value::Nil),
+                    ),
+                    (
+                        Value::Str("encoding".into()),
+                        e.get("dataEncoding")
+                            .cloned()
+                            .unwrap_or(Value::Array(vec![])),
+                    ),
                 ]))?
                 .ints()?;
-                let words: Vec<&str> = offsets.windows(2).map(|w| text.get(w[0] as usize..w[1] as usize).unwrap_or("")).collect();
-                Column::Strings(indices.into_iter().map(|i| if i < 0 { String::new() } else { words.get(i as usize).copied().unwrap_or("").to_string() }).collect())
+                let words: Vec<&str> = offsets
+                    .windows(2)
+                    .map(|w| text.get(w[0] as usize..w[1] as usize).unwrap_or(""))
+                    .collect();
+                Column::Strings(
+                    indices
+                        .into_iter()
+                        .map(|i| {
+                            if i < 0 {
+                                String::new()
+                            } else {
+                                words.get(i as usize).copied().unwrap_or("").to_string()
+                            }
+                        })
+                        .collect(),
+                )
             }
             other => bail!("the BinaryCIF encoding {other} is not known"),
         });
@@ -287,34 +381,71 @@ fn byte_array(b: &[u8], kind: i64) -> Result<Column> {
     let c = |n: usize| b.chunks_exact(n);
     Ok(match kind {
         1 => Column::Ints(b.iter().map(|&x| x as i8 as i64).collect()),
-        2 => Column::Ints(c(2).map(|x| i16::from_le_bytes([x[0], x[1]]) as i64).collect()),
-        3 => Column::Ints(c(4).map(|x| i32::from_le_bytes(x.try_into().unwrap()) as i64).collect()),
+        2 => Column::Ints(
+            c(2).map(|x| i16::from_le_bytes([x[0], x[1]]) as i64)
+                .collect(),
+        ),
+        3 => Column::Ints(
+            c(4).map(|x| i32::from_le_bytes(x.try_into().unwrap()) as i64)
+                .collect(),
+        ),
         4 => Column::Ints(b.iter().map(|&x| x as i64).collect()),
-        5 => Column::Ints(c(2).map(|x| u16::from_le_bytes([x[0], x[1]]) as i64).collect()),
-        6 => Column::Ints(c(4).map(|x| u32::from_le_bytes(x.try_into().unwrap()) as i64).collect()),
-        32 => Column::Floats(c(4).map(|x| f32::from_le_bytes(x.try_into().unwrap()) as f64).collect()),
-        33 => Column::Floats(c(8).map(|x| f64::from_le_bytes(x.try_into().unwrap())).collect()),
+        5 => Column::Ints(
+            c(2).map(|x| u16::from_le_bytes([x[0], x[1]]) as i64)
+                .collect(),
+        ),
+        6 => Column::Ints(
+            c(4).map(|x| u32::from_le_bytes(x.try_into().unwrap()) as i64)
+                .collect(),
+        ),
+        32 => Column::Floats(
+            c(4).map(|x| f32::from_le_bytes(x.try_into().unwrap()) as f64)
+                .collect(),
+        ),
+        33 => Column::Floats(
+            c(8).map(|x| f64::from_le_bytes(x.try_into().unwrap()))
+                .collect(),
+        ),
         other => bail!("the BinaryCIF byte type {other} is not known"),
     })
 }
 
 /// The categories the mmCIF reader takes, written out as mmCIF text.
 pub fn to_mmcif(bytes: &[u8]) -> Result<String> {
-    const WANTED: [&str; 5] = ["_atom_site", "_struct", "_pdbx_struct_assembly", "_pdbx_struct_assembly_gen", "_pdbx_struct_oper_list"];
+    const WANTED: [&str; 5] = [
+        "_atom_site",
+        "_struct",
+        "_pdbx_struct_assembly",
+        "_pdbx_struct_assembly_gen",
+        "_pdbx_struct_oper_list",
+    ];
     let file = Reader { b: bytes, at: 0 }.value()?;
-    let block = file.get("dataBlocks").map(Value::array).and_then(|b| b.first()).ok_or_else(|| anyhow!("the BinaryCIF file has no data"))?;
-    let header = block.get("header").and_then(Value::str).unwrap_or("profold");
+    let block = file
+        .get("dataBlocks")
+        .map(Value::array)
+        .and_then(|b| b.first())
+        .ok_or_else(|| anyhow!("the BinaryCIF file has no data"))?;
+    let header = block
+        .get("header")
+        .and_then(Value::str)
+        .unwrap_or("profold");
     let mut out = format!("data_{header}\n#\n");
     for cat in block.get("categories").map(Value::array).unwrap_or(&[]) {
-        let Some(name) = cat.get("name").and_then(Value::str) else { continue };
+        let Some(name) = cat.get("name").and_then(Value::str) else {
+            continue;
+        };
         if !WANTED.contains(&name) {
             continue;
         }
         let rows = cat.get("rowCount").and_then(Value::int).unwrap_or(0) as usize;
         let mut columns: Vec<(String, Column, Option<Vec<i64>>)> = Vec::new();
         for col in cat.get("columns").map(Value::array).unwrap_or(&[]) {
-            let Some(cname) = col.get("name").and_then(Value::str) else { continue };
-            let Some(data) = col.get("data") else { continue };
+            let Some(cname) = col.get("name").and_then(Value::str) else {
+                continue;
+            };
+            let Some(data) = col.get("data") else {
+                continue;
+            };
             let column = decode(data)?;
             let mask = match col.get("mask") {
                 Some(m @ Value::Map(_)) => Some(decode(m)?.ints()?),
@@ -327,7 +458,10 @@ pub fn to_mmcif(bytes: &[u8]) -> Result<String> {
         if columns.is_empty() {
             continue;
         }
-        let cell = |(_, c, mask): &(String, Column, Option<Vec<i64>>), i: usize| match mask.as_ref().map(|m| m[i]) {
+        let cell = |(_, c, mask): &(String, Column, Option<Vec<i64>>), i: usize| match mask
+            .as_ref()
+            .map(|m| m[i])
+        {
             Some(1) => ".".to_string(),
             Some(2) => "?".to_string(),
             _ => quote(&c.text(i)),
@@ -359,7 +493,14 @@ mod tests {
     #[test]
     fn encodings_undo_as_they_were_done() {
         let enc = |kinds: Vec<Value>| Value::Array(kinds);
-        let map = |pairs: Vec<(&str, Value)>| Value::Map(pairs.into_iter().map(|(k, v)| (Value::Str(k.into()), v)).collect());
+        let map = |pairs: Vec<(&str, Value)>| {
+            Value::Map(
+                pairs
+                    .into_iter()
+                    .map(|(k, v)| (Value::Str(k.into()), v))
+                    .collect(),
+            )
+        };
         // 1, 2, 3, 100: as deltas, packed into bytes, as a byte array.
         let bytes: Vec<u8> = [1i8, 1, 1, 97].iter().map(|&b| b as u8).collect();
         let column = map(vec![
@@ -367,9 +508,19 @@ mod tests {
             (
                 "encoding",
                 enc(vec![
-                    map(vec![("kind", Value::Str("Delta".into())), ("origin", Value::Int(0))]),
-                    map(vec![("kind", Value::Str("IntegerPacking".into())), ("byteCount", Value::Int(1)), ("isUnsigned", Value::Bool(false))]),
-                    map(vec![("kind", Value::Str("ByteArray".into())), ("type", Value::Int(1))]),
+                    map(vec![
+                        ("kind", Value::Str("Delta".into())),
+                        ("origin", Value::Int(0)),
+                    ]),
+                    map(vec![
+                        ("kind", Value::Str("IntegerPacking".into())),
+                        ("byteCount", Value::Int(1)),
+                        ("isUnsigned", Value::Bool(false)),
+                    ]),
+                    map(vec![
+                        ("kind", Value::Str("ByteArray".into())),
+                        ("type", Value::Int(1)),
+                    ]),
                 ]),
             ),
         ]);
@@ -378,7 +529,16 @@ mod tests {
         let runs: Vec<u8> = [7i32, 5].iter().flat_map(|v| v.to_le_bytes()).collect();
         let column = map(vec![
             ("data", Value::Bin(runs)),
-            ("encoding", enc(vec![map(vec![("kind", Value::Str("RunLength".into()))]), map(vec![("kind", Value::Str("ByteArray".into())), ("type", Value::Int(3))])])),
+            (
+                "encoding",
+                enc(vec![
+                    map(vec![("kind", Value::Str("RunLength".into()))]),
+                    map(vec![
+                        ("kind", Value::Str("ByteArray".into())),
+                        ("type", Value::Int(3)),
+                    ]),
+                ]),
+            ),
         ]);
         assert_eq!(decode(&column).unwrap(), Column::Ints(vec![7; 5]));
         // Packing past the byte's range carries on into the next.
@@ -388,8 +548,15 @@ mod tests {
             (
                 "encoding",
                 enc(vec![
-                    map(vec![("kind", Value::Str("IntegerPacking".into())), ("byteCount", Value::Int(1)), ("isUnsigned", Value::Bool(false))]),
-                    map(vec![("kind", Value::Str("ByteArray".into())), ("type", Value::Int(1))]),
+                    map(vec![
+                        ("kind", Value::Str("IntegerPacking".into())),
+                        ("byteCount", Value::Int(1)),
+                        ("isUnsigned", Value::Bool(false)),
+                    ]),
+                    map(vec![
+                        ("kind", Value::Str("ByteArray".into())),
+                        ("type", Value::Int(1)),
+                    ]),
                 ]),
             ),
         ]);
@@ -400,17 +567,31 @@ mod tests {
     #[test]
     #[ignore]
     fn rcsb_bcif_matches_its_mmcif() {
-        let Some(dir) = std::env::var_os("PROFOLD_TRAJ") else { return };
+        let Some(dir) = std::env::var_os("PROFOLD_TRAJ") else {
+            return;
+        };
         let dir = std::path::Path::new(&dir);
         for id in ["1crn", "4hhb"] {
             let b = crate::formats::load_path(&dir.join(format!("{id}.bcif"))).unwrap();
-            let sample = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("samples/{id}.pdb.gz"));
+            let sample = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("samples/{id}.pdb.gz"));
             let p = crate::formats::load_path(&sample).unwrap();
-            eprintln!("{id}: bcif {} atoms {} chains '{}'; pdb {} atoms", b.atoms.len(), b.chains.len(), b.title, p.atoms.len());
+            eprintln!(
+                "{id}: bcif {} atoms {} chains '{}'; pdb {} atoms",
+                b.atoms.len(),
+                b.chains.len(),
+                b.title,
+                p.atoms.len()
+            );
             assert_eq!(b.atoms.len(), p.atoms.len());
             assert_eq!(b.title.to_lowercase(), p.title.to_lowercase());
             for (x, y) in b.atoms.iter().zip(&p.atoms) {
-                assert!((0..3).all(|k| (x.pos[k] - y.pos[k]).abs() < 1e-3), "{:?} {:?}", x.pos, y.pos);
+                assert!(
+                    (0..3).all(|k| (x.pos[k] - y.pos[k]).abs() < 1e-3),
+                    "{:?} {:?}",
+                    x.pos,
+                    y.pos
+                );
                 assert_eq!(x.name(), y.name());
             }
         }

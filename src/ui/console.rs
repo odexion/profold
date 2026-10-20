@@ -75,7 +75,9 @@ impl Viewer {
             Ok(())
         };
         let shown = || -> Result<Arc<crate::protein::Structure>> {
-            self.structure.clone().ok_or_else(|| anyhow!("nothing is open"))
+            self.structure
+                .clone()
+                .ok_or_else(|| anyhow!("nothing is open"))
         };
         Ok(match verb.as_str() {
             "layout" => {
@@ -122,7 +124,12 @@ impl Viewer {
                 self.set_repr(repr, cx);
                 format!("drawn as {}", repr.label())
             }
-            "color" | "colour" if rest.split_whitespace().next().is_some_and(|w| w.eq_ignore_ascii_case("property")) => {
+            "color" | "colour"
+                if rest
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|w| w.eq_ignore_ascii_case("property")) =>
+            {
                 // color property [name] [low high]
                 let s = shown()?;
                 if s.props.is_empty() {
@@ -131,14 +138,26 @@ impl Viewer {
                 let words: Vec<&str> = rest.split_whitespace().skip(1).collect();
                 let (index, numbers) = match words.first() {
                     Some(w) if w.parse::<f32>().is_err() => {
-                        let names = s.props.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ");
-                        (s.prop(w).ok_or_else(|| anyhow!("no property {w}; there are {names}"))?, &words[1..])
+                        let names = s
+                            .props
+                            .iter()
+                            .map(|p| p.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        (
+                            s.prop(w)
+                                .ok_or_else(|| anyhow!("no property {w}; there are {names}"))?,
+                            &words[1..],
+                        )
                     }
                     _ => (s.prop_color.map_or(0, |p| p.index), &words[..]),
                 };
                 let range = match numbers {
                     [] => None,
-                    [lo, hi] => Some((lo.parse::<f32>().context("low end")?, hi.parse::<f32>().context("high end")?)),
+                    [lo, hi] => Some((
+                        lo.parse::<f32>().context("low end")?,
+                        hi.parse::<f32>().context("high end")?,
+                    )),
                     _ => bail!("color property takes a name, then a low and a high value"),
                 };
                 let name = s.props[index].name.clone();
@@ -192,8 +211,17 @@ impl Viewer {
                     "hide" => LayerStyle::Hidden,
                     _ => LayerStyle::Sticks,
                 };
-                let n = selection.atoms(self.structure.as_ref().unwrap()).iter().filter(|a| **a).count();
-                self.layers.push(Layer { selection, atoms: Arc::new(Vec::new()), style, color: None });
+                let n = selection
+                    .atoms(self.structure.as_ref().unwrap())
+                    .iter()
+                    .filter(|a| **a)
+                    .count();
+                self.layers.push(Layer {
+                    selection,
+                    atoms: Arc::new(Vec::new()),
+                    style,
+                    color: None,
+                });
                 self.rebuild(cx);
                 format!("{n} atoms as {}", style.label().to_lowercase())
             }
@@ -210,18 +238,31 @@ impl Viewer {
                     _ => measure::Kind::Dihedral,
                 };
                 let s = shown()?;
-                let parts: Vec<&str> = rest.split([',', ';']).map(str::trim).filter(|p| !p.is_empty()).collect();
+                let parts: Vec<&str> = rest
+                    .split([',', ';'])
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .collect();
                 if parts.len() != kind.atoms() {
-                    bail!("{verb} requires {} comma-separated selections", kind.atoms());
+                    bail!(
+                        "{verb} requires {} comma-separated selections",
+                        kind.atoms()
+                    );
                 }
                 let atoms: Vec<usize> = parts
                     .iter()
                     .map(|p| {
                         let mask = Selection::parse(p)?.atoms(&s);
-                        mask.iter().position(|a| *a).ok_or_else(|| anyhow!("\"{p}\" matches no atoms"))
+                        mask.iter()
+                            .position(|a| *a)
+                            .ok_or_else(|| anyhow!("\"{p}\" matches no atoms"))
                     })
                     .collect::<Result<_>>()?;
-                let m = Measurement { kind, which: 0, atoms };
+                let m = Measurement {
+                    kind,
+                    which: 0,
+                    atoms,
+                };
                 let value = m.value(&s).map(|v| kind.format(v)).unwrap_or_default();
                 self.measurements.push(m);
                 self.compose(cx);
@@ -231,7 +272,10 @@ impl Viewer {
                 need("a selection")?;
                 let s = shown()?;
                 let mask = Selection::parse(rest)?.atoms(&s);
-                let points: Vec<[f32; 3]> = (0..s.atoms.len()).filter(|&i| mask[i]).map(|i| s.atoms[i].pos).collect();
+                let points: Vec<[f32; 3]> = (0..s.atoms.len())
+                    .filter(|&i| mask[i])
+                    .map(|i| s.atoms[i].pos)
+                    .collect();
                 if points.is_empty() {
                     bail!("\"{rest}\" matches no atoms");
                 }
@@ -251,9 +295,18 @@ impl Viewer {
             "assembly" => {
                 let k = match rest {
                     "" | "deposited" | "none" | "0" => None,
-                    n => Some(n.parse::<usize>().context("assembly requires a number")?.checked_sub(1).ok_or_else(|| anyhow!("assemblies count from 1"))?),
+                    n => Some(
+                        n.parse::<usize>()
+                            .context("assembly requires a number")?
+                            .checked_sub(1)
+                            .ok_or_else(|| anyhow!("assemblies count from 1"))?,
+                    ),
                 };
-                let base = self.deposited.clone().or_else(|| self.structure.clone()).ok_or_else(|| anyhow!("nothing is open"))?;
+                let base = self
+                    .deposited
+                    .clone()
+                    .or_else(|| self.structure.clone())
+                    .ok_or_else(|| anyhow!("nothing is open"))?;
                 if let Some(k) = k {
                     if k >= base.assemblies.len() {
                         bail!("there are {} assemblies", base.assemblies.len());
@@ -267,8 +320,13 @@ impl Viewer {
             }
             "turn" | "rotate" => {
                 let mut it = rest.split_whitespace();
-                let (axis, deg) = (it.next().unwrap_or(""), it.next().and_then(|d| d.parse::<f32>().ok()));
-                let Some(deg) = deg else { bail!("turn requires an axis and an angle in degrees, as in \"turn y 90\"") };
+                let (axis, deg) = (
+                    it.next().unwrap_or(""),
+                    it.next().and_then(|d| d.parse::<f32>().ok()),
+                );
+                let Some(deg) = deg else {
+                    bail!("turn requires an axis and an angle in degrees, as in \"turn y 90\"")
+                };
                 let r = deg.to_radians();
                 match axis {
                     "y" => self.camera.rotate(r, 0.0),
@@ -305,7 +363,10 @@ impl Viewer {
             "perspective" => {
                 self.camera.perspective = on_off(rest)?;
                 cx.notify();
-                format!("perspective {}", if self.camera.perspective { "on" } else { "off" })
+                format!(
+                    "perspective {}",
+                    if self.camera.perspective { "on" } else { "off" }
+                )
             }
             "wrap" => self.periodic(crate::ui::app::Periodic::Wrap, cx)?,
             "whole" => self.periodic(crate::ui::app::Periodic::Whole, cx)?,
@@ -323,7 +384,9 @@ impl Viewer {
                 need("a selection, as in label resi 10-20, label atoms name CA, or label ligand \"the drug\"")?;
                 // A quoted end is the label's own text.
                 let (rest, text) = match rest.split_once('"') {
-                    Some((sel, quoted)) => (sel.trim(), Some(quoted.trim_end_matches('"').to_string())),
+                    Some((sel, quoted)) => {
+                        (sel.trim(), Some(quoted.trim_end_matches('"').to_string()))
+                    }
                     None => (rest, None),
                 };
                 let (atoms, rest) = match rest.strip_prefix("atoms ") {
@@ -343,7 +406,12 @@ impl Viewer {
                 "working out the trajectory's analysis; it is in the panel".into()
             }
             "replicate" => {
-                let n: Vec<usize> = rest.split([' ', 'x', '×']).filter(|w| !w.is_empty()).map(str::parse).collect::<Result<_, _>>().context("replicate takes three counts, as in replicate 2 2 1")?;
+                let n: Vec<usize> = rest
+                    .split([' ', 'x', '×'])
+                    .filter(|w| !w.is_empty())
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .context("replicate takes three counts, as in replicate 2 2 1")?;
                 let n = match n[..] {
                     [k] => [k; 3],
                     [a, b, c] => [a, b, c],
@@ -353,21 +421,32 @@ impl Viewer {
             }
             "iso" | "isosurface" => {
                 let s = shown()?;
-                let volume = s.volume.clone().ok_or_else(|| anyhow!("there is no volume; open a cube file or a map"))?;
+                let volume = s
+                    .volume
+                    .clone()
+                    .ok_or_else(|| anyhow!("there is no volume; open a cube file or a map"))?;
                 let mut iso = self.iso;
                 match rest {
-                    "" | "on" | "show" | "solid" | "surface" => (iso.shown, iso.mesh) = (true, false),
+                    "" | "on" | "show" | "solid" | "surface" => {
+                        (iso.shown, iso.mesh) = (true, false)
+                    }
                     "mesh" | "wire" => (iso.shown, iso.mesh) = (true, true),
                     "off" | "hide" => iso.shown = false,
                     "auto" | "default" => iso.level = volume.default_level(),
                     level => {
-                        iso.level = level.parse().with_context(|| format!("iso takes a level, on, off, mesh or auto, not {level}"))?;
+                        iso.level = level.parse().with_context(|| {
+                            format!("iso takes a level, on, off, mesh or auto, not {level}")
+                        })?;
                         iso.shown = true;
                     }
                 }
                 self.set_iso(iso, cx);
                 if iso.shown {
-                    format!("isosurface at {}{}", crate::ui::app::figure(iso.level), if iso.mesh { " as a mesh" } else { "" })
+                    format!(
+                        "isosurface at {}{}",
+                        crate::ui::app::figure(iso.level),
+                        if iso.mesh { " as a mesh" } else { "" }
+                    )
                 } else {
                     "isosurface hidden".into()
                 }
@@ -381,18 +460,38 @@ impl Viewer {
                 if on_off(rest)? != self.camera.slab.is_some() {
                     self.toggle_slab(cx);
                 }
-                format!("slab {}", if self.camera.slab.is_some() { "on" } else { "off" })
+                format!(
+                    "slab {}",
+                    if self.camera.slab.is_some() {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                )
             }
             "water" => {
                 self.appearance.hide_solvent = !on_off(rest)?;
                 self.rebuild(cx);
-                format!("water {}", if self.appearance.hide_solvent { "hidden" } else { "shown" })
+                format!(
+                    "water {}",
+                    if self.appearance.hide_solvent {
+                        "hidden"
+                    } else {
+                        "shown"
+                    }
+                )
             }
             "hydrogens" | "hydrogen" => {
                 let on = on_off(rest)?;
                 let h = render::Species::Element(1);
                 let look = self.appearance.get(&h);
-                self.appearance.set(h, render::Look { size: if on { 1.0 } else { 0.0 }, ..look });
+                self.appearance.set(
+                    h,
+                    render::Look {
+                        size: if on { 1.0 } else { 0.0 },
+                        ..look
+                    },
+                );
                 self.rebuild(cx);
                 format!("hydrogens {}", if on { "shown" } else { "hidden" })
             }
@@ -419,7 +518,10 @@ impl Viewer {
             "save" | "write" => {
                 need("a file to write")?;
                 let path = Path::new(rest);
-                let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+                let ext = path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                    .unwrap_or_default();
                 let s = shown()?;
                 match ext.as_str() {
                     "pdb" => std::fs::write(path, write::pdb(&s, |_| true))?,
@@ -430,16 +532,37 @@ impl Viewer {
                         let (w, h) = (shown.0.max(640), shown.1.max(480));
                         let camera = self.camera.resized(shown, (w, h));
                         let frame = if self.traced {
-                            crate::trace::render(&self.scene, &camera, w, h, crate::theme::view(), self.style, &Default::default())
-                                .expect("not cancelled")
+                            crate::trace::render(
+                                &self.scene,
+                                &camera,
+                                w,
+                                h,
+                                crate::theme::view(),
+                                self.style,
+                                &Default::default(),
+                            )
+                            .expect("not cancelled")
                         } else {
-                            render::render(&self.scene, &camera, w, h, crate::theme::view(), self.style)
+                            render::render(
+                                &self.scene,
+                                &camera,
+                                w,
+                                h,
+                                crate::theme::view(),
+                                self.style,
+                            )
                         };
                         let mut rgba = frame.bgra;
                         for p in rgba.chunks_exact_mut(4) {
                             p.swap(0, 2);
                         }
-                        image::save_buffer(path, &rgba, w as u32, h as u32, image::ColorType::Rgba8)?;
+                        image::save_buffer(
+                            path,
+                            &rgba,
+                            w as u32,
+                            h as u32,
+                            image::ColorType::Rgba8,
+                        )?;
                     }
                     other => bail!("save writes .png, .pdb, .cif or .profold, not .{other}"),
                 }
@@ -455,14 +578,17 @@ impl Viewer {
                     "recording; record stop ends it".into()
                 }
                 "stop" | "off" | "end" => match self.stop_recording(cx) {
-                    Some(t) => format!("recorded {t:.1} s; movie <file> recorded makes a film of it"),
+                    Some(t) => {
+                        format!("recorded {t:.1} s; movie <file> recorded makes a film of it")
+                    }
                     None => bail!("nothing is being recorded"),
                 },
                 other => bail!("record takes start or stop, not {other}"),
             },
             "run" | "source" | "@" => {
                 need("a script")?;
-                let text = std::fs::read_to_string(rest).with_context(|| format!("could not read {rest}"))?;
+                let text = std::fs::read_to_string(rest)
+                    .with_context(|| format!("could not read {rest}"))?;
                 let lines: Vec<String> = text.lines().map(str::to_string).collect();
                 self.run_script(lines, cx);
                 format!("ran {rest}")
@@ -478,8 +604,12 @@ impl Viewer {
             "pick" => {
                 let s = shown()?;
                 let mask = Selection::parse(rest)?.atoms(&s);
-                let atom = mask.iter().position(|a| *a).ok_or_else(|| anyhow!("\"{rest}\" matches no atoms"))?;
-                let target = residue_pick(&s, s.atoms[atom].residue as usize).map(|picked| Target { which: 0, picked });
+                let atom = mask
+                    .iter()
+                    .position(|a| *a)
+                    .ok_or_else(|| anyhow!("\"{rest}\" matches no atoms"))?;
+                let target = residue_pick(&s, s.atoms[atom].residue as usize)
+                    .map(|picked| Target { which: 0, picked });
                 self.select(target, cx);
                 "picked".into()
             }

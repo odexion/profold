@@ -63,9 +63,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
                 if f.len() < 6 {
                     continue;
                 }
-                let (Ok(x), Ok(y), Ok(z)) =
-                    (f[2].parse::<f32>(), f[3].parse::<f32>(), f[4].parse::<f32>())
-                else {
+                let (Ok(x), Ok(y), Ok(z)) = (
+                    f[2].parse::<f32>(),
+                    f[3].parse::<f32>(),
+                    f[4].parse::<f32>(),
+                ) else {
                     continue;
                 };
                 if molecule > 1 {
@@ -110,7 +112,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
         }
     }
     if !frame.is_empty() {
-        b.frames.push(Snapshot { step: None, pos: frame, cell: None });
+        b.frames.push(Snapshot {
+            step: None,
+            pos: frame,
+            cell: None,
+        });
     }
 
     if b.len() == 0 {

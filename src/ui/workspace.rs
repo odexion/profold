@@ -100,11 +100,17 @@ fn set_width(window: &mut Window, width: f32, cx: &mut Context<Workspace>) {
     use objc2_app_kit::NSView;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-    let Ok(handle) = HasWindowHandle::window_handle(&*window) else { return };
-    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return };
+    let Ok(handle) = HasWindowHandle::window_handle(&*window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
     // SAFETY: the handle is this window's own view, alive while the window is.
     let view: &NSView = unsafe { appkit.ns_view.cast().as_ref() };
-    let Some(ns_window) = view.window() else { return };
+    let Some(ns_window) = view.window() else {
+        return;
+    };
     let mut frame = ns_window.frame();
     let width = width as f64;
     frame.origin.x += (frame.size.width - width) / 2.0;
@@ -250,9 +256,20 @@ pub fn menus() -> Vec<Menu> {
         Menu {
             name: "View".into(),
             items: vec![
-                MenuItem::action(if theme::dark() { "Light Mode" } else { "Dark Mode" }, ToggleDark),
                 MenuItem::action(
-                    if theme::vertical() { "Panel Beside the View" } else { "Panel Under the View" },
+                    if theme::dark() {
+                        "Light Mode"
+                    } else {
+                        "Dark Mode"
+                    },
+                    ToggleDark,
+                ),
+                MenuItem::action(
+                    if theme::vertical() {
+                        "Panel Beside the View"
+                    } else {
+                        "Panel Under the View"
+                    },
                     ToggleLayout,
                 ),
                 MenuItem::separator(),
@@ -404,7 +421,11 @@ impl Workspace {
             let width = window.bounds().size.width;
             if vertical {
                 self.landscape = Some(width);
-                set_width(window, phone_width(f32::from(window.bounds().size.height)), cx);
+                set_width(
+                    window,
+                    phone_width(f32::from(window.bounds().size.height)),
+                    cx,
+                );
             } else {
                 // The width it had; or, for a window that opened narrow, the
                 // width a window opens at, unless it has been widened since.
@@ -456,7 +477,11 @@ impl Workspace {
             .hover(|s| s.bg(theme::border()))
             .on_mouse_down(MouseButton::Left, swallow)
             .tooltip(move |_, cx| {
-                let tip = if vertical { "Panel beside the view  ⇧⌘L" } else { "Panel under the view  ⇧⌘L" };
+                let tip = if vertical {
+                    "Panel beside the view  ⇧⌘L"
+                } else {
+                    "Panel under the view  ⇧⌘L"
+                };
                 cx.new(|_| Tip(tip.into())).into()
             })
             .on_click(cx.listener(|this, _, window, cx| this.toggle_layout(window, cx)))
@@ -498,7 +523,8 @@ impl Workspace {
             .hover(|s| s.bg(theme::border()).text_color(theme::ink()))
             .on_mouse_down(MouseButton::Left, swallow)
             .tooltip(move |_, cx| {
-                cx.new(|_| Tip(if dark { "Light mode" } else { "Dark mode" }.into())).into()
+                cx.new(|_| Tip(if dark { "Light mode" } else { "Dark mode" }.into()))
+                    .into()
             })
             .on_click(cx.listener(|this, _, _, cx| this.toggle_theme(cx)))
             .child(if dark { "☀" } else { "☾" })
@@ -519,7 +545,9 @@ impl Workspace {
         std::thread::spawn(move || update::run(status));
         let status = self.update.clone();
         self.update_poll = Some(cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(Duration::from_millis(120)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(120))
+                .await;
             let busy = status.lock().unwrap().busy();
             if this.update(cx, |_, cx| cx.notify()).is_err() || !busy {
                 return;
@@ -529,7 +557,12 @@ impl Workspace {
     }
 
     /// Open a new tab beside the one in front, and bring it forward.
-    pub fn add(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) -> Entity<Viewer> {
+    pub fn add(
+        &mut self,
+        mode: Mode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Viewer> {
         let tab = cx.new(|cx| Viewer::new(mode, window, cx));
         // The tab's name and activity show in the bar, which is drawn here,
         // and what it has open goes into the session.
@@ -541,7 +574,11 @@ impl Workspace {
         if let Some(behind) = self.tabs.get(self.active).cloned() {
             behind.update(cx, |tab, cx| tab.pause(cx));
         }
-        let at = if self.tabs.is_empty() { 0 } else { self.active + 1 };
+        let at = if self.tabs.is_empty() {
+            0
+        } else {
+            self.active + 1
+        };
         self.tabs.insert(at, tab.clone());
         self.active = at;
         self.adding = false;
@@ -604,9 +641,15 @@ impl Workspace {
         else {
             return false;
         };
-        let entries = json.get("tabs").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+        let entries = json
+            .get("tabs")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default();
         // A lone empty tab is what a new window has anyway.
-        if entries.is_empty() || (entries.len() == 1 && entries[0].get("open").is_none_or(|o| o.is_null())) {
+        if entries.is_empty()
+            || (entries.len() == 1 && entries[0].get("open").is_none_or(|o| o.is_null()))
+        {
             return false;
         }
         self.tabs.clear();
@@ -676,7 +719,11 @@ impl Workspace {
 
     /// The tab something opened from the window goes into: the one in front
     /// when it is a viewer, and a new viewer when it is a fold tab.
-    fn viewer_for_opening(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<Viewer> {
+    fn viewer_for_opening(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<Viewer> {
         let tab = self.active();
         if tab.read(cx).mode() == Mode::View {
             tab
@@ -705,7 +752,12 @@ impl Workspace {
 
     /// Open files: the first in the tab in front, each further one in a tab
     /// of its own.
-    pub fn open_paths(&mut self, paths: Vec<std::path::PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_paths(
+        &mut self,
+        paths: Vec<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         for (n, path) in paths.into_iter().enumerate() {
             let tab = if n == 0 {
                 self.viewer_for_opening(window, cx)
@@ -783,7 +835,9 @@ impl Workspace {
             .child(self.layout_button(cx))
             .child(self.theme_button(cx))
             .child(self.version_button(cx))
-            .when(cfg!(not(target_os = "macos")), |d| d.children(window_buttons(window)))
+            .when(cfg!(not(target_os = "macos")), |d| {
+                d.children(window_buttons(window))
+            })
     }
 
     /// The version, at the right of the bar, and the update when there is
@@ -793,7 +847,9 @@ impl Workspace {
         let open = self.about;
         let label = match &status {
             Status::Checking => "Checking…".to_string(),
-            Status::Downloading { fraction: Some(f), .. } => format!("Updating {:.0}%", f * 100.0),
+            Status::Downloading {
+                fraction: Some(f), ..
+            } => format!("Updating {:.0}%", f * 100.0),
             Status::Downloading { .. } | Status::Installing { .. } => "Updating…".to_string(),
             _ => format!("v{}", update::VERSION),
         };
@@ -844,25 +900,36 @@ impl Workspace {
                     }))
                     .child(label),
             )
-            .when(open, |d| d.child(deferred(self.about_menu(&status, cx)).with_priority(3)))
+            .when(open, |d| {
+                d.child(deferred(self.about_menu(&status, cx)).with_priority(3))
+            })
     }
 
     fn about_menu(&self, status: &Status, cx: &mut Context<Self>) -> impl IntoElement {
         let line = |text: String, color| {
-            div().px(px(8.)).text_size(px(10.5)).text_color(color).child(text)
+            div()
+                .px(px(8.))
+                .text_size(px(10.5))
+                .text_color(color)
+                .child(text)
         };
         let (note, color) = match status {
             Status::Idle => (None, theme::muted()),
             Status::Checking => (Some("Checking for updates…".to_string()), theme::muted()),
-            Status::UpToDate => (Some("You have the latest version.".to_string()), theme::muted()),
-            Status::Available { version, .. } => (
-                Some(if update::TARGET.is_none() {
-                    format!("{version} is available. This build is from source, so it is not replaced.")
-                } else {
-                    format!("{version} is available, but this copy cannot be replaced; use the installer.")
-                }),
-                theme::ink(),
+            Status::UpToDate => (
+                Some("You have the latest version.".to_string()),
+                theme::muted(),
             ),
+            Status::Available { version, .. } => {
+                (
+                    Some(if update::TARGET.is_none() {
+                        format!("{version} is available. This build is from source, so it is not replaced.")
+                    } else {
+                        format!("{version} is available, but this copy cannot be replaced; use the installer.")
+                    }),
+                    theme::ink(),
+                )
+            }
             Status::Downloading { version, fraction } => (
                 Some(match fraction {
                     Some(f) => format!("Downloading {version}… {:.0}%", f * 100.0),
@@ -870,9 +937,13 @@ impl Workspace {
                 }),
                 theme::muted(),
             ),
-            Status::Installing { version } => (Some(format!("Installing {version}…")), theme::muted()),
+            Status::Installing { version } => {
+                (Some(format!("Installing {version}…")), theme::muted())
+            }
             Status::Ready { version } => (
-                Some(format!("{version} is installed and takes effect on next launch.")),
+                Some(format!(
+                    "{version} is installed and takes effect on next launch."
+                )),
                 theme::ink(),
             ),
             Status::Failed(e) => (Some(format!("Could not update: {e}")), theme::danger()),
@@ -894,7 +965,12 @@ impl Workspace {
                     .flex()
                     .items_baseline()
                     .gap(px(6.))
-                    .child(div().text_size(px(13.)).text_color(theme::ink()).child("profold"))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(theme::ink())
+                            .child("profold"),
+                    )
                     .child(
                         div()
                             .text_size(px(11.))
@@ -906,7 +982,9 @@ impl Workspace {
                 update::TARGET.unwrap_or("built from source").to_string(),
                 theme::faint(),
             ))
-            .when_some(note, |d, note| d.child(div().pt(px(4.)).child(line(note, color))))
+            .when_some(note, |d, note| {
+                d.child(div().pt(px(4.)).child(line(note, color)))
+            })
             .child(divide())
             .when(matches!(status, Status::Ready { .. }), |d| {
                 d.child(
@@ -933,16 +1011,25 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, _, cx| this.check_for_updates(cx))),
             )
             .child(
-                item("check-automatically", "Check automatically".into(), automatic).on_click(
-                    cx.listener(move |_, _, _, cx| {
-                        update::set_automatic(!automatic);
-                        cx.notify();
-                    }),
-                ),
+                item(
+                    "check-automatically",
+                    "Check automatically".into(),
+                    automatic,
+                )
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    update::set_automatic(!automatic);
+                    cx.notify();
+                })),
             )
     }
 
-    fn tab(&self, i: usize, tab: &Entity<Viewer>, count: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    fn tab(
+        &self,
+        i: usize,
+        tab: &Entity<Viewer>,
+        count: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let viewer = tab.read(cx);
         let title: SharedString = viewer.title().into();
         let activity = viewer.activity();
@@ -1003,7 +1090,11 @@ impl Workspace {
                         .flex_none()
                         .px(px(4.))
                         .rounded(px(3.))
-                        .bg(if front { theme::sunken() } else { theme::border() })
+                        .bg(if front {
+                            theme::sunken()
+                        } else {
+                            theme::border()
+                        })
                         .text_size(px(8.5))
                         .text_color(theme::muted())
                         .child("FOLD"),
@@ -1068,7 +1159,12 @@ impl Workspace {
                     .cursor_pointer()
                     .when(open, |d| d.bg(theme::border()).text_color(theme::ink()))
                     .hover(|s| s.bg(theme::border()).text_color(theme::ink()))
-                    .tooltip(|_, cx| cx.new(|_| crate::ui::app::Tip(format!("New tab  {}", theme::keys("⌘T")).into())).into())
+                    .tooltip(|_, cx| {
+                        cx.new(|_| {
+                            crate::ui::app::Tip(format!("New tab  {}", theme::keys("⌘T")).into())
+                        })
+                        .into()
+                    })
                     .on_mouse_down(MouseButton::Left, swallow)
                     .on_click(cx.listener(|this, _, window, cx| {
                         if cfg!(feature = "simplefold") {
@@ -1080,7 +1176,9 @@ impl Workspace {
                     }))
                     .child("+"),
             )
-            .when(open, |d| d.child(deferred(self.add_menu(cx)).with_priority(3)))
+            .when(open, |d| {
+                d.child(deferred(self.add_menu(cx)).with_priority(3))
+            })
     }
 
     fn add_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1102,8 +1200,18 @@ impl Workspace {
                         .flex()
                         .flex_col()
                         .gap(px(1.))
-                        .child(div().text_size(px(12.)).text_color(theme::ink()).child(name))
-                        .child(div().text_size(px(10.)).text_color(theme::faint()).child(note)),
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(theme::ink())
+                                .child(name),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(theme::faint())
+                                .child(note),
+                        ),
                 )
                 .child(
                     div()
@@ -1120,16 +1228,26 @@ impl Workspace {
                 cx.notify();
             }))
             .child(
-                entry("new-viewer", "Viewer", "search, fetch and open structures", theme::keys("⌘T"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.add(Mode::View, window, cx);
-                    })),
+                entry(
+                    "new-viewer",
+                    "Viewer",
+                    "search, fetch and open structures",
+                    theme::keys("⌘T"),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.add(Mode::View, window, cx);
+                })),
             )
             .child(
-                entry("new-fold", "Fold a protein", "predict a structure with SimpleFold", theme::keys("⇧⌘T"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.add(Mode::Fold, window, cx);
-                    })),
+                entry(
+                    "new-fold",
+                    "Fold a protein",
+                    "predict a structure with SimpleFold",
+                    theme::keys("⇧⌘T"),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.add(Mode::Fold, window, cx);
+                })),
             )
     }
 }
@@ -1140,7 +1258,10 @@ impl Workspace {
 fn window_buttons(window: &Window) -> Option<impl IntoElement> {
     let drawn_here = cfg!(windows)
         || (cfg!(target_os = "linux")
-            && matches!(window.window_decorations(), gpui::Decorations::Client { .. }));
+            && matches!(
+                window.window_decorations(),
+                gpui::Decorations::Client { .. }
+            ));
     if !drawn_here {
         return None;
     }
@@ -1159,7 +1280,9 @@ fn window_buttons(window: &Window) -> Option<impl IntoElement> {
             .when(area == Area::Close, |d| {
                 d.hover(|s| s.bg(theme::danger()).text_color(theme::on_ink()))
             })
-            .when(area != Area::Close, |d| d.hover(|s| s.bg(theme::border()).text_color(theme::ink())))
+            .when(area != Area::Close, |d| {
+                d.hover(|s| s.bg(theme::border()).text_color(theme::ink()))
+            })
             .on_mouse_down(MouseButton::Left, swallow)
             // Windows acts on these areas itself; Linux needs telling.
             .when(cfg!(target_os = "linux"), |d| {
@@ -1179,14 +1302,21 @@ fn window_buttons(window: &Window) -> Option<impl IntoElement> {
             .ml(px(6.))
             .mr(px(-12.))
             .child(button("window-min", "─", Area::Min))
-            .child(button("window-max", if maximized { "❐" } else { "□" }, Area::Max))
+            .child(button(
+                "window-max",
+                if maximized { "❐" } else { "□" },
+                Area::Max,
+            ))
             .child(button("window-close", "✕", Area::Close)),
     )
 }
 
 /// Which edge of the window a press at `p` is on, for a window that draws
 /// its own frame.
-fn resize_edge(p: gpui::Point<gpui::Pixels>, size: gpui::Size<gpui::Pixels>) -> Option<gpui::ResizeEdge> {
+fn resize_edge(
+    p: gpui::Point<gpui::Pixels>,
+    size: gpui::Size<gpui::Pixels>,
+) -> Option<gpui::ResizeEdge> {
     use gpui::ResizeEdge as E;
     const GRIP: f32 = 6.0;
     let (x, y) = (f32::from(p.x), f32::from(p.y));
@@ -1216,7 +1346,12 @@ fn spinner(i: usize, fraction: Option<f32>) -> gpui::AnyElement {
             .rounded_full()
             .bg(theme::border())
             .overflow_hidden()
-            .child(div().h_full().w(relative(f.clamp(0.05, 1.0))).bg(theme::ink()))
+            .child(
+                div()
+                    .h_full()
+                    .w(relative(f.clamp(0.05, 1.0)))
+                    .bg(theme::ink()),
+            )
             .into_any_element(),
         None => div()
             .id(("tab-busy", i))
@@ -1235,7 +1370,10 @@ fn spinner(i: usize, fraction: Option<f32>) -> gpui::AnyElement {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let client_side = matches!(window.window_decorations(), gpui::Decorations::Client { .. });
+        let client_side = matches!(
+            window.window_decorations(),
+            gpui::Decorations::Client { .. }
+        );
         div()
             .flex()
             .flex_col()
@@ -1252,9 +1390,9 @@ impl Render for Workspace {
                     this.add(Mode::Fold, window, cx);
                 }))
             })
-            .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
-                this.close(this.active, window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &CloseTab, window, cx| this.close(this.active, window, cx)),
+            )
             .on_action(cx.listener(|this, _: &NextTab, window, cx| this.step(1, window, cx)))
             .on_action(cx.listener(|this, _: &PreviousTab, window, cx| this.step(-1, window, cx)))
             .on_action(cx.listener(|this, _: &Tab1, window, cx| this.go_to(1, window, cx)))
@@ -1275,7 +1413,9 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ToggleDark, _, cx| this.toggle_theme(cx)))
-            .on_action(cx.listener(|this, _: &ToggleLayout, window, cx| this.toggle_layout(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ToggleLayout, window, cx| this.toggle_layout(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &SaveImage, _, cx| {
                 this.active().update(cx, |tab, cx| tab.save_image(2, cx))
             }))
@@ -1289,10 +1429,12 @@ impl Render for Workspace {
                 this.active().update(cx, |tab, cx| tab.toggle_recording(cx))
             }))
             .on_action(cx.listener(|this, _: &SaveStructurePdb, _, cx| {
-                this.active().update(cx, |tab, cx| tab.save_structure(false, cx))
+                this.active()
+                    .update(cx, |tab, cx| tab.save_structure(false, cx))
             }))
             .on_action(cx.listener(|this, _: &SaveStructureCif, _, cx| {
-                this.active().update(cx, |tab, cx| tab.save_structure(true, cx))
+                this.active()
+                    .update(cx, |tab, cx| tab.save_structure(true, cx))
             }))
             .on_action(cx.listener(|this, _: &SaveSession, _, cx| {
                 this.active().update(cx, |tab, cx| tab.save_session(cx))
@@ -1307,26 +1449,36 @@ impl Render for Workspace {
                 this.active().update(cx, |tab, cx| tab.toggle_rock(cx))
             }))
             .on_action(cx.listener(|this, _: &TogglePerspective, _, cx| {
-                this.active().update(cx, |tab, cx| tab.toggle_perspective(cx))
+                this.active()
+                    .update(cx, |tab, cx| tab.toggle_perspective(cx))
             }))
             .on_action(cx.listener(|this, _: &ToggleSlab, _, cx| {
                 this.active().update(cx, |tab, cx| tab.toggle_slab(cx))
             }))
             .on_action(cx.listener(|this, _: &ShowCartoon, _, cx| this.show(Repr::Cartoon, cx)))
             .on_action(cx.listener(|this, _: &ShowTube, _, cx| this.show(Repr::Tube, cx)))
-            .on_action(cx.listener(|this, _: &ShowBallAndStick, _, cx| this.show(Repr::BallAndStick, cx)))
+            .on_action(
+                cx.listener(|this, _: &ShowBallAndStick, _, cx| this.show(Repr::BallAndStick, cx)),
+            )
             .on_action(cx.listener(|this, _: &ShowLicorice, _, cx| this.show(Repr::Licorice, cx)))
             .on_action(cx.listener(|this, _: &ShowSpacefill, _, cx| this.show(Repr::Spacefill, cx)))
             .on_action(cx.listener(|this, _: &ShowSurface, _, cx| this.show(Repr::Surface, cx)))
-            .on_action(cx.listener(|this, _: &Undo, _, cx| this.active().update(cx, |tab, cx| tab.undo(false, cx))))
-            .on_action(cx.listener(|this, _: &ToggleConsole, window, cx| {
-                this.active().update(cx, |tab, cx| tab.toggle_console(window, cx))
+            .on_action(cx.listener(|this, _: &Undo, _, cx| {
+                this.active().update(cx, |tab, cx| tab.undo(false, cx))
             }))
-            .on_action(cx.listener(|this, _: &Redo, _, cx| this.active().update(cx, |tab, cx| tab.undo(true, cx))))
+            .on_action(cx.listener(|this, _: &ToggleConsole, window, cx| {
+                this.active()
+                    .update(cx, |tab, cx| tab.toggle_console(window, cx))
+            }))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| {
+                this.active().update(cx, |tab, cx| tab.undo(true, cx))
+            }))
             .on_action(cx.listener(|this, _: &ShowShortcuts, _, cx| {
                 this.active().update(cx, |tab, cx| tab.toggle_shortcuts(cx))
             }))
-            .on_action(cx.listener(|this, _: &StyleIllustrative, _, cx| this.draw_in(Style::Illustrative, cx)))
+            .on_action(cx.listener(|this, _: &StyleIllustrative, _, cx| {
+                this.draw_in(Style::Illustrative, cx)
+            }))
             .on_action(cx.listener(|this, _: &StyleFlat, _, cx| this.draw_in(Style::Flat, cx)))
             .on_action(cx.listener(|this, _: &StyleSoft, _, cx| this.draw_in(Style::Soft, cx)))
             .on_action(cx.listener(|this, _: &StyleStudio, _, cx| this.draw_in(Style::Studio, cx)))
@@ -1393,7 +1545,10 @@ mod tests {
     fn the_version_opens_a_menu_to_check_for_updates(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
         // Tests never check on their own.
-        assert_eq!(*view.read_with(cx, |w, _| w.update.clone()).lock().unwrap(), Status::Idle);
+        assert_eq!(
+            *view.read_with(cx, |w, _| w.update.clone()).lock().unwrap(),
+            Status::Idle
+        );
         assert!(cx.debug_bounds("restart-to-update").is_none());
 
         click(cx, "version");
@@ -1402,7 +1557,9 @@ mod tests {
 
         // Once an update is in place, the bar offers the restart.
         view.update(cx, |w, cx| {
-            *w.update.lock().unwrap() = Status::Ready { version: "9.9.9".into() };
+            *w.update.lock().unwrap() = Status::Ready {
+                version: "9.9.9".into(),
+            };
             cx.notify();
         });
         cx.run_until_parked();
@@ -1454,7 +1611,9 @@ mod tests {
         // Each tab holds its own structure.
         view.update(cx, |this, cx| {
             let first = this.tabs[0].clone();
-            first.update(cx, |tab, cx| tab.open_path("samples/caffeine.sdf".into(), cx));
+            first.update(cx, |tab, cx| {
+                tab.open_path("samples/caffeine.sdf".into(), cx)
+            });
         });
         cx.run_until_parked();
 
@@ -1489,7 +1648,11 @@ mod tests {
         let from = cx.debug_bounds("tab-0").unwrap().center();
         let to = cx.debug_bounds("tab-2").unwrap().center();
         cx.simulate_mouse_down(from, gpui::MouseButton::Left, Modifiers::none());
-        cx.simulate_mouse_move(from + gpui::point(px(12.), px(0.)), gpui::MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(
+            from + gpui::point(px(12.), px(0.)),
+            gpui::MouseButton::Left,
+            Modifiers::none(),
+        );
         cx.simulate_mouse_move(to, gpui::MouseButton::Left, Modifiers::none());
         cx.simulate_mouse_up(to, gpui::MouseButton::Left, Modifiers::none());
         cx.run_until_parked();
@@ -1504,17 +1667,27 @@ mod tests {
     #[gpui::test]
     fn folding_is_its_own_tab_from_the_plus_menu(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
-        assert!(cx.debug_bounds("model").is_none(), "a viewer shows fold settings");
+        assert!(
+            cx.debug_bounds("model").is_none(),
+            "a viewer shows fold settings"
+        );
         click(cx, "new-tab");
         click(cx, "new-fold");
         let mode = view.update(cx, |this, cx| this.active().read(cx).mode());
         assert_eq!(mode, Mode::Fold);
-        assert!(cx.debug_bounds("model").is_some(), "the fold tab has no model setting");
+        assert!(
+            cx.debug_bounds("model").is_some(),
+            "the fold tab has no model setting"
+        );
         // Something opened from the window goes to a viewer, not the fold tab.
         cx.update(|window, cx| {
-            view.update(cx, |this, cx| this.open_paths(vec!["samples/caffeine.sdf".into()], window, cx))
+            view.update(cx, |this, cx| {
+                this.open_paths(vec!["samples/caffeine.sdf".into()], window, cx)
+            })
         });
-        let (count, mode) = view.update(cx, |this, cx| (this.tabs.len(), this.active().read(cx).mode()));
+        let (count, mode) = view.update(cx, |this, cx| {
+            (this.tabs.len(), this.active().read(cx).mode())
+        });
         assert_eq!((count, mode), (3, Mode::View));
     }
 }

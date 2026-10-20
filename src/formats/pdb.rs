@@ -108,7 +108,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
     }
     // A last model with no ENDMDL after it.
     if !frame.is_empty() {
-        b.frames.push(Snapshot { step: None, pos: frame, cell: None });
+        b.frames.push(Snapshot {
+            step: None,
+            pos: frame,
+            cell: None,
+        });
     }
 
     if b.len() == 0 {

@@ -194,7 +194,10 @@ fn fetch(file: &Wanted, ledger: &Path, tx: &Sender<Event>) -> Result<()> {
             last = Instant::now();
             // Nobody listening means the tab was closed: stop, and leave the
             // part to be resumed.
-            if tx.send(Event::Progress(Progress::bytes(written, total))).is_err() {
+            if tx
+                .send(Event::Progress(Progress::bytes(written, total)))
+                .is_err()
+            {
                 out.flush()?;
                 bail!("cancelled");
             }
@@ -255,15 +258,28 @@ mod tests {
         let ledger = dir.join("downloads.json");
         // The first half, as a part left by an interrupted run.
         let mut whole = Vec::new();
-        agent().get(url).call().unwrap().body_mut().as_reader().read_to_end(&mut whole).unwrap();
+        agent()
+            .get(url)
+            .call()
+            .unwrap()
+            .body_mut()
+            .as_reader()
+            .read_to_end(&mut whole)
+            .unwrap();
         std::fs::write(part_of(&path), &whole[..whole.len() / 2]).unwrap();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let wanted = Wanted { url: url.into(), path: path.clone(), what: "test".into() };
+        let wanted = Wanted {
+            url: url.into(),
+            path: path.clone(),
+            what: "test".into(),
+        };
         ensure(&[wanted], &ledger, &tx).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), whole);
         assert!(!part_of(&path).exists());
-        assert!(rx.try_iter().any(|e| matches!(e, Event::Log(l) if l.starts_with("Resuming"))));
+        assert!(rx
+            .try_iter()
+            .any(|e| matches!(e, Event::Log(l) if l.starts_with("Resuming"))));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -34,7 +34,13 @@ pub fn pdb(s: &Structure, keep: impl Fn(usize) -> bool) -> String {
     let mut open: Option<(usize, String, i32)> = None;
     let ter = |out: &mut String, serial: &mut usize, (ci, name, seq): (usize, String, i32)| {
         *serial += 1;
-        let _ = writeln!(out, "TER   {:>5}      {name:>3} {}{:>4}", *serial % 100_000, chains[ci], seq.rem_euclid(10_000));
+        let _ = writeln!(
+            out,
+            "TER   {:>5}      {name:>3} {}{:>4}",
+            *serial % 100_000,
+            chains[ci],
+            seq.rem_euclid(10_000)
+        );
     };
     for i in (0..s.atoms.len()).filter(|&i| keep(i)) {
         let a = &s.atoms[i];
@@ -51,7 +57,11 @@ pub fn pdb(s: &Structure, keep: impl Fn(usize) -> bool) -> String {
         }
         serial += 1;
         let record = if polymer { "ATOM  " } else { "HETATM" };
-        let symbol = if a.element.is_known() { a.element.symbol() } else { "" };
+        let symbol = if a.element.is_known() {
+            a.element.symbol()
+        } else {
+            ""
+        };
         let name = pdb_atom_name(a.name(), symbol);
         let res_name: String = res.name.chars().take(3).collect();
         let [x, y, z] = a.pos;
@@ -79,7 +89,11 @@ pub fn pdb(s: &Structure, keep: impl Fn(usize) -> bool) -> String {
 /// PDB's atom name column: a one-letter element's names start a column in,
 /// so the element lines up under a two-letter one's.
 fn pdb_atom_name(name: &str, symbol: &str) -> String {
-    let name: String = if name.is_empty() { symbol.to_uppercase() } else { name.chars().take(4).collect() };
+    let name: String = if name.is_empty() {
+        symbol.to_uppercase()
+    } else {
+        name.chars().take(4).collect()
+    };
     if name.len() < 4 && symbol.len() < 2 {
         format!(" {name:<3}")
     } else {
@@ -97,7 +111,10 @@ fn pdb_chain_ids(s: &Structure) -> Vec<char> {
         let own = c.id.chars().next().filter(|_| c.id.chars().count() == 1);
         let id = match own {
             Some(ch) if !used.contains(&ch) => ch,
-            _ => SPARE.chars().find(|ch| !used.contains(ch) && !s.chains.iter().any(|o| o.id == ch.to_string())).unwrap_or(' '),
+            _ => SPARE
+                .chars()
+                .find(|ch| !used.contains(ch) && !s.chains.iter().any(|o| o.id == ch.to_string()))
+                .unwrap_or(' '),
         };
         used.push(id);
         out.push(id);
@@ -108,7 +125,10 @@ fn pdb_chain_ids(s: &Structure) -> Vec<char> {
 /// The structure, or the atoms `keep` passes, as an mmCIF file.
 pub fn mmcif(s: &Structure, keep: impl Fn(usize) -> bool) -> String {
     let mut out = String::new();
-    let id: String = s.id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    let id: String =
+        s.id.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
     let _ = writeln!(out, "data_{}", if id.is_empty() { "profold" } else { &id });
     out.push_str("#\n");
     if !s.title.is_empty() {
@@ -127,10 +147,26 @@ pub fn mmcif(s: &Structure, keep: impl Fn(usize) -> bool) -> String {
         let a = &s.atoms[i];
         let res = &s.residues[a.residue as usize];
         let chain = &s.chains[res.chain as usize];
-        let asym = if chain.id.trim().is_empty() { "A" } else { chain.id.as_str() };
-        let group = if res.outside_polymer() { "HETATM" } else { "ATOM" };
-        let symbol = if a.element.is_known() { a.element.symbol() } else { "X" };
-        let name = if a.name().is_empty() { symbol } else { a.name() };
+        let asym = if chain.id.trim().is_empty() {
+            "A"
+        } else {
+            chain.id.as_str()
+        };
+        let group = if res.outside_polymer() {
+            "HETATM"
+        } else {
+            "ATOM"
+        };
+        let symbol = if a.element.is_known() {
+            a.element.symbol()
+        } else {
+            "X"
+        };
+        let name = if a.name().is_empty() {
+            symbol
+        } else {
+            a.name()
+        };
         let [x, y, z] = a.pos;
         let _ = writeln!(
             out,
@@ -226,7 +262,9 @@ mod tests {
     use crate::protein::Source;
 
     fn sample(name: &str) -> Structure {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples").join(name);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("samples")
+            .join(name);
         load_bytes(name, std::fs::read(path).unwrap()).unwrap()
     }
 
@@ -241,7 +279,10 @@ mod tests {
             assert!((x.b - y.b).abs() < 1e-2);
         }
         for (x, y) in a.residues.iter().zip(&b.residues) {
-            assert_eq!((x.name.as_str(), x.seq, x.ca.is_some()), (y.name.as_str(), y.seq, y.ca.is_some()));
+            assert_eq!(
+                (x.name.as_str(), x.seq, x.ca.is_some()),
+                (y.name.as_str(), y.seq, y.ca.is_some())
+            );
         }
     }
 
@@ -269,9 +310,18 @@ mod tests {
         s.assemblies = vec![crate::assembly::Assembly {
             id: "1".into(),
             name: "dimeric".into(),
-            parts: vec![crate::assembly::Part { chains: vec!["A".into()], ops: vec![crate::assembly::IDENTITY, turn] }],
+            parts: vec![crate::assembly::Part {
+                chains: vec!["A".into()],
+                ops: vec![crate::assembly::IDENTITY, turn],
+            }],
         }];
-        let back = parse(&mmcif(&s, |_| true), Format::Cif, "1crn".into(), Source::File).unwrap();
+        let back = parse(
+            &mmcif(&s, |_| true),
+            Format::Cif,
+            "1crn".into(),
+            Source::File,
+        )
+        .unwrap();
         assert_eq!(back.assemblies, s.assemblies);
     }
 
@@ -281,7 +331,10 @@ mod tests {
         let text = pdb(&s, |i| s.atoms[i].residue < 5);
         let back = parse(&text, Format::Pdb, "part".into(), Source::File).unwrap();
         assert_eq!(back.residues.len(), 5);
-        assert_eq!(back.atoms.len(), s.atoms.iter().filter(|a| a.residue < 5).count());
+        assert_eq!(
+            back.atoms.len(),
+            s.atoms.iter().filter(|a| a.residue < 5).count()
+        );
     }
 
     #[test]

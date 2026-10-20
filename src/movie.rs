@@ -72,7 +72,13 @@ pub enum Format {
 }
 
 impl Format {
-    pub const ALL: [Format; 5] = [Format::Mp4, Format::Gif, Format::Png, Format::WebM, Format::Mov];
+    pub const ALL: [Format; 5] = [
+        Format::Mp4,
+        Format::Gif,
+        Format::Png,
+        Format::WebM,
+        Format::Mov,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -135,7 +141,14 @@ pub enum Size {
 }
 
 impl Size {
-    pub const ALL: [Size; 6] = [Size::Window, Size::Hd720, Size::Hd1080, Size::Uhd, Size::Square, Size::Custom];
+    pub const ALL: [Size; 6] = [
+        Size::Window,
+        Size::Hd720,
+        Size::Hd1080,
+        Size::Uhd,
+        Size::Square,
+        Size::Custom,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -159,7 +172,12 @@ pub enum Corner {
 }
 
 impl Corner {
-    pub const ALL: [Corner; 4] = [Corner::BottomRight, Corner::BottomLeft, Corner::TopRight, Corner::TopLeft];
+    pub const ALL: [Corner; 4] = [
+        Corner::BottomRight,
+        Corner::BottomLeft,
+        Corner::TopRight,
+        Corner::TopLeft,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -188,9 +206,18 @@ impl Corner {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Legend {
     /// A continuous scale, with what each end means.
-    Ramp { title: String, colors: Vec<[f32; 3]>, low: String, high: String },
+    Ramp {
+        title: String,
+        colors: Vec<[f32; 3]>,
+        low: String,
+        high: String,
+    },
     /// A colour each, and how many more were left out.
-    Swatches { title: String, items: Vec<([f32; 3], String)>, more: usize },
+    Swatches {
+        title: String,
+        items: Vec<([f32; 3], String)>,
+        more: usize,
+    },
 }
 
 /// The unit a simulation's timestep is given in.
@@ -288,18 +315,38 @@ impl Default for Options {
 }
 
 fn name<T: Copy + PartialEq>(table: &[(T, &'static str)], v: T) -> &'static str {
-    table.iter().find(|(t, _)| *t == v).map(|(_, n)| *n).unwrap_or("")
+    table
+        .iter()
+        .find(|(t, _)| *t == v)
+        .map(|(_, n)| *n)
+        .unwrap_or("")
 }
 
 fn named<T: Copy>(table: &[(T, &'static str)], s: &str) -> Option<T> {
-    table.iter().find(|(_, n)| n.eq_ignore_ascii_case(s)).map(|(t, _)| *t)
+    table
+        .iter()
+        .find(|(_, n)| n.eq_ignore_ascii_case(s))
+        .map(|(t, _)| *t)
 }
 
-const MOTIONS: [(Motion, &str); 4] =
-    [(Motion::Still, "still"), (Motion::Turn, "turn"), (Motion::Rock, "rock"), (Motion::Recorded, "recorded")];
-const AXES: [(Axis, &str); 3] = [(Axis::Vertical, "y"), (Axis::Horizontal, "x"), (Axis::View, "z")];
-const FORMATS: [(Format, &str); 5] =
-    [(Format::Mp4, "mp4"), (Format::Gif, "gif"), (Format::Png, "png"), (Format::WebM, "webm"), (Format::Mov, "mov")];
+const MOTIONS: [(Motion, &str); 4] = [
+    (Motion::Still, "still"),
+    (Motion::Turn, "turn"),
+    (Motion::Rock, "rock"),
+    (Motion::Recorded, "recorded"),
+];
+const AXES: [(Axis, &str); 3] = [
+    (Axis::Vertical, "y"),
+    (Axis::Horizontal, "x"),
+    (Axis::View, "z"),
+];
+const FORMATS: [(Format, &str); 5] = [
+    (Format::Mp4, "mp4"),
+    (Format::Gif, "gif"),
+    (Format::Png, "png"),
+    (Format::WebM, "webm"),
+    (Format::Mov, "mov"),
+];
 const SIZES: [(Size, &str); 6] = [
     (Size::Window, "window"),
     (Size::Hd720, "720p"),
@@ -314,7 +361,11 @@ const CORNERS: [(Corner, &str); 4] = [
     (Corner::BottomLeft, "bottom-left"),
     (Corner::BottomRight, "bottom-right"),
 ];
-const UNITS: [(TimeUnit, &str); 3] = [(TimeUnit::Fs, "fs"), (TimeUnit::Ps, "ps"), (TimeUnit::Tau, "tau")];
+const UNITS: [(TimeUnit, &str); 3] = [
+    (TimeUnit::Fs, "fs"),
+    (TimeUnit::Ps, "ps"),
+    (TimeUnit::Tau, "tau"),
+];
 
 impl Options {
     pub fn to_json(&self) -> String {
@@ -359,12 +410,24 @@ impl Options {
     pub fn from_json(v: &Value) -> Options {
         let mut o = Options::default();
         let b = |k: &str, d: bool| v.get(k).and_then(Value::as_bool).unwrap_or(d);
-        let f = |k: &str, d: f32| v.get(k).and_then(Value::as_f64).map(|x| x as f32).unwrap_or(d);
-        let u = |k: &str, d: u32| v.get(k).and_then(Value::as_u64).map(|x| x as u32).unwrap_or(d);
+        let f = |k: &str, d: f32| {
+            v.get(k)
+                .and_then(Value::as_f64)
+                .map(|x| x as f32)
+                .unwrap_or(d)
+        };
+        let u = |k: &str, d: u32| {
+            v.get(k)
+                .and_then(Value::as_u64)
+                .map(|x| x as u32)
+                .unwrap_or(d)
+        };
         let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("");
         o.trajectory = b("trajectory", o.trajectory);
         // A recording is gone at the next launch.
-        o.motion = named(&MOTIONS, s("motion")).filter(|m| *m != Motion::Recorded).unwrap_or(o.motion);
+        o.motion = named(&MOTIONS, s("motion"))
+            .filter(|m| *m != Motion::Recorded)
+            .unwrap_or(o.motion);
         o.degrees = f("degrees", o.degrees);
         o.axis = named(&AXES, s("axis")).unwrap_or(o.axis);
         o.seamless = b("seamless", o.seamless);
@@ -382,7 +445,9 @@ impl Options {
         o.background = match s("background") {
             "theme" => Background::Theme,
             "transparent" => Background::Transparent,
-            other => crate::settings::parse_hex(other).map(Background::Color).unwrap_or(o.background),
+            other => crate::settings::parse_hex(other)
+                .map(Background::Color)
+                .unwrap_or(o.background),
         };
         o.format = named(&FORMATS, s("format")).unwrap_or(o.format);
         o.counter = b("counter", o.counter);
@@ -442,8 +507,16 @@ impl Options {
             return vec![now.min(count.saturating_sub(1))];
         }
         let first = (self.first.max(1) - 1).min(count - 1);
-        let last = if self.last == 0 { count - 1 } else { (self.last - 1).min(count - 1) };
-        let (first, last) = if last < first { (last, first) } else { (first, last) };
+        let last = if self.last == 0 {
+            count - 1
+        } else {
+            (self.last - 1).min(count - 1)
+        };
+        let (first, last) = if last < first {
+            (last, first)
+        } else {
+            (first, last)
+        };
         (first..=last).step_by(self.every.max(1)).collect()
     }
 }
@@ -527,21 +600,35 @@ fn between(a: &Camera, b: &Camera, t: f32) -> Camera {
         pan: [mix(a.pan[0], b.pan[0]), mix(a.pan[1], b.pan[1])],
         center: std::array::from_fn(|k| mix(a.center[k], b.center[k])),
         radius: mix(a.radius, b.radius),
-        perspective: if t < 0.5 { a.perspective } else { b.perspective },
+        perspective: if t < 0.5 {
+            a.perspective
+        } else {
+            b.perspective
+        },
         slab: if t < 0.5 { a.slab } else { b.slab },
     }
 }
 
 /// The film's shots, from the options, the camera as it is, the trajectory
 /// frame shown and how many there are, and a recording if there is one.
-pub fn plan(o: &Options, base: &Camera, now: usize, count: usize, recording: Option<&[Sample]>) -> Vec<Shot> {
+pub fn plan(
+    o: &Options,
+    base: &Camera,
+    now: usize,
+    count: usize,
+    recording: Option<&[Sample]>,
+) -> Vec<Shot> {
     let fps = o.fps.max(1) as f32;
     if let (Motion::Recorded, Some(rec)) = (o.motion, recording.filter(|r| !r.is_empty())) {
         return plan_recorded(o, rec, fps);
     }
     let keys = o.keys(count, now);
     let moving = keys.len() > 1;
-    let natural = if moving { (keys.len() - 1) * (o.smooth as usize + 1) + 1 } else { (CAMERA_SECONDS * fps) as usize };
+    let natural = if moving {
+        (keys.len() - 1) * (o.smooth as usize + 1) + 1
+    } else {
+        (CAMERA_SECONDS * fps) as usize
+    };
     // Ping-pong goes there and back, the ends once each.
     let total = if o.seconds > 0.0 {
         (o.seconds * fps).round().max(1.0) as usize
@@ -583,10 +670,19 @@ pub fn plan(o: &Options, base: &Camera, now: usize, count: usize, recording: Opt
             };
             let camera = match o.motion {
                 Motion::Turn => turned(base, o.axis, o.degrees.to_radians() * c),
-                Motion::Rock => turned(base, o.axis, o.degrees.to_radians() * (std::f32::consts::TAU * c).sin()),
+                Motion::Rock => turned(
+                    base,
+                    o.axis,
+                    o.degrees.to_radians() * (std::f32::consts::TAU * c).sin(),
+                ),
                 Motion::Still | Motion::Recorded => *base,
             };
-            Shot { camera, from, to, t }
+            Shot {
+                camera,
+                from,
+                to,
+                t,
+            }
         })
         .collect()
 }
@@ -604,7 +700,11 @@ fn plan_recorded(o: &Options, rec: &[Sample], fps: f32) -> Vec<Shot> {
             }
             let (a, b) = (&rec[j], &rec[(j + 1).min(rec.len() - 1)]);
             let gap = b.t - a.t;
-            let f = if gap > 1e-6 { ((t - a.t) / gap).clamp(0.0, 1.0) } else { 0.0 };
+            let f = if gap > 1e-6 {
+                ((t - a.t) / gap).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
             let camera = between(&a.camera, &b.camera, f);
             let (from, to, t) = if o.smooth > 0 && a.frame != b.frame {
                 (a.frame, b.frame, f)
@@ -612,7 +712,12 @@ fn plan_recorded(o: &Options, rec: &[Sample], fps: f32) -> Vec<Shot> {
                 let k = if f < 0.5 { a.frame } else { b.frame };
                 (k, k, 0.0)
             };
-            Shot { camera, from, to, t }
+            Shot {
+                camera,
+                from,
+                to,
+                t,
+            }
         })
         .collect()
 }
@@ -622,7 +727,8 @@ fn plan_recorded(o: &Options, rec: &[Sample], fps: f32) -> Vec<Shot> {
 // ---------------------------------------------------------------------------
 
 fn inverse(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
-    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
     if det.abs() < 1e-12 {
         return None;
@@ -655,7 +761,8 @@ fn displacement(a: [f32; 3], b: [f32; 3], cell: Option<&(Cell, [[f32; 3]; 3])>) 
     if let Some((c, inv)) = cell {
         // Cartesian = vectors^T · fractional, so fractional = inv(vectors^T) · d,
         // with `inv` that inverse.
-        let f: [f32; 3] = std::array::from_fn(|i| inv[i][0] * d[0] + inv[i][1] * d[1] + inv[i][2] * d[2]);
+        let f: [f32; 3] =
+            std::array::from_fn(|i| inv[i][0] * d[0] + inv[i][1] * d[1] + inv[i][2] * d[2]);
         let r = f.map(|x| x.round());
         if r != [0.0; 3] {
             for k in 0..3 {
@@ -701,7 +808,9 @@ pub fn pose(s: &mut Structure, shot: &Shot) {
         let mix = |x: f32, y: f32| x + (y - x) * t;
         s.cell = Some(Cell {
             origin: std::array::from_fn(|k| mix(ca.origin[k], cb.origin[k])),
-            vectors: std::array::from_fn(|i| std::array::from_fn(|k| mix(ca.vectors[i][k], cb.vectors[i][k]))),
+            vectors: std::array::from_fn(|i| {
+                std::array::from_fn(|k| mix(ca.vectors[i][k], cb.vectors[i][k]))
+            }),
         });
     }
 }
@@ -781,8 +890,9 @@ impl<'a> Drawer<'a> {
             let mut cam = shot.camera;
             let k = width.min(height) as f32 / job.view.0.min(job.view.1).max(1) as f32;
             cam.pan = [cam.pan[0] * k, cam.pan[1] * k];
-            let traced = crate::trace::trace(scene, &cam, width, height, job.style, &Default::default())
-                .expect("not cancelled");
+            let traced =
+                crate::trace::trace(scene, &cam, width, height, job.style, &Default::default())
+                    .expect("not cancelled");
             let rgba = match o.background {
                 Background::Transparent => traced.transparent(),
                 Background::Theme | Background::Color(_) => {
@@ -797,7 +907,11 @@ impl<'a> Drawer<'a> {
                     rgba
                 }
             };
-            let mut pic = Picture { width, height, rgba };
+            let mut pic = Picture {
+                width,
+                height,
+                rgba,
+            };
             self.pin_labels(&mut pic, &cam);
             self.overlay(&mut pic, &shot, &cam, 1);
             return pic;
@@ -829,7 +943,11 @@ impl<'a> Drawer<'a> {
                 rgba
             }
         };
-        let mut pic = Picture { width, height, rgba: shrink(&big, rw, rh, ss) };
+        let mut pic = Picture {
+            width,
+            height,
+            rgba: shrink(&big, rw, rh, ss),
+        };
         let mut small = cam;
         small.pan = [cam.pan[0] / ss as f32, cam.pan[1] / ss as f32];
         self.pin_labels(&mut pic, &small);
@@ -866,7 +984,15 @@ impl<'a> Drawer<'a> {
 
         if !o.caption.trim().is_empty() {
             let size = (short * 0.05).max(12.0);
-            text(pic, font, o.caption.trim(), margin, margin + size * 0.8, size, ink);
+            text(
+                pic,
+                font,
+                o.caption.trim(),
+                margin,
+                margin + size * 0.8,
+                size,
+                ink,
+            );
             used[Corner::TopLeft.index()] += size + gap;
         }
 
@@ -882,7 +1008,15 @@ impl<'a> Drawer<'a> {
             }
         }
         if !info.is_empty() {
-            text(pic, font, &info.join("   ·   "), margin, h - margin, small, ink);
+            text(
+                pic,
+                font,
+                &info.join("   ·   "),
+                margin,
+                h - margin,
+                small,
+                ink,
+            );
             used[Corner::BottomLeft.index()] += small + gap;
         }
 
@@ -897,7 +1031,15 @@ impl<'a> Drawer<'a> {
                 let (x1, y) = (w - margin, h - margin);
                 rect(pic, x1 - bar, y - thick, bar, thick, ink);
                 let tw = text_width(font, &label, small);
-                text(pic, font, &label, x1 - bar / 2.0 - tw / 2.0, y - thick - small * 0.45, small, ink);
+                text(
+                    pic,
+                    font,
+                    &label,
+                    x1 - bar / 2.0 - tw / 2.0,
+                    y - thick - small * 0.45,
+                    small,
+                    ink,
+                );
                 used[Corner::BottomRight.index()] += thick + small * 1.3 + gap;
             }
         }
@@ -906,7 +1048,11 @@ impl<'a> Drawer<'a> {
             let c = o.corner;
             let (lw, lh) = legend_size(font, legend, small, short);
             let x = if c.right() { w - margin - lw } else { margin };
-            let y = if c.bottom() { h - margin - used[c.index()] - lh } else { margin + used[c.index()] };
+            let y = if c.bottom() {
+                h - margin - used[c.index()] - lh
+            } else {
+                margin + used[c.index()]
+            };
             draw_legend(pic, font, legend, x, y, small, short, ink);
         }
     }
@@ -915,7 +1061,11 @@ impl<'a> Drawer<'a> {
     fn step(&self, shot: &Shot) -> Option<f64> {
         let frames = &self.job.structure.frames;
         let a = frames.get(shot.from)?.step? as f64;
-        let b = frames.get(shot.to).and_then(|f| f.step).map(|s| s as f64).unwrap_or(a);
+        let b = frames
+            .get(shot.to)
+            .and_then(|f| f.step)
+            .map(|s| s as f64)
+            .unwrap_or(a);
         Some(a + (b - a) * shot.t as f64)
     }
 
@@ -1004,32 +1154,75 @@ fn time_label(t: f64, unit: TimeUnit) -> String {
 /// The legend's sizes, from the size of its writing: the title's, the
 /// labels', a ramp's length and thickness, and a row of swatches' height.
 fn legend_metrics(small: f32, short: f32) -> (f32, f32, f32, f32, f32) {
-    (small * 0.95, small * 0.9, (short * 0.26).max(80.0), (small * 0.55).max(4.0), small * 1.45)
+    (
+        small * 0.95,
+        small * 0.9,
+        (short * 0.26).max(80.0),
+        (small * 0.55).max(4.0),
+        small * 1.45,
+    )
 }
 
-fn legend_size(font: &ab_glyph::FontRef<'static>, legend: &Legend, small: f32, short: f32) -> (f32, f32) {
+fn legend_size(
+    font: &ab_glyph::FontRef<'static>,
+    legend: &Legend,
+    small: f32,
+    short: f32,
+) -> (f32, f32) {
     let (title, label, length, thick, row) = legend_metrics(small, short);
     match legend {
-        Legend::Ramp { title: t, low, high, .. } => {
+        Legend::Ramp {
+            title: t,
+            low,
+            high,
+            ..
+        } => {
             let ends = text_width(font, low, label) + text_width(font, high, label) + label;
-            (length.max(ends).max(text_width(font, t, title)), title * 1.5 + thick + label * 1.5)
+            (
+                length.max(ends).max(text_width(font, t, title)),
+                title * 1.5 + thick + label * 1.5,
+            )
         }
-        Legend::Swatches { title: t, items, more } => {
+        Legend::Swatches {
+            title: t,
+            items,
+            more,
+        } => {
             let dot = label * 1.3;
-            let widest = items.iter().map(|(_, n)| text_width(font, n, label)).fold(0.0, f32::max);
+            let widest = items
+                .iter()
+                .map(|(_, n)| text_width(font, n, label))
+                .fold(0.0, f32::max);
             let rows = items.len() + usize::from(*more > 0);
-            (text_width(font, t, title).max(dot + widest), title * 1.5 + rows as f32 * row)
+            (
+                text_width(font, t, title).max(dot + widest),
+                title * 1.5 + rows as f32 * row,
+            )
         }
     }
 }
 
 /// The legend with its top left corner at `x`, `y`.
 #[allow(clippy::too_many_arguments)]
-fn draw_legend(pic: &mut Picture, font: &ab_glyph::FontRef<'static>, legend: &Legend, x: f32, y: f32, small: f32, short: f32, ink: [f32; 3]) {
+fn draw_legend(
+    pic: &mut Picture,
+    font: &ab_glyph::FontRef<'static>,
+    legend: &Legend,
+    x: f32,
+    y: f32,
+    small: f32,
+    short: f32,
+    ink: [f32; 3],
+) {
     let (title_size, label, _, thick, row) = legend_metrics(small, short);
     let faint = ink.map(|v| v * 0.75 + 0.125);
     match legend {
-        Legend::Ramp { title, colors, low, high } => {
+        Legend::Ramp {
+            title,
+            colors,
+            low,
+            high,
+        } => {
             text(pic, font, title, x, y + title_size * 0.85, title_size, ink);
             let (w, _) = legend_size(font, legend, small, short);
             let top = y + title_size * 1.5;
@@ -1040,12 +1233,24 @@ fn draw_legend(pic: &mut Picture, font: &ab_glyph::FontRef<'static>, legend: &Le
                 let (i, f) = (t.floor() as usize, t.fract());
                 let a = colors[i.min(n - 1)];
                 let b = colors[(i + 1).min(n - 1)];
-                let c = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+                let c = [
+                    a[0] + (b[0] - a[0]) * f,
+                    a[1] + (b[1] - a[1]) * f,
+                    a[2] + (b[2] - a[2]) * f,
+                ];
                 rect(pic, x + px as f32, top, 1.0, thick, c);
             }
             let base = top + thick + label * 1.15;
             text(pic, font, low, x, base, label, faint);
-            text(pic, font, high, x + w - text_width(font, high, label), base, label, faint);
+            text(
+                pic,
+                font,
+                high,
+                x + w - text_width(font, high, label),
+                base,
+                label,
+                faint,
+            );
         }
         Legend::Swatches { title, items, more } => {
             text(pic, font, title, x, y + title_size * 0.85, title_size, ink);
@@ -1054,11 +1259,27 @@ fn draw_legend(pic: &mut Picture, font: &ab_glyph::FontRef<'static>, legend: &Le
             for (color, name) in items {
                 let mid = top + row * 0.45;
                 disc(pic, x + r, mid, r, *color);
-                text(pic, font, name, x + label * 1.3, mid + label * 0.35, label, ink);
+                text(
+                    pic,
+                    font,
+                    name,
+                    x + label * 1.3,
+                    mid + label * 0.35,
+                    label,
+                    ink,
+                );
                 top += row;
             }
             if *more > 0 {
-                text(pic, font, &format!("and {more} more"), x + label * 1.3, top + row * 0.45 + label * 0.35, label, faint);
+                text(
+                    pic,
+                    font,
+                    &format!("and {more} more"),
+                    x + label * 1.3,
+                    top + row * 0.45 + label * 0.35,
+                    label,
+                    faint,
+                );
             }
         }
     }
@@ -1124,14 +1345,23 @@ fn blend(pic: &mut Picture, x: i64, y: i64, a: f32, color: [f32; 3]) {
     let oa = a + da * (1.0 - a);
     for c in 0..3 {
         let d = p[c] as f32 / 255.0;
-        let v = if oa > 0.0 { (color[c] * a + d * da * (1.0 - a)) / oa } else { 0.0 };
+        let v = if oa > 0.0 {
+            (color[c] * a + d * da * (1.0 - a)) / oa
+        } else {
+            0.0
+        };
         p[c] = (v * 255.0 + 0.5) as u8;
     }
     p[3] = (oa * 255.0 + 0.5) as u8;
 }
 
 fn rect(pic: &mut Picture, x: f32, y: f32, w: f32, h: f32, color: [f32; 3]) {
-    let (x0, x1, y0, y1) = (x.floor() as i64, (x + w).ceil() as i64, y.floor() as i64, (y + h).ceil() as i64);
+    let (x0, x1, y0, y1) = (
+        x.floor() as i64,
+        (x + w).ceil() as i64,
+        y.floor() as i64,
+        (y + h).ceil() as i64,
+    );
     for py in y0..y1 {
         let cy = ((py as f32 + 1.0).min(y + h) - (py as f32).max(y)).clamp(0.0, 1.0);
         for px in x0..x1 {
@@ -1158,7 +1388,15 @@ fn text_width(font: &ab_glyph::FontRef<'static>, s: &str, size: f32) -> f32 {
 }
 
 /// Write `s` with its baseline at `y`, from `x`.
-fn text(pic: &mut Picture, font: &ab_glyph::FontRef<'static>, s: &str, x: f32, y: f32, size: f32, color: [f32; 3]) {
+fn text(
+    pic: &mut Picture,
+    font: &ab_glyph::FontRef<'static>,
+    s: &str,
+    x: f32,
+    y: f32,
+    size: f32,
+    color: [f32; 3],
+) {
     use ab_glyph::{point, Font, ScaleFont};
     let f = font.as_scaled(size);
     let mut caret = x;
@@ -1174,7 +1412,13 @@ fn text(pic: &mut Picture, font: &ab_glyph::FontRef<'static>, s: &str, x: f32, y
         if let Some(outlined) = font.outline_glyph(glyph) {
             let b = outlined.px_bounds();
             outlined.draw(|gx, gy, c| {
-                blend(pic, b.min.x as i64 + gx as i64, b.min.y as i64 + gy as i64, c, color);
+                blend(
+                    pic,
+                    b.min.x as i64 + gx as i64,
+                    b.min.y as i64 + gy as i64,
+                    c,
+                    color,
+                );
             });
         }
     }
@@ -1200,7 +1444,11 @@ pub fn draw_labels(
     let m = cam.basis();
     let scale = w.min(h) / (2.2 * cam.radius) * cam.zoom;
     for (p, label) in labels {
-        let q = [p[0] - cam.center[0], p[1] - cam.center[1], p[2] - cam.center[2]];
+        let q = [
+            p[0] - cam.center[0],
+            p[1] - cam.center[1],
+            p[2] - cam.center[2],
+        ];
         let d = |r: [f32; 3]| r[0] * q[0] + r[1] * q[1] + r[2] * q[2];
         let (v, _) = cam.warp([d(m[0]), d(m[1]), d(m[2])]);
         let x = w * 0.5 + cam.pan[0] + v[0] * scale + size * 0.4;
@@ -1235,10 +1483,15 @@ pub fn ffmpeg() -> Option<PathBuf> {
     FOUND
         .get_or_init(|| {
             which::which("ffmpeg").ok().or_else(|| {
-                ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg", "/snap/bin/ffmpeg"]
-                    .into_iter()
-                    .map(PathBuf::from)
-                    .find(|p| p.is_file())
+                [
+                    "/opt/homebrew/bin/ffmpeg",
+                    "/usr/local/bin/ffmpeg",
+                    "/usr/bin/ffmpeg",
+                    "/snap/bin/ffmpeg",
+                ]
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|p| p.is_file())
             })
         })
         .clone()
@@ -1248,11 +1501,21 @@ pub fn ffmpeg() -> Option<PathBuf> {
 fn h264_encoder() -> Option<&'static str> {
     static FOUND: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
     *FOUND.get_or_init(|| {
-        let out = std::process::Command::new(ffmpeg()?).args(["-hide_banner", "-encoders"]).output().ok()?;
+        let out = std::process::Command::new(ffmpeg()?)
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .ok()?;
         let list = String::from_utf8_lossy(&out.stdout).to_string();
-        ["libx264", "h264_videotoolbox", "h264_mf", "h264_nvenc", "h264_qsv", "h264_vaapi"]
-            .into_iter()
-            .find(|e| list.split_whitespace().any(|w| w == *e))
+        [
+            "libx264",
+            "h264_videotoolbox",
+            "h264_mf",
+            "h264_nvenc",
+            "h264_qsv",
+            "h264_vaapi",
+        ]
+        .into_iter()
+        .find(|e| list.split_whitespace().any(|w| w == *e))
     })
 }
 
@@ -1271,7 +1534,10 @@ struct Gif {
 
 impl Gif {
     fn new(path: &Path, fps: u32) -> Result<Self> {
-        let file = std::io::BufWriter::new(std::fs::File::create(path).with_context(|| format!("could not write {}", path.display()))?);
+        let file = std::io::BufWriter::new(
+            std::fs::File::create(path)
+                .with_context(|| format!("could not write {}", path.display()))?,
+        );
         let mut encoder = image::codecs::gif::GifEncoder::new_with_speed(file, 10);
         encoder.set_repeat(image::codecs::gif::Repeat::Infinite)?;
         // GIF counts in hundredths of a second, and most viewers draw
@@ -1288,8 +1554,14 @@ impl Sink for Gif {
         for p in rgba.chunks_exact_mut(4) {
             p[3] = if p[3] >= 128 { 255 } else { 0 };
         }
-        let buffer = image::RgbaImage::from_raw(pic.width as u32, pic.height as u32, rgba).expect("sized to fit");
-        self.encoder.encode_frame(image::Frame::from_parts(buffer, 0, 0, image::Delay::from_numer_denom_ms(self.delay, 1)))?;
+        let buffer = image::RgbaImage::from_raw(pic.width as u32, pic.height as u32, rgba)
+            .expect("sized to fit");
+        self.encoder.encode_frame(image::Frame::from_parts(
+            buffer,
+            0,
+            0,
+            image::Delay::from_numer_denom_ms(self.delay, 1),
+        ))?;
         Ok(())
     }
 
@@ -1310,8 +1582,12 @@ impl Pngs {
     /// Frames go in a folder made at `path`, each named after it.
     fn new(path: &Path) -> Result<Self> {
         let dir = path.with_extension("");
-        std::fs::create_dir_all(&dir).with_context(|| format!("could not make {}", dir.display()))?;
-        let stem = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "frame".into());
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("could not make {}", dir.display()))?;
+        let stem = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "frame".into());
         Ok(Pngs { dir, stem, next: 1 })
     }
 }
@@ -1319,7 +1595,13 @@ impl Pngs {
 impl Sink for Pngs {
     fn push(&mut self, pic: &Picture) -> Result<()> {
         let path = self.dir.join(format!("{}_{:05}.png", self.stem, self.next));
-        image::save_buffer(&path, &pic.rgba, pic.width as u32, pic.height as u32, image::ColorType::Rgba8)?;
+        image::save_buffer(
+            &path,
+            &pic.rgba,
+            pic.width as u32,
+            pic.height as u32,
+            image::ColorType::Rgba8,
+        )?;
         self.next += 1;
         Ok(())
     }
@@ -1336,10 +1618,27 @@ struct Ffmpeg {
 
 impl Ffmpeg {
     fn new(o: &Options, path: &Path, width: usize, height: usize) -> Result<Self> {
-        let exe = ffmpeg().ok_or_else(|| anyhow!("{} needs ffmpeg, which was not found", o.format.label()))?;
+        let exe = ffmpeg()
+            .ok_or_else(|| anyhow!("{} needs ffmpeg, which was not found", o.format.label()))?;
         let mut cmd = std::process::Command::new(exe);
-        cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba"])
-            .args(["-s", &format!("{width}x{height}"), "-r", &o.fps.to_string(), "-i", "-"]);
+        cmd.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+        ])
+        .args([
+            "-s",
+            &format!("{width}x{height}"),
+            "-r",
+            &o.fps.to_string(),
+            "-i",
+            "-",
+        ]);
         match o.format {
             Format::Mp4 => {
                 // x264 where ffmpeg has it, as most builds do; else the
@@ -1348,26 +1647,60 @@ impl Ffmpeg {
                 match h264_encoder() {
                     Some("libx264") => {
                         let crf = (36.0 - q * 0.2).round().clamp(12.0, 40.0) as u32;
-                        cmd.args(["-c:v", "libx264", "-preset", "slow", "-crf", &crf.to_string()]);
+                        cmd.args([
+                            "-c:v",
+                            "libx264",
+                            "-preset",
+                            "slow",
+                            "-crf",
+                            &crf.to_string(),
+                        ]);
                     }
                     Some("h264_videotoolbox") => {
-                        cmd.args(["-c:v", "h264_videotoolbox", "-q:v", &((q * 0.9 + 10.0) as u32).to_string()]);
+                        cmd.args([
+                            "-c:v",
+                            "h264_videotoolbox",
+                            "-q:v",
+                            &((q * 0.9 + 10.0) as u32).to_string(),
+                        ]);
                     }
                     Some(other) => {
-                        let bps = (0.02 + 0.22 * (q / 100.0).powi(2)) * (width * height) as f32 * o.fps as f32;
+                        let bps = (0.02 + 0.22 * (q / 100.0).powi(2))
+                            * (width * height) as f32
+                            * o.fps as f32;
                         cmd.args(["-c:v", other, "-b:v", &format!("{}", bps as u64)]);
                     }
-                    None => bail!("this ffmpeg has no H.264 encoder; choose WebM, GIF or PNG frames"),
+                    None => {
+                        bail!("this ffmpeg has no H.264 encoder; choose WebM, GIF or PNG frames")
+                    }
                 }
                 cmd.args(["-pix_fmt", "yuv420p", "-movflags", "+faststart"]);
             }
             Format::WebM => {
                 let crf = (52.0 - o.quality as f32 * 0.37).round().clamp(4.0, 63.0) as u32;
-                cmd.args(["-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-b:v", "0", "-crf", &crf.to_string()])
-                    .args(["-row-mt", "1", "-auto-alt-ref", "0"]);
+                cmd.args([
+                    "-c:v",
+                    "libvpx-vp9",
+                    "-pix_fmt",
+                    "yuva420p",
+                    "-b:v",
+                    "0",
+                    "-crf",
+                    &crf.to_string(),
+                ])
+                .args(["-row-mt", "1", "-auto-alt-ref", "0"]);
             }
             _ => {
-                cmd.args(["-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-vendor", "apl0"]);
+                cmd.args([
+                    "-c:v",
+                    "prores_ks",
+                    "-profile:v",
+                    "4444",
+                    "-pix_fmt",
+                    "yuva444p10le",
+                    "-vendor",
+                    "apl0",
+                ]);
             }
         }
         cmd.arg(path)
@@ -1382,14 +1715,19 @@ impl Ffmpeg {
         }
         let mut child = cmd.spawn().context("could not start ffmpeg")?;
         let stdin = child.stdin.take();
-        Ok(Ffmpeg { child: Some(child), stdin })
+        Ok(Ffmpeg {
+            child: Some(child),
+            stdin,
+        })
     }
 }
 
 impl Sink for Ffmpeg {
     fn push(&mut self, pic: &Picture) -> Result<()> {
         use std::io::Write;
-        let Some(stdin) = self.stdin.as_mut() else { bail!("ffmpeg has stopped") };
+        let Some(stdin) = self.stdin.as_mut() else {
+            bail!("ffmpeg has stopped")
+        };
         if stdin.write_all(&pic.rgba).is_err() {
             bail!("ffmpeg stopped taking frames");
         }
@@ -1401,7 +1739,10 @@ impl Sink for Ffmpeg {
         let out = self.child.take().expect("taken once").wait_with_output()?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
-            bail!("ffmpeg failed: {}", err.lines().last().unwrap_or("no reason given"));
+            bail!(
+                "ffmpeg failed: {}",
+                err.lines().last().unwrap_or("no reason given")
+            );
         }
         Ok(())
     }
@@ -1431,7 +1772,10 @@ pub struct Progress {
 pub fn export(job: &Job, path: &Path, progress: &Progress) -> Result<PathBuf> {
     let o = &job.options;
     if o.format.needs_ffmpeg() && ffmpeg().is_none() {
-        bail!("{} needs ffmpeg; install it, or choose MP4, GIF or PNG frames", o.format.label());
+        bail!(
+            "{} needs ffmpeg; install it, or choose MP4, GIF or PNG frames",
+            o.format.label()
+        );
     }
     let path = match o.format {
         Format::Png => path.with_extension(""),
@@ -1462,10 +1806,18 @@ pub fn export(job: &Job, path: &Path, progress: &Progress) -> Result<PathBuf> {
 /// A few small frames of the film, for seeing it before it is made: no
 /// more than `most`, taken evenly through it, `across` pixels wide at most.
 /// With each, how many of the film's frames it stands for.
-pub fn preview(job: &Job, across: usize, most: usize, cancel: &AtomicBool) -> (Vec<Picture>, usize) {
+pub fn preview(
+    job: &Job,
+    across: usize,
+    most: usize,
+    cancel: &AtomicBool,
+) -> (Vec<Picture>, usize) {
     let (w, h) = job.options.output_size(job.view);
     let k = (across as f32 / w.max(1) as f32).min(1.0);
-    let (pw, ph) = (((w as f32 * k) as usize).max(2), ((h as f32 * k) as usize).max(2));
+    let (pw, ph) = (
+        ((w as f32 * k) as usize).max(2),
+        ((h as f32 * k) as usize).max(2),
+    );
     let stride = job.shots.len().div_ceil(most.max(1)).max(1);
     let mut drawer = Drawer::new(job);
     let mut out = Vec::new();
@@ -1486,8 +1838,13 @@ pub fn preview(job: &Job, across: usize, most: usize, cancel: &AtomicBool) -> (V
 /// file's extension. Quoted values may have spaces in them.
 pub fn parse_args(base: Options, path: &Path, words: &[String]) -> Result<Options> {
     let mut o = base;
-    let ext = path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_default();
-    o.format = Format::from_extension(&ext).ok_or_else(|| anyhow!("a film is .mp4, .gif, .webm, .mov, or a folder of PNGs, not .{ext}"))?;
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default();
+    o.format = Format::from_extension(&ext).ok_or_else(|| {
+        anyhow!("a film is .mp4, .gif, .webm, .mov, or a folder of PNGs, not .{ext}")
+    })?;
     let on = |v: &str| -> Result<bool> {
         match v {
             "on" | "yes" | "true" | "1" | "" => Ok(true),
@@ -1495,7 +1852,10 @@ pub fn parse_args(base: Options, path: &Path, words: &[String]) -> Result<Option
             _ => bail!("\"{v}\" is neither on nor off"),
         }
     };
-    let num = |k: &str, v: &str| -> Result<f32> { v.parse::<f32>().map_err(|_| anyhow!("{k} takes a number, not \"{v}\"")) };
+    let num = |k: &str, v: &str| -> Result<f32> {
+        v.parse::<f32>()
+            .map_err(|_| anyhow!("{k} takes a number, not \"{v}\""))
+    };
     for word in words {
         let (k, v) = word.split_once('=').unwrap_or((word.as_str(), ""));
         let v = v.trim_matches('"');
@@ -1503,7 +1863,12 @@ pub fn parse_args(base: Options, path: &Path, words: &[String]) -> Result<Option
             "frames" => {
                 // first:last:every, any part left out.
                 let parts: Vec<&str> = v.split(':').collect();
-                let at = |i: usize| parts.get(i).filter(|s| !s.is_empty()).map(|s| s.parse::<usize>());
+                let at = |i: usize| {
+                    parts
+                        .get(i)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.parse::<usize>())
+                };
                 o.trajectory = true;
                 if let Some(x) = at(0) {
                     o.first = x.context("frames is first:last:every")?;
@@ -1517,19 +1882,27 @@ pub fn parse_args(base: Options, path: &Path, words: &[String]) -> Result<Option
             }
             "trajectory" => o.trajectory = on(v)?,
             "turn" | "rock" => {
-                o.motion = if k == "turn" { Motion::Turn } else { Motion::Rock };
+                o.motion = if k == "turn" {
+                    Motion::Turn
+                } else {
+                    Motion::Rock
+                };
                 if !v.is_empty() {
                     o.degrees = num(k, v)?;
                 }
             }
             "still" => o.motion = Motion::Still,
             "recorded" => o.motion = Motion::Recorded,
-            "axis" => o.axis = named(&AXES, v).or(match v {
-                "vertical" => Some(Axis::Vertical),
-                "horizontal" => Some(Axis::Horizontal),
-                "view" | "roll" => Some(Axis::View),
-                _ => None,
-            }).ok_or_else(|| anyhow!("axis is x, y or z"))?,
+            "axis" => {
+                o.axis = named(&AXES, v)
+                    .or(match v {
+                        "vertical" => Some(Axis::Vertical),
+                        "horizontal" => Some(Axis::Horizontal),
+                        "view" | "roll" => Some(Axis::View),
+                        _ => None,
+                    })
+                    .ok_or_else(|| anyhow!("axis is x, y or z"))?
+            }
             "loop" | "seamless" => o.seamless = on(v)?,
             "fps" => o.fps = num(k, v)? as u32,
             "seconds" | "length" => o.seconds = num(k, v)?,
@@ -1550,11 +1923,14 @@ pub fn parse_args(base: Options, path: &Path, words: &[String]) -> Result<Option
             "trace" | "traced" | "raytrace" => o.traced = on(v)?,
             "quality" => o.quality = num(k, v)? as u32,
             "bg" | "background" => {
-                o.background = match v {
-                    "theme" | "page" => Background::Theme,
-                    "transparent" | "none" => Background::Transparent,
-                    other => Background::Color(crate::settings::parse_hex(other).ok_or_else(|| anyhow!("bg is theme, transparent or a #rrggbb colour"))?),
-                }
+                o.background =
+                    match v {
+                        "theme" | "page" => Background::Theme,
+                        "transparent" | "none" => Background::Transparent,
+                        other => Background::Color(crate::settings::parse_hex(other).ok_or_else(
+                            || anyhow!("bg is theme, transparent or a #rrggbb colour"),
+                        )?),
+                    }
             }
             "counter" => o.counter = on(v)?,
             "time" => o.time = on(v)?,
@@ -1566,7 +1942,9 @@ pub fn parse_args(base: Options, path: &Path, words: &[String]) -> Result<Option
                 };
                 o.dt = num(k, n)?;
                 if !unit.is_empty() {
-                    o.unit = named(&UNITS, unit).or((unit == "τ").then_some(TimeUnit::Tau)).ok_or_else(|| anyhow!("dt's unit is fs, ps or tau"))?;
+                    o.unit = named(&UNITS, unit)
+                        .or((unit == "τ").then_some(TimeUnit::Tau))
+                        .ok_or_else(|| anyhow!("dt's unit is fs, ps or tau"))?;
                 }
             }
             "scalebar" | "scale" => o.scale_bar = on(v)?,
@@ -1575,7 +1953,11 @@ pub fn parse_args(base: Options, path: &Path, words: &[String]) -> Result<Option
                 if let Some(c) = named(&CORNERS, v) {
                     o.corner = c;
                 } else {
-                    o.legend = on(v).map_err(|_| anyhow!("legend is on, off, top-left, top-right, bottom-left or bottom-right"))?;
+                    o.legend = on(v).map_err(|_| {
+                        anyhow!(
+                            "legend is on, off, top-left, top-right, bottom-left or bottom-right"
+                        )
+                    })?;
                 }
             }
             "caption" | "title" => o.caption = v.to_string(),
@@ -1629,7 +2011,12 @@ mod tests {
 
     #[test]
     fn a_trajectory_is_one_shot_a_frame() {
-        let o = Options { first: 3, last: 9, every: 2, ..Options::default() };
+        let o = Options {
+            first: 3,
+            last: 9,
+            every: 2,
+            ..Options::default()
+        };
         let shots = plan(&o, &camera(), 0, 20, None);
         let frames: Vec<usize> = shots.iter().map(|s| s.from).collect();
         assert_eq!(frames, vec![2, 4, 6, 8]);
@@ -1637,7 +2024,12 @@ mod tests {
 
     #[test]
     fn smoothing_blends_between_the_frames_used() {
-        let o = Options { every: 2, last: 5, smooth: 1, ..Options::default() };
+        let o = Options {
+            every: 2,
+            last: 5,
+            smooth: 1,
+            ..Options::default()
+        };
         let shots = plan(&o, &camera(), 0, 10, None);
         // Frames 0, 2, 4 with one blend between each pair.
         assert_eq!(shots.len(), 5);
@@ -1648,14 +2040,27 @@ mod tests {
 
     #[test]
     fn ping_pong_comes_back_without_doubling_the_ends() {
-        let o = Options { last: 4, pingpong: true, ..Options::default() };
-        let frames: Vec<usize> = plan(&o, &camera(), 0, 4, None).iter().map(|s| s.nearest()).collect();
+        let o = Options {
+            last: 4,
+            pingpong: true,
+            ..Options::default()
+        };
+        let frames: Vec<usize> = plan(&o, &camera(), 0, 4, None)
+            .iter()
+            .map(|s| s.nearest())
+            .collect();
         assert_eq!(frames, vec![0, 1, 2, 3, 2, 1]);
     }
 
     #[test]
     fn a_seamless_turn_stops_short_of_where_it_began() {
-        let o = Options { trajectory: false, motion: Motion::Turn, seconds: 1.0, fps: 4, ..Options::default() };
+        let o = Options {
+            trajectory: false,
+            motion: Motion::Turn,
+            seconds: 1.0,
+            fps: 4,
+            ..Options::default()
+        };
         let base = camera();
         let shots = plan(&o, &base, 0, 1, None);
         assert_eq!(shots.len(), 4);
@@ -1674,10 +2079,23 @@ mod tests {
         let mut far = camera();
         far.zoom = 3.0;
         let rec = [
-            Sample { t: 0.0, camera: camera(), frame: 0 },
-            Sample { t: 1.0, camera: far, frame: 4 },
+            Sample {
+                t: 0.0,
+                camera: camera(),
+                frame: 0,
+            },
+            Sample {
+                t: 1.0,
+                camera: far,
+                frame: 4,
+            },
         ];
-        let o = Options { motion: Motion::Recorded, fps: 10, smooth: 1, ..Options::default() };
+        let o = Options {
+            motion: Motion::Recorded,
+            fps: 10,
+            smooth: 1,
+            ..Options::default()
+        };
         let shots = plan(&o, &camera(), 0, 5, Some(&rec));
         assert_eq!(shots.len(), 11);
         assert!((shots[5].camera.zoom - 2.0).abs() < 1e-3);
@@ -1688,14 +2106,34 @@ mod tests {
     fn blending_takes_the_short_way_across_the_cell() {
         let cell = Cell::from_bounds([0.0; 3], [10.0; 3]);
         let frames = vec![
-            Snapshot { step: Some(0), pos: vec![[9.5, 5.0, 5.0]], cell: Some(cell) },
-            Snapshot { step: Some(100), pos: vec![[0.5, 5.0, 5.0]], cell: Some(cell) },
+            Snapshot {
+                step: Some(0),
+                pos: vec![[9.5, 5.0, 5.0]],
+                cell: Some(cell),
+            },
+            Snapshot {
+                step: Some(100),
+                pos: vec![[0.5, 5.0, 5.0]],
+                cell: Some(cell),
+            },
         ];
         let mut s = Structure::beads("box", 1, frames);
         s.set_frame(0);
-        pose(&mut s, &Shot { camera: camera(), from: 0, to: 1, t: 0.5 });
+        pose(
+            &mut s,
+            &Shot {
+                camera: camera(),
+                from: 0,
+                to: 1,
+                t: 0.5,
+            },
+        );
         // Through the wall at 10, not back across the box through 5.
-        assert!((s.atoms[0].pos[0] - 10.0).abs() < 1e-4, "{:?}", s.atoms[0].pos);
+        assert!(
+            (s.atoms[0].pos[0] - 10.0).abs() < 1e-4,
+            "{:?}",
+            s.atoms[0].pos
+        );
     }
 
     #[test]
@@ -1723,7 +2161,9 @@ mod tests {
 
     #[test]
     fn the_console_says_it_in_words() {
-        let w = words(r#"frames=1:500:2 fps=24 turn=360 bg=transparent size=1280x720 caption="Melting LJ crystal" dt=0.005tau legend=bottom-left"#);
+        let w = words(
+            r#"frames=1:500:2 fps=24 turn=360 bg=transparent size=1280x720 caption="Melting LJ crystal" dt=0.005tau legend=bottom-left"#,
+        );
         let o = parse_args(Options::default(), Path::new("out.webm"), &w).unwrap();
         assert_eq!((o.first, o.last, o.every), (1, 500, 2));
         assert_eq!(o.fps, 24);
@@ -1758,11 +2198,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("profold-movie-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.mp4");
-        let o = Options { fps: 10, ..Options::default() };
+        let o = Options {
+            fps: 10,
+            ..Options::default()
+        };
         let mut sink = Ffmpeg::new(&o, &path, 64, 48).unwrap();
         for i in 0..12u8 {
-            let rgba: Vec<u8> = (0..64 * 48).flat_map(|p| [i * 20, (p % 64) as u8 * 4, 128, 255]).collect();
-            sink.push(&Picture { width: 64, height: 48, rgba }).unwrap();
+            let rgba: Vec<u8> = (0..64 * 48)
+                .flat_map(|p| [i * 20, (p % 64) as u8 * 4, 128, 255])
+                .collect();
+            sink.push(&Picture {
+                width: 64,
+                height: 48,
+                rgba,
+            })
+            .unwrap();
         }
         Box::new(sink).finish().unwrap();
         // Decoded back, it has every frame.
@@ -1774,22 +2224,42 @@ mod tests {
             .unwrap();
         let log = String::from_utf8_lossy(&out.stderr);
         assert!(log.contains("h264"), "{log}");
-        assert!(log.contains("frame=   12") || log.contains("frame=12"), "{log}");
+        assert!(
+            log.contains("frame=   12") || log.contains("frame=12"),
+            "{log}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_traced_film_frame_is_drawn_at_its_size_and_differs_from_a_plain_one() {
-        let melt = crate::samples::SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+        let melt = crate::samples::SAMPLES
+            .iter()
+            .find(|s| s.file.ends_with("lammpstrj.gz"))
+            .unwrap();
         let s = crate::formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap();
         let camera = Camera::frame(&s);
         let frame = |traced: bool| {
-            let options = Options { traced, trajectory: false, ..Options::default() };
+            let options = Options {
+                traced,
+                trajectory: false,
+                ..Options::default()
+            };
             let shots = plan(&options, &camera, 0, s.frame_count(), None);
             let job = Job {
                 structure: s.clone(),
                 build: Arc::new(|s: &Structure| {
-                    render::build_scene(s, render::Repr::Spacefill, render::Coloring::Element, 1.0, Style::Studio, render::Palette::Spectrum, true, true, &render::Appearance::default())
+                    render::build_scene(
+                        s,
+                        render::Repr::Spacefill,
+                        render::Coloring::Element,
+                        1.0,
+                        Style::Studio,
+                        render::Palette::Spectrum,
+                        true,
+                        true,
+                        &render::Appearance::default(),
+                    )
                 }),
                 style: Style::Studio,
                 page: [0.97, 0.97, 0.96],
@@ -1802,7 +2272,10 @@ mod tests {
             Drawer::new(&job).draw(0, 160, 120, 2)
         };
         let (plain, traced) = (frame(false), frame(true));
-        assert_eq!((traced.width, traced.height, traced.rgba.len()), (160, 120, 160 * 120 * 4));
+        assert_eq!(
+            (traced.width, traced.height, traced.rgba.len()),
+            (160, 120, 160 * 120 * 4)
+        );
         assert_ne!(plain.rgba, traced.rgba);
         let o = parse_args(Options::default(), Path::new("out.mp4"), &words("trace=on")).unwrap();
         assert!(o.traced);
@@ -1810,16 +2283,32 @@ mod tests {
 
     #[test]
     fn a_label_is_drawn_where_its_atom_is_in_each_frame() {
-        let melt = crate::samples::SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+        let melt = crate::samples::SAMPLES
+            .iter()
+            .find(|s| s.file.ends_with("lammpstrj.gz"))
+            .unwrap();
         let s = crate::formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap();
         let camera = Camera::frame(&s);
         let frame = |labels: Vec<(u32, String)>| {
-            let options = Options { trajectory: false, ..Options::default() };
+            let options = Options {
+                trajectory: false,
+                ..Options::default()
+            };
             let shots = plan(&options, &camera, 0, s.frame_count(), None);
             let job = Job {
                 structure: s.clone(),
                 build: Arc::new(|s: &Structure| {
-                    render::build_scene(s, render::Repr::Spacefill, render::Coloring::Element, 1.0, Style::Flat, render::Palette::Spectrum, true, true, &render::Appearance::default())
+                    render::build_scene(
+                        s,
+                        render::Repr::Spacefill,
+                        render::Coloring::Element,
+                        1.0,
+                        Style::Flat,
+                        render::Palette::Spectrum,
+                        true,
+                        true,
+                        &render::Appearance::default(),
+                    )
                 }),
                 style: Style::Flat,
                 page: [0.97, 0.97, 0.96],
@@ -1832,7 +2321,12 @@ mod tests {
             Drawer::new(&job).draw(0, 320, 240, 1)
         };
         let (plain, labelled) = (frame(Vec::new()), frame(vec![(0, "first atom".into())]));
-        let changed = plain.rgba.chunks_exact(4).zip(labelled.rgba.chunks_exact(4)).filter(|(a, b)| a != b).count();
+        let changed = plain
+            .rgba
+            .chunks_exact(4)
+            .zip(labelled.rgba.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
         assert!(changed > 100, "{changed} pixels changed");
     }
 
@@ -1845,15 +2339,32 @@ mod tests {
             low: "hydrophilic".into(),
             high: "hydrophobic".into(),
         };
-        let mut pic = Picture { width: 400, height: 300, rgba: vec![0; 400 * 300 * 4] };
+        let mut pic = Picture {
+            width: 400,
+            height: 300,
+            rgba: vec![0; 400 * 300 * 4],
+        };
         let (lw, lh) = legend_size(&font, &legend, 12.0, 300.0);
-        draw_legend(&mut pic, &font, &legend, 400.0 - 10.0 - lw, 300.0 - 10.0 - lh, 12.0, 300.0, [0.0; 3]);
+        draw_legend(
+            &mut pic,
+            &font,
+            &legend,
+            400.0 - 10.0 - lw,
+            300.0 - 10.0 - lh,
+            12.0,
+            300.0,
+            [0.0; 3],
+        );
         let alpha = |x: usize, y: usize| pic.rgba[(y * 400 + x) * 4 + 3];
-        let ink_in = |x0: usize, x1: usize, y0: usize, y1: usize| (y0..y1).any(|y| (x0..x1).any(|x| alpha(x, y) > 0));
+        let ink_in = |x0: usize, x1: usize, y0: usize, y1: usize| {
+            (y0..y1).any(|y| (x0..x1).any(|x| alpha(x, y) > 0))
+        };
         assert!(ink_in(200, 400, 150, 300), "nothing in the bottom right");
-        assert!(!ink_in(0, 200, 0, 300) && !ink_in(200, 400, 0, 150), "drawn outside its corner");
+        assert!(
+            !ink_in(0, 200, 0, 300) && !ink_in(200, 400, 0, 150),
+            "drawn outside its corner"
+        );
     }
-
 }
 
 /// Films of the melting crystal in every format, for looking at:
@@ -1862,15 +2373,24 @@ mod tests {
 #[test]
 #[ignore]
 fn film_samples() {
-    let Ok(dir) = std::env::var("PROFOLD_FILMS") else { return };
+    let Ok(dir) = std::env::var("PROFOLD_FILMS") else {
+        return;
+    };
     let dir = PathBuf::from(dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let melt = crate::samples::SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+    let melt = crate::samples::SAMPLES
+        .iter()
+        .find(|s| s.file.ends_with("lammpstrj.gz"))
+        .unwrap();
     let s = crate::formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap();
     let camera = Camera::frame(&s);
     for (name, format, background) in [
         ("melt.mp4", Format::Mp4, Background::Theme),
-        ("melt.gif", Format::Gif, Background::Color([0.08, 0.09, 0.12])),
+        (
+            "melt.gif",
+            Format::Gif,
+            Background::Color([0.08, 0.09, 0.12]),
+        ),
         ("melt.webm", Format::WebM, Background::Transparent),
         ("melt.mov", Format::Mov, Background::Transparent),
         ("melt-frames", Format::Png, Background::Transparent),
@@ -1896,7 +2416,17 @@ fn film_samples() {
         let job = Job {
             structure: s.clone(),
             build: Arc::new(|s: &Structure| {
-                render::build_scene(s, render::Repr::Spacefill, render::Coloring::Element, 1.0, Style::Illustrative, render::Palette::Spectrum, true, true, &render::Appearance::default())
+                render::build_scene(
+                    s,
+                    render::Repr::Spacefill,
+                    render::Coloring::Element,
+                    1.0,
+                    Style::Illustrative,
+                    render::Palette::Spectrum,
+                    true,
+                    true,
+                    &render::Appearance::default(),
+                )
             }),
             style: Style::Illustrative,
             page: [0.97, 0.97, 0.96],
@@ -1905,7 +2435,10 @@ fn film_samples() {
             options,
             legend: Some(Legend::Swatches {
                 title: "Atoms".into(),
-                items: vec![([0.13, 0.45, 0.85], "Type 1".into()), ([0.90, 0.35, 0.15], "Type 2".into())],
+                items: vec![
+                    ([0.13, 0.45, 0.85], "Type 1".into()),
+                    ([0.90, 0.35, 0.15], "Type 2".into()),
+                ],
                 more: 0,
             }),
             labels: Vec::new(),
@@ -1913,6 +2446,11 @@ fn film_samples() {
         let t = std::time::Instant::now();
         let progress = Progress::default();
         let path = export(&job, &dir.join(name), &progress).unwrap();
-        eprintln!("{} · {} frames · {:.1}s", path.display(), job.shots.len(), t.elapsed().as_secs_f32());
+        eprintln!(
+            "{} · {} frames · {:.1}s",
+            path.display(),
+            job.shots.len(),
+            t.elapsed().as_secs_f32()
+        );
     }
 }

@@ -19,7 +19,9 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
     let mut lines = text.lines();
     let comment = lines.next().unwrap_or("").trim().to_string();
     let scale = floats(lines.next().unwrap_or(""));
-    let scale = *scale.first().ok_or_else(|| anyhow!("missing scale factor"))?;
+    let scale = *scale
+        .first()
+        .ok_or_else(|| anyhow!("missing scale factor"))?;
 
     let mut vectors = [[0.0f32; 3]; 3];
     for row in &mut vectors {
@@ -70,7 +72,10 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
         .enumerate()
         .flat_map(|(i, n)| {
             // "Fe_pv" and "O_s" are POTCAR names; the element comes first.
-            let name = names.get(i).cloned().unwrap_or_else(|| format!("type {}", i + 1));
+            let name = names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("type {}", i + 1));
             let sym = name.split(['_', '/']).next().unwrap_or("").to_string();
             std::iter::repeat_n((Element::from_symbol(&sym), name), *n)
         })
@@ -129,7 +134,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
             if frame.len() != total {
                 break;
             }
-            b.frames.push(Snapshot { step: None, pos: frame, cell: None });
+            b.frames.push(Snapshot {
+                step: None,
+                pos: frame,
+                cell: None,
+            });
         }
     }
 

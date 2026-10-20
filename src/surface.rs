@@ -138,7 +138,8 @@ pub fn gaussian(points: &[[f32; 3]], radii: &[f32], spacing: f32) -> Vec<Facet> 
     // grid. Atoms are found through buckets the size of the widest reach.
     let cell = rmax * REACH;
     let key = |p: [f32; 3]| [0, 1, 2].map(|k| ((p[k] - lo[k]) / cell).floor() as i32);
-    let mut buckets: std::collections::HashMap<[i32; 3], Vec<u32>> = std::collections::HashMap::new();
+    let mut buckets: std::collections::HashMap<[i32; 3], Vec<u32>> =
+        std::collections::HashMap::new();
     for (i, p) in points.iter().enumerate() {
         buckets.entry(key(*p)).or_default().push(i as u32);
     }
@@ -149,11 +150,15 @@ pub fn gaussian(points: &[[f32; 3]], radii: &[f32], spacing: f32) -> Vec<Facet> 
         for dz in -1..=1 {
             for dy in -1..=1 {
                 for dx in -1..=1 {
-                    let Some(list) = buckets.get(&[c[0] + dx, c[1] + dy, c[2] + dz]) else { continue };
+                    let Some(list) = buckets.get(&[c[0] + dx, c[1] + dy, c[2] + dz]) else {
+                        continue;
+                    };
                     for &i in list {
                         let p = points[i as usize];
                         let r = radii[i as usize];
-                        let d2 = ((m[0] - p[0]).powi(2) + (m[1] - p[1]).powi(2) + (m[2] - p[2]).powi(2)) / (r * r);
+                        let d2 =
+                            ((m[0] - p[0]).powi(2) + (m[1] - p[1]).powi(2) + (m[2] - p[2]).powi(2))
+                                / (r * r);
                         if d2 < best.0 {
                             best = (d2, i);
                         }
@@ -169,12 +174,22 @@ pub fn gaussian(points: &[[f32; 3]], radii: &[f32], spacing: f32) -> Vec<Facet> 
 /// The cube's corners, and its six tetrahedra about the 0–6 diagonal,
 /// which share faces with their neighbours' so the skin has no cracks.
 pub(crate) const CORNER: [[usize; 3]; 8] = [
-    [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
-    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+    [0, 0, 0],
+    [1, 0, 0],
+    [1, 1, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+    [1, 0, 1],
+    [1, 1, 1],
+    [0, 1, 1],
 ];
 pub(crate) const TETS: [[usize; 4]; 6] = [
-    [0, 5, 1, 6], [0, 1, 2, 6], [0, 2, 3, 6],
-    [0, 3, 7, 6], [0, 7, 4, 6], [0, 4, 5, 6],
+    [0, 5, 1, 6],
+    [0, 1, 2, 6],
+    [0, 2, 3, 6],
+    [0, 3, 7, 6],
+    [0, 7, 4, 6],
+    [0, 4, 5, 6],
 ];
 
 /// The surface's crossing of one tetrahedron: none, one triangle where one
@@ -197,18 +212,39 @@ pub(crate) fn march(
     let cross = |a: usize, b: usize| {
         let t = value[a] / (value[a] - value[b]);
         let (pa, pb) = (world(cell[a]), world(cell[b]));
-        let (ga, gb) = (gradient(cell[a][0], cell[a][1], cell[a][2]), gradient(cell[b][0], cell[b][1], cell[b][2]));
+        let (ga, gb) = (
+            gradient(cell[a][0], cell[a][1], cell[a][2]),
+            gradient(cell[b][0], cell[b][1], cell[b][2]),
+        );
         let p = [0, 1, 2].map(|k| pa[k] + (pb[k] - pa[k]) * t);
         let n = unit([0, 1, 2].map(|k| ga[k] + (gb[k] - ga[k]) * t));
         (p, n)
     };
     // Its atom is settled once every triangle is made.
     let mut push = |v: [([f32; 3], [f32; 3]); 3]| {
-        out.push(Facet { p: v.map(|(p, _)| p), n: v.map(|(_, n)| n), atom: 0 });
+        out.push(Facet {
+            p: v.map(|(p, _)| p),
+            n: v.map(|(_, n)| n),
+            atom: 0,
+        });
     };
     match (inside.len(), outside.len()) {
-        (1, 3) => push(outside.iter().map(|&o| cross(inside[0], o)).collect::<Vec<_>>().try_into().unwrap()),
-        (3, 1) => push(inside.iter().map(|&i| cross(i, outside[0])).collect::<Vec<_>>().try_into().unwrap()),
+        (1, 3) => push(
+            outside
+                .iter()
+                .map(|&o| cross(inside[0], o))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        ),
+        (3, 1) => push(
+            inside
+                .iter()
+                .map(|&i| cross(i, outside[0]))
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap(),
+        ),
         _ => {
             let (a, b, c, d) = (
                 cross(inside[0], outside[0]),
@@ -259,7 +295,10 @@ mod tests {
         // Between two near atoms the skin is bridged: nothing crosses the
         // line joining them, where two separate balls would have each a cap.
         let on_axis = |fs: &[Facet]| {
-            fs.iter().any(|f| f.p.iter().any(|p| p[1].abs() < 0.2 && p[2].abs() < 0.2 && p[0] > 0.5 && p[0] < 2.0))
+            fs.iter().any(|f| {
+                f.p.iter()
+                    .any(|p| p[1].abs() < 0.2 && p[2].abs() < 0.2 && p[0] > 0.5 && p[0] < 2.0)
+            })
         };
         assert!(!on_axis(&near));
         assert!(far.iter().any(|f| f.atom == 0) && far.iter().any(|f| f.atom == 1));

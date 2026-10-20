@@ -267,8 +267,11 @@ pub fn fetch_pdb(id: &str, tx: &Sender<Event>) -> Result<Structure> {
 
 pub fn fetch_alphafold(acc: &str, tx: &Sender<Event>) -> Result<Structure> {
     let _ = tx.send(Event::Stage(format!("Fetching {acc} from AlphaFold DB")));
-    let meta = get(&format!("https://alphafold.ebi.ac.uk/api/prediction/{acc}"), None)
-        .map_err(|e| anyhow!("no AlphaFold model for {acc} ({e})"))?;
+    let meta = get(
+        &format!("https://alphafold.ebi.ac.uk/api/prediction/{acc}"),
+        None,
+    )
+    .map_err(|e| anyhow!("no AlphaFold model for {acc} ({e})"))?;
     let json: serde_json::Value = serde_json::from_str(&meta)?;
     let entry = json
         .get(0)
@@ -290,10 +293,17 @@ pub fn fetch_alphafold(acc: &str, tx: &Sender<Event>) -> Result<Structure> {
     // having without them.
     if let Some(url) = entry.get("paeDocUrl").and_then(|v| v.as_str()) {
         let _ = tx.send(Event::Stage("Fetching the predicted aligned error".into()));
-        match get(url, Some(tx)).map_err(anyhow::Error::from).and_then(|t| crate::protein::Pae::from_json(&t)) {
-            Ok(pae) if pae.n == s.residues.iter().filter(|r| !r.outside_polymer()).count() => s.pae = Some(Arc::new(pae)),
+        match get(url, Some(tx))
+            .map_err(anyhow::Error::from)
+            .and_then(|t| crate::protein::Pae::from_json(&t))
+        {
+            Ok(pae) if pae.n == s.residues.iter().filter(|r| !r.outside_polymer()).count() => {
+                s.pae = Some(Arc::new(pae))
+            }
             Ok(_) => {
-                let _ = tx.send(Event::Log("The predicted aligned error does not match the model and was omitted.".into()));
+                let _ = tx.send(Event::Log(
+                    "The predicted aligned error does not match the model and was omitted.".into(),
+                ));
             }
             Err(e) => {
                 let _ = tx.send(Event::Log(format!("No predicted aligned error ({e:#}).")));
@@ -319,7 +329,12 @@ pub fn fetch_pubchem(cid: u64, tx: &Sender<Event>) -> Result<Structure> {
         }
     };
     let _ = tx.send(Event::Stage("Reading structure".into()));
-    let mut s = formats::parse(&text, formats::Format::Sdf, format!("CID {cid}"), Source::PubChem)?;
+    let mut s = formats::parse(
+        &text,
+        formats::Format::Sdf,
+        format!("CID {cid}"),
+        Source::PubChem,
+    )?;
     if s.atoms.is_empty() {
         anyhow::bail!("no atoms in CID {cid}");
     }
@@ -333,7 +348,10 @@ pub fn fetch_pubchem(cid: u64, tx: &Sender<Event>) -> Result<Structure> {
 /// A UniProt entry's sequence, for folding.
 #[cfg_attr(not(feature = "simplefold"), allow(dead_code))]
 pub fn fetch_uniprot_sequence(acc: &str) -> Result<String> {
-    let fasta = get(&format!("https://rest.uniprot.org/uniprotkb/{acc}.fasta"), None)?;
+    let fasta = get(
+        &format!("https://rest.uniprot.org/uniprotkb/{acc}.fasta"),
+        None,
+    )?;
     let seq = clean_sequence(&fasta);
     if seq.is_empty() {
         anyhow::bail!("no sequence for {acc}");
@@ -367,20 +385,38 @@ mod tests {
 
     #[test]
     fn words_are_searched_and_residues_are_not() {
-        assert_eq!(classify("green fluorescent protein"), Input::Query("green fluorescent protein".into()));
+        assert_eq!(
+            classify("green fluorescent protein"),
+            Input::Query("green fluorescent protein".into())
+        );
         assert_eq!(classify("caffeine"), Input::Query("caffeine".into()));
-        assert_eq!(classify("samples/nothing.pdb"), Input::Missing("samples/nothing.pdb".into()));
-        assert_eq!(classify("melt.lammpstrj"), Input::Missing("melt.lammpstrj".into()));
-        assert_eq!(classify("GREEN FLUORESCENT PROTEIN"), Input::Query("GREEN FLUORESCENT PROTEIN".into()));
+        assert_eq!(
+            classify("samples/nothing.pdb"),
+            Input::Missing("samples/nothing.pdb".into())
+        );
+        assert_eq!(
+            classify("melt.lammpstrj"),
+            Input::Missing("melt.lammpstrj".into())
+        );
+        assert_eq!(
+            classify("GREEN FLUORESCENT PROTEIN"),
+            Input::Query("GREEN FLUORESCENT PROTEIN".into())
+        );
         assert_eq!(classify("1gfl"), Input::Pdb("1GFL".into()));
         assert_eq!(classify("P42212"), Input::UniProt("P42212".into()));
         assert_eq!(classify("CID 2519"), Input::Cid(2519));
         assert_eq!(classify("cid:2244"), Input::Cid(2244));
         let crambin = "TTCCPSIVARSNFNVCRLPGTPEAICATYTGCIIIPGATCPGDYAN";
         assert_eq!(classify(crambin), Input::Sequence(crambin.into()));
-        assert_eq!(classify(&format!(">crambin\n{crambin}")), Input::Sequence(crambin.into()));
+        assert_eq!(
+            classify(&format!(">crambin\n{crambin}")),
+            Input::Sequence(crambin.into())
+        );
         // GenBank's blocks of ten.
-        assert!(matches!(classify("ttccpsivar snfnvcrlpg tpeaicatyt"), Input::Sequence(_)));
+        assert!(matches!(
+            classify("ttccpsivar snfnvcrlpg tpeaicatyt"),
+            Input::Sequence(_)
+        ));
         // A fold tab takes words that could be residues as residues.
         assert!(as_sequence("green fluorescent protein", true).is_some());
         assert!(as_sequence("green fluorescent protein", false).is_none());

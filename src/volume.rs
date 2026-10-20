@@ -38,17 +38,20 @@ impl Volume {
     pub fn cell(&self) -> crate::protein::Cell {
         crate::protein::Cell {
             origin: self.origin,
-            vectors: std::array::from_fn(|i| self.axes[i].map(|x| x * (self.dims[i].max(2) - 1) as f32)),
+            vectors: std::array::from_fn(|i| {
+                self.axes[i].map(|x| x * (self.dims[i].max(2) - 1) as f32)
+            }),
         }
     }
 
     /// Whether the values run both ways from zero, as an orbital's do,
     /// rather than all one way, as a density's.
     pub fn signed(&self) -> bool {
-        let (lo, hi) = self.data.par_iter().fold(|| (0f32, 0f32), |(a, b), &x| (a.min(x), b.max(x))).reduce(
-            || (0.0, 0.0),
-            |(a, b), (c, d)| (a.min(c), b.max(d)),
-        );
+        let (lo, hi) = self
+            .data
+            .par_iter()
+            .fold(|| (0f32, 0f32), |(a, b), &x| (a.min(x), b.max(x)))
+            .reduce(|| (0.0, 0.0), |(a, b), (c, d)| (a.min(c), b.max(d)));
         lo < 0.0 && hi > 0.0 && lo.abs().min(hi) > 0.1 * lo.abs().max(hi)
     }
 
@@ -60,9 +63,18 @@ impl Volume {
         let n = self.data.len().max(1) as f64;
         let value = |x: f32| if signed { x.abs() as f64 } else { x as f64 };
         let mean = self.data.par_iter().map(|&x| value(x)).sum::<f64>() / n;
-        let var = self.data.par_iter().map(|&x| (value(x) - mean).powi(2)).sum::<f64>() / n;
+        let var = self
+            .data
+            .par_iter()
+            .map(|&x| (value(x) - mean).powi(2))
+            .sum::<f64>()
+            / n;
         let level = (mean + 2.5 * var.sqrt()) as f32;
-        if level.is_finite() && level != 0.0 { level } else { 1.0 }
+        if level.is_finite() && level != 0.0 {
+            level
+        } else {
+            1.0
+        }
     }
 
     /// The surface where the values cross `level`, facing out of where they
@@ -91,7 +103,9 @@ impl Volume {
             };
             let g = [d(0), d(1), d(2)];
             // inv^T · g
-            std::array::from_fn::<f32, 3, _>(|r| inv[0][r] * g[0] + inv[1][r] * g[1] + inv[2][r] * g[2])
+            std::array::from_fn::<f32, 3, _>(|r| {
+                inv[0][r] * g[0] + inv[1][r] * g[1] + inv[2][r] * g[2]
+            })
         };
         let world = |g: [usize; 3]| self.point(g);
         (0..nz - 1)
@@ -117,7 +131,8 @@ impl Volume {
 }
 
 fn invert(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
-    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
     if det.abs() < 1e-20 {
         return None;
@@ -146,7 +161,9 @@ fn invert(m: [[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
 pub fn is_map(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     let lower = lower.strip_suffix(".gz").unwrap_or(&lower);
-    [".mrc", ".map", ".ccp4", ".dx", ".mrcs"].iter().any(|e| lower.ends_with(e))
+    [".mrc", ".map", ".ccp4", ".dx", ".mrcs"]
+        .iter()
+        .any(|e| lower.ends_with(e))
 }
 
 /// A map from its file's bytes, gzipped or not.
@@ -172,7 +189,11 @@ pub fn mrc(b: &[u8]) -> Result<Volume> {
     let big = b[212] == 0x11;
     let int = |o: usize| {
         let w = [b[o], b[o + 1], b[o + 2], b[o + 3]];
-        if big { i32::from_be_bytes(w) } else { i32::from_le_bytes(w) }
+        if big {
+            i32::from_be_bytes(w)
+        } else {
+            i32::from_le_bytes(w)
+        }
     };
     let float = |o: usize| f32::from_bits(int(o) as u32);
     let (nc, nr, ns) = (int(0), int(4), int(8));
@@ -186,14 +207,24 @@ pub fn mrc(b: &[u8]) -> Result<Volume> {
     let cell = [float(40), float(44), float(48)];
     let angles = [float(52), float(56), float(60)].map(|a| if a > 0.0 { a } else { 90.0 });
     let order = [int(64), int(68), int(72)];
-    let order = if order.iter().all(|o| (1..=3).contains(o)) { order } else { [1, 2, 3] };
+    let order = if order.iter().all(|o| (1..=3).contains(o)) {
+        order
+    } else {
+        [1, 2, 3]
+    };
     let extended = int(92).max(0) as usize;
     let origin = [float(196), float(200), float(204)];
 
     // The cell's edges from its lengths and angles, a along x, b in the xy
     // plane; one grid step along each is the edge over its sampling.
     // A right angle exactly, as nearly every map's are, so its axes are square.
-    let trig = |deg: f32| if (deg - 90.0).abs() < 1e-4 { (0.0, 1.0) } else { (deg.to_radians().cos(), deg.to_radians().sin()) };
+    let trig = |deg: f32| {
+        if (deg - 90.0).abs() < 1e-4 {
+            (0.0, 1.0)
+        } else {
+            (deg.to_radians().cos(), deg.to_radians().sin())
+        }
+    };
     let [(cal, _), (cbe, _), (cga, sga)] = angles.map(trig);
     let a = [cell[0], 0.0, 0.0];
     let bv = [cell[1] * cga, cell[1] * sga, 0.0];
@@ -217,9 +248,12 @@ pub fn mrc(b: &[u8]) -> Result<Volume> {
     };
 
     let count = dims[0] * dims[1] * dims[2];
-    let body = b.get(1024 + extended..).ok_or_else(|| anyhow!("the extended header runs past the end"))?;
+    let body = b
+        .get(1024 + extended..)
+        .ok_or_else(|| anyhow!("the extended header runs past the end"))?;
     let need = |size: usize| -> Result<&[u8]> {
-        body.get(..count * size).ok_or_else(|| anyhow!("the map ends before its {count} values"))
+        body.get(..count * size)
+            .ok_or_else(|| anyhow!("the map ends before its {count} values"))
     };
     let data: Vec<f32> = match mode {
         0 => need(1)?.iter().map(|&x| x as i8 as f32).collect(),
@@ -240,7 +274,12 @@ pub fn mrc(b: &[u8]) -> Result<Volume> {
             .collect(),
         other => bail!("values of mode {other}, which is not read"),
     };
-    Ok(Volume { origin: corner, axes, dims, data })
+    Ok(Volume {
+        origin: corner,
+        axes,
+        dims,
+        data,
+    })
 }
 
 /// An OpenDX grid, as APBS writes a potential: the counts, origin and
@@ -251,14 +290,21 @@ pub fn dx(text: &str) -> Result<Volume> {
     let mut deltas: Vec<V> = Vec::new();
     let mut data: Vec<f32> = Vec::new();
     let mut reading = false;
-    let numbers = |s: &str| s.split_whitespace().filter_map(|x| x.parse::<f32>().ok()).collect::<Vec<f32>>();
+    let numbers = |s: &str| {
+        s.split_whitespace()
+            .filter_map(|x| x.parse::<f32>().ok())
+            .collect::<Vec<f32>>()
+    };
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('#') || line.is_empty() {
             continue;
         }
         if reading {
-            if line.starts_with("attribute") || line.starts_with("object") || line.starts_with("component") {
+            if line.starts_with("attribute")
+                || line.starts_with("object")
+                || line.starts_with("component")
+            {
                 reading = false;
                 continue;
             }
@@ -269,7 +315,11 @@ pub fn dx(text: &str) -> Result<Volume> {
             let v: Vec<usize> = line
                 .split("counts")
                 .nth(1)
-                .map(|r| r.split_whitespace().filter_map(|x| x.parse().ok()).collect())
+                .map(|r| {
+                    r.split_whitespace()
+                        .filter_map(|x| x.parse().ok())
+                        .collect()
+                })
                 .unwrap_or_default();
             if v.len() == 3 {
                 counts = Some([v[0], v[1], v[2]]);
@@ -318,12 +368,20 @@ mod tests {
         for k in 0..n {
             for j in 0..n {
                 for i in 0..n {
-                    let d = ((i as f32 * h - c).powi(2) + (j as f32 * h - c).powi(2) + (k as f32 * h - c).powi(2)).sqrt();
+                    let d = ((i as f32 * h - c).powi(2)
+                        + (j as f32 * h - c).powi(2)
+                        + (k as f32 * h - c).powi(2))
+                    .sqrt();
                     data.push(1.0 - d / r);
                 }
             }
         }
-        Volume { origin: [0.0; 3], axes: [[h, 0.0, 0.0], [0.0, h, 0.0], [0.0, 0.0, h]], dims: [n; 3], data }
+        Volume {
+            origin: [0.0; 3],
+            axes: [[h, 0.0, 0.0], [0.0, h, 0.0], [0.0, 0.0, h]],
+            dims: [n; 3],
+            data,
+        }
     }
 
     #[test]
@@ -351,10 +409,31 @@ mod tests {
         let (nx, ny, nz) = (3i32, 2i32, 2i32);
         let mut b = vec![0u8; 1024];
         let put = |b: &mut Vec<u8>, o: usize, v: [u8; 4]| b[o..o + 4].copy_from_slice(&v);
-        for (o, v) in [(0, nx), (4, ny), (8, nz), (12, 2), (28, nx), (32, ny), (36, nz), (64, 1), (68, 2), (72, 3)] {
+        for (o, v) in [
+            (0, nx),
+            (4, ny),
+            (8, nz),
+            (12, 2),
+            (28, nx),
+            (32, ny),
+            (36, nz),
+            (64, 1),
+            (68, 2),
+            (72, 3),
+        ] {
             put(&mut b, o, v.to_le_bytes());
         }
-        for (o, v) in [(40, 6.0f32), (44, 4.0), (48, 2.0), (52, 90.0), (56, 90.0), (60, 90.0), (196, 10.0), (200, 20.0), (204, 30.0)] {
+        for (o, v) in [
+            (40, 6.0f32),
+            (44, 4.0),
+            (48, 2.0),
+            (52, 90.0),
+            (56, 90.0),
+            (60, 90.0),
+            (196, 10.0),
+            (200, 20.0),
+            (204, 30.0),
+        ] {
             put(&mut b, o, v.to_le_bytes());
         }
         b[212] = 0x44;

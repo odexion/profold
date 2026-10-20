@@ -162,7 +162,11 @@ impl Engine {
                 hub.join("esm2_t36_3B_UR50D-contact-regression.pt"),
                 "ESM2-3B's contact regression",
             ),
-            want(format!("{BOLTZ}/ccd.pkl"), cache.join("ccd.pkl"), "the chemical component dictionary"),
+            want(
+                format!("{BOLTZ}/ccd.pkl"),
+                cache.join("ccd.pkl"),
+                "the chemical component dictionary",
+            ),
             want(
                 format!("{BOLTZ}/boltz1_conf.ckpt"),
                 cache.join("boltz1_conf.ckpt"),
@@ -203,9 +207,8 @@ impl Engine {
     pub fn install(&self, tx: &Sender<Event>) -> Result<()> {
         std::fs::create_dir_all(&self.root)?;
 
-        let uv = which("uv").ok_or_else(|| {
-            anyhow!("`uv` was not found. {UV_HINT}, then try again.")
-        })?;
+        let uv =
+            which("uv").ok_or_else(|| anyhow!("`uv` was not found. {UV_HINT}, then try again."))?;
         let git = which("git").ok_or_else(|| anyhow!("`git` was not found."))?;
 
         if !self.repo().join("pyproject.toml").exists() {
@@ -227,7 +230,10 @@ impl Engine {
         }
 
         if self.python().exists() && !self.venv_is_current() {
-            stage(tx, &format!("Rebuilding the Python environment on {PYTHON}…"));
+            stage(
+                tx,
+                &format!("Rebuilding the Python environment on {PYTHON}…"),
+            );
             std::fs::remove_dir_all(self.venv())
                 .with_context(|| format!("removing {}", self.venv().display()))?;
         }
@@ -235,12 +241,7 @@ impl Engine {
             stage(tx, &format!("Creating a Python {PYTHON} environment…"));
             run(
                 &uv,
-                &[
-                    "venv",
-                    "--python",
-                    PYTHON,
-                    &self.venv().to_string_lossy(),
-                ],
+                &["venv", "--python", PYTHON, &self.venv().to_string_lossy()],
                 &self.root,
                 &[],
                 tx,
@@ -258,7 +259,10 @@ impl Engine {
             &[("UV_TORCH_BACKEND", "auto")]
         };
 
-        stage(tx, "Installing simplefold (large download; this may take several minutes)…");
+        stage(
+            tx,
+            "Installing simplefold (large download; this may take several minutes)…",
+        );
         run(
             &uv,
             &[
@@ -449,7 +453,8 @@ impl Engine {
         }
         if !source.contains(ORIGINAL) {
             let _ = tx.send(Event::Log(
-                "SimpleFold loads ESM differently than expected; the memory patch was not applied.".into(),
+                "SimpleFold loads ESM differently than expected; the memory patch was not applied."
+                    .into(),
             ));
             return;
         }
@@ -463,7 +468,9 @@ impl Engine {
                 ));
             }
             Err(e) => {
-                let _ = tx.send(Event::Log(format!("Could not apply the model-loading patch: {e}")));
+                let _ = tx.send(Event::Log(format!(
+                    "Could not apply the model-loading patch: {e}"
+                )));
             }
         }
     }
@@ -485,7 +492,11 @@ impl Engine {
         self.ease_esm_load(tx);
         // Everything SimpleFold would fetch for itself, fetched first and
         // whole; see download.rs.
-        download::ensure(&self.weights(model, plddt), &self.root.join("downloads.json"), tx)?;
+        download::ensure(
+            &self.weights(model, plddt),
+            &self.root.join("downloads.json"),
+            tx,
+        )?;
         let started = std::time::SystemTime::now();
 
         let fasta = run_dir.join(format!("{name}.fasta"));
@@ -807,7 +818,10 @@ mod tests {
             })
             .collect();
         assert_eq!(events[0], "log Loading");
-        assert_eq!(events[1], "stage Downloading model weights (5.29GB), needed once");
+        assert_eq!(
+            events[1],
+            "stage Downloading model weights (5.29GB), needed once"
+        );
         assert_eq!(events[2], "progress Some(0.01)");
         assert_eq!(events[3], "progress Some(0.02)");
         assert_eq!(events.len(), 4, "{events:?}");

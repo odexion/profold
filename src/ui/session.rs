@@ -29,7 +29,11 @@ fn rgb(c: [f32; 3]) -> Value {
 
 fn read_rgb(v: &Value) -> Option<[f32; 3]> {
     let a = v.as_array()?;
-    Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32, a.get(2)?.as_f64()? as f32])
+    Some([
+        a.first()?.as_f64()? as f32,
+        a.get(1)?.as_f64()? as f32,
+        a.get(2)?.as_f64()? as f32,
+    ])
 }
 
 fn floats<const N: usize>(v: &Value) -> Option<[f32; N]> {
@@ -116,15 +120,26 @@ impl Viewer {
     /// Open a session saved by `session_json`.
     pub(super) fn open_session(&mut self, text: &str, cx: &mut Context<Self>) -> Result<()> {
         let v: Value = serde_json::from_str(text).context("reading the session")?;
-        if v.get("profold").and_then(Value::as_u64).is_none_or(|n| n > VERSION) {
+        if v.get("profold")
+            .and_then(Value::as_u64)
+            .is_none_or(|n| n > VERSION)
+        {
             bail!("this session was saved by a newer profold");
         }
-        let cif = v["structure"].as_str().ok_or_else(|| anyhow!("the session holds no structure"))?;
+        let cif = v["structure"]
+            .as_str()
+            .ok_or_else(|| anyhow!("the session holds no structure"))?;
         let id = v["id"].as_str().unwrap_or("session").to_string();
         let mut s: Structure = formats::parse(cif, Format::Cif, id, Source::File)?;
         // Where it came from, so it still says so.
         if let Some(label) = v["source"].as_str() {
-            for source in [Source::Pdb, Source::AlphaFold, Source::PubChem, Source::SimpleFold, Source::File] {
+            for source in [
+                Source::Pdb,
+                Source::AlphaFold,
+                Source::PubChem,
+                Source::SimpleFold,
+                Source::File,
+            ] {
                 if source.label() == label {
                     s.source = source;
                 }
@@ -138,15 +153,23 @@ impl Viewer {
             }
         }
         for l in v["ligand_paint"].as_array().into_iter().flatten() {
-            if let (Some(name), Some(kind), Some(color)) = (l[0].as_str(), l[1].as_str(), read_rgb(&l[2])) {
-                let paint = if kind == "carbons" { LigandPaint::Carbons(color) } else { LigandPaint::Solid(color) };
+            if let (Some(name), Some(kind), Some(color)) =
+                (l[0].as_str(), l[1].as_str(), read_rgb(&l[2]))
+            {
+                let paint = if kind == "carbons" {
+                    LigandPaint::Carbons(color)
+                } else {
+                    LigandPaint::Solid(color)
+                };
                 s.ligand_paint.insert(name.to_string(), paint);
             }
         }
         let atoms = s.atoms.len();
 
         self.show(s, cx);
-        let pick = |list: &[&'static str], v: &Value| v.as_str().and_then(|t| list.iter().position(|l| *l == t));
+        let pick = |list: &[&'static str], v: &Value| {
+            v.as_str().and_then(|t| list.iter().position(|l| *l == t))
+        };
         if let Some(i) = pick(&Repr::ALL.map(Repr::label), &v["repr"]) {
             self.repr = Repr::ALL[i];
         }
@@ -166,7 +189,11 @@ impl Viewer {
             self.show_cell = b;
         }
         let cam = &v["camera"];
-        if let (Some(o), Some(pan), Some(center)) = (floats::<9>(&cam["orientation"]), floats::<2>(&cam["pan"]), floats::<3>(&cam["center"])) {
+        if let (Some(o), Some(pan), Some(center)) = (
+            floats::<9>(&cam["orientation"]),
+            floats::<2>(&cam["pan"]),
+            floats::<3>(&cam["center"]),
+        ) {
             self.camera = Camera {
                 orientation: [[o[0], o[1], o[2]], [o[3], o[4], o[5]], [o[6], o[7], o[8]]],
                 zoom: cam["zoom"].as_f64().unwrap_or(1.0) as f32,
@@ -183,21 +210,39 @@ impl Viewer {
             .into_iter()
             .flatten()
             .filter_map(|m| {
-                let kind = measure::Kind::ALL.into_iter().find(|k| Some(k.label()) == m["kind"].as_str())?;
-                let atoms: Vec<usize> = m["atoms"].as_array()?.iter().map(in_range).collect::<Option<_>>()?;
-                (atoms.len() == kind.atoms()).then_some(Measurement { kind, which: 0, atoms })
+                let kind = measure::Kind::ALL
+                    .into_iter()
+                    .find(|k| Some(k.label()) == m["kind"].as_str())?;
+                let atoms: Vec<usize> = m["atoms"]
+                    .as_array()?
+                    .iter()
+                    .map(in_range)
+                    .collect::<Option<_>>()?;
+                (atoms.len() == kind.atoms()).then_some(Measurement {
+                    kind,
+                    which: 0,
+                    atoms,
+                })
             })
             .collect();
         self.selected = in_range(&v["selected"]["atom"]).map(|atom| Target {
             which: 0,
-            picked: Picked { atom, residue: v["selected"]["residue"].as_bool().unwrap_or(false), depth: 0.0 },
+            picked: Picked {
+                atom,
+                residue: v["selected"]["residue"].as_bool().unwrap_or(false),
+                depth: 0.0,
+            },
         });
         self.views = v["views"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|c| {
-                let (o, pan, center) = (floats::<9>(&c["orientation"])?, floats::<2>(&c["pan"])?, floats::<3>(&c["center"])?);
+                let (o, pan, center) = (
+                    floats::<9>(&c["orientation"])?,
+                    floats::<2>(&c["pan"])?,
+                    floats::<3>(&c["center"])?,
+                );
                 Some(Camera {
                     orientation: [[o[0], o[1], o[2]], [o[3], o[4], o[5]], [o[6], o[7], o[8]]],
                     zoom: c["zoom"].as_f64()? as f32,
@@ -210,16 +255,31 @@ impl Viewer {
             })
             .collect();
         for l in v["layers"].as_array().into_iter().flatten() {
-            let Some(selection) = l["select"].as_str().and_then(|t| crate::select::Selection::parse(t).ok()) else {
+            let Some(selection) = l["select"]
+                .as_str()
+                .and_then(|t| crate::select::Selection::parse(t).ok())
+            else {
                 continue;
             };
-            let style = LayerStyle::ALL.into_iter().find(|k| Some(k.label()) == l["style"].as_str()).unwrap_or(LayerStyle::Sticks);
-            self.layers.push(super::Layer { selection, atoms: Default::default(), style, color: read_rgb(&l["color"]) });
+            let style = LayerStyle::ALL
+                .into_iter()
+                .find(|k| Some(k.label()) == l["style"].as_str())
+                .unwrap_or(LayerStyle::Sticks);
+            self.layers.push(super::Layer {
+                selection,
+                atoms: Default::default(),
+                style,
+                color: read_rgb(&l["color"]),
+            });
         }
         self.rebuild(cx);
         if let Some(ligand) = v["site"].as_u64().map(|r| r as usize) {
             let camera = self.camera;
-            if self.structure.as_ref().is_some_and(|s| ligand < s.residues.len()) {
+            if self
+                .structure
+                .as_ref()
+                .is_some_and(|s| ligand < s.residues.len())
+            {
                 self.show_site(ligand, cx);
                 // The site comes back as it was seen, without flying there.
                 self.fly_task = None;

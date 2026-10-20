@@ -15,7 +15,10 @@ fn names() {
     assert_eq!(Format::from_name("1crn.pdb.gz"), Some(Format::Pdb));
     assert_eq!(Format::from_name("data.melt"), Some(Format::LammpsData));
     assert_eq!(Format::from_name("dump.crack"), Some(Format::LammpsDump));
-    assert_eq!(Format::from_name("traj.lammpstrj"), Some(Format::LammpsDump));
+    assert_eq!(
+        Format::from_name("traj.lammpstrj"),
+        Some(Format::LammpsDump)
+    );
     assert_eq!(Format::from_name("CONTCAR"), Some(Format::Poscar));
     assert_eq!(Format::from_name("XDATCAR"), Some(Format::Poscar));
     assert_eq!(Format::from_name("conf.gro"), Some(Format::Gro));
@@ -234,7 +237,10 @@ ITEM: ATOMS id type xs ys zs
     assert_eq!(s.frame_count(), 2);
     assert!(close(s.atoms[1].pos, [1.0, 1.0, 1.0]));
     assert!(close(s.frames[1].pos[0], [0.2, 0.0, 0.0]));
-    assert_eq!(s.frames.iter().map(|f| f.step).collect::<Vec<_>>(), vec![Some(0), Some(100)]);
+    assert_eq!(
+        s.frames.iter().map(|f| f.step).collect::<Vec<_>>(),
+        vec![Some(0), Some(100)]
+    );
     assert_eq!(s.kinds, vec!["1".to_string(), "2".to_string()]);
     assert!(!s.atoms[0].element.is_known());
     // Atoms of no element are drawn half their spacing across.
@@ -291,7 +297,10 @@ Cl1 Cl- 0.5 0.5 0.5
     assert_eq!(s.title, "Halite");
     assert_eq!(s.atoms.len(), 8);
     assert_eq!(
-        s.atoms.iter().filter(|a| a.element == Element::from_symbol("Na")).count(),
+        s.atoms
+            .iter()
+            .filter(|a| a.element == Element::from_symbol("Na"))
+            .count(),
         4
     );
 }
@@ -353,7 +362,10 @@ fn atoms_keep_their_names_and_say_what_they_are() {
     assert_eq!(s.atoms[1].name(), "CA");
     assert_eq!(s.atoms[4].name(), "OG");
     let card = s.card(4, false).unwrap();
-    assert_eq!((card.title.as_str(), card.tag.as_str()), ("Serine", "SER 42"));
+    assert_eq!(
+        (card.title.as_str(), card.tag.as_str()),
+        ("Serine", "SER 42")
+    );
     assert_eq!(card.chain.as_deref(), Some("A"));
     assert_eq!(card.atom.as_deref(), Some("OG"));
     assert_eq!(card.element.map(|e| e.0), Some("O"));
@@ -386,7 +398,10 @@ fn a_haem_pocket_holds_its_histidines() {
     let haems = s.copies("HEM");
     assert_eq!(haems.len(), 4);
     let site = s.site(haems[0], 5.0);
-    let names: Vec<String> = site.iter().map(|&r| format!("{}{}", s.residues[r].name, s.residues[r].seq)).collect();
+    let names: Vec<String> = site
+        .iter()
+        .map(|&r| format!("{}{}", s.residues[r].name, s.residues[r].seq))
+        .collect();
     // The alpha chain's proximal and distal histidines hold the haem.
     assert!(names.contains(&"HIS87".to_string()), "{names:?}");
     assert!(names.contains(&"HIS58".to_string()), "{names:?}");
@@ -403,7 +418,11 @@ fn a_dna_strand_is_traced_and_its_bases_are_no_ligands() {
     assert_eq!(s.residues.len(), 3);
     assert!(s.has_polymer(), "a strand alone is a polymer");
     // The first has no phosphorus, and is traced through its C4'.
-    let traced: Vec<&str> = s.residues.iter().map(|r| s.atoms[r.nucleic.unwrap() as usize].name()).collect();
+    let traced: Vec<&str> = s
+        .residues
+        .iter()
+        .map(|r| s.atoms[r.nucleic.unwrap() as usize].name())
+        .collect();
     assert_eq!(traced, ["C4'", "P", "P"]);
     assert!(s.ligands().is_empty());
     assert!(s.residues.iter().all(|r| !r.outside_polymer()));
@@ -413,7 +432,11 @@ fn a_dna_strand_is_traced_and_its_bases_are_no_ligands() {
 fn each_base_ends_at_the_atom_that_pairs() {
     let s = read(CGC, Format::Pdb);
     // A pyrimidine pairs through N3, a purine through N1.
-    let tips: Vec<&str> = s.residues.iter().map(|r| s.atoms[r.base.unwrap() as usize].name()).collect();
+    let tips: Vec<&str> = s
+        .residues
+        .iter()
+        .map(|r| s.atoms[r.base.unwrap() as usize].name())
+        .collect();
     assert_eq!(tips, ["N3", "N1", "N3"]);
     assert_eq!(s.atoms[s.residues[1].base.unwrap() as usize].residue, 1);
 }
@@ -424,11 +447,26 @@ fn many_nucleotides() -> String {
     let mut text = String::new();
     for (c, chain) in ["A", "B", "C", "D"].iter().enumerate() {
         for copy in 0..1700 {
-            let shift = [(copy % 12) as f32 * 40.0, (copy / 12 % 12) as f32 * 40.0, (copy / 144 + 15 * c) as f32 * 40.0];
+            let shift = [
+                (copy % 12) as f32 * 40.0,
+                (copy / 12 % 12) as f32 * 40.0,
+                (copy / 144 + 15 * c) as f32 * 40.0,
+            ];
             for line in CGC.lines() {
                 let seq: i32 = line[22..26].trim().parse().unwrap();
-                let x: Vec<f32> = (0..3).map(|k| line[30 + 8 * k..38 + 8 * k].trim().parse::<f32>().unwrap() + shift[k]).collect();
-                text += &format!("{}{chain}{:4}{}{:8.3}{:8.3}{:8.3}{}\n", &line[..21], seq + 3 * copy as i32, &line[26..30], x[0], x[1], x[2], &line[54..]);
+                let x: Vec<f32> = (0..3)
+                    .map(|k| line[30 + 8 * k..38 + 8 * k].trim().parse::<f32>().unwrap() + shift[k])
+                    .collect();
+                text += &format!(
+                    "{}{chain}{:4}{}{:8.3}{:8.3}{:8.3}{}\n",
+                    &line[..21],
+                    seq + 3 * copy as i32,
+                    &line[26..30],
+                    x[0],
+                    x[1],
+                    x[2],
+                    &line[54..]
+                );
             }
         }
     }
@@ -442,16 +480,42 @@ fn many_nucleotides() -> String {
 fn a_large_dna_cartoon_builds_and_picks_at_once() {
     use crate::render::{build_scene, pick, Appearance, Camera, Coloring, Palette, Repr, Style};
     let s = read(&many_nucleotides(), Format::Pdb);
-    assert_eq!(s.residues.iter().filter(|r| r.base.is_some()).count(), 20400);
+    assert_eq!(
+        s.residues.iter().filter(|r| r.base.is_some()).count(),
+        20400
+    );
     let t = std::time::Instant::now();
-    let scene = build_scene(&s, Repr::Cartoon, Coloring::Chain, 1.0, Style::Soft, Palette::Spectrum, false, false, &Appearance::default());
+    let scene = build_scene(
+        &s,
+        Repr::Cartoon,
+        Coloring::Chain,
+        1.0,
+        Style::Soft,
+        Palette::Spectrum,
+        false,
+        false,
+        &Appearance::default(),
+    );
     assert!(!scene.capsules.is_empty());
     let cam = Camera::frame(&s);
     for x in [100.0, 200.0, 300.0] {
-        pick(&s, Repr::Cartoon, &Appearance::default(), &cam, 400, 400, x, 200.0);
+        pick(
+            &s,
+            Repr::Cartoon,
+            &Appearance::default(),
+            &cam,
+            400,
+            400,
+            x,
+            200.0,
+        );
     }
     // Searching every atom for every base took over ten seconds here.
-    assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(3),
+        "{:?}",
+        t.elapsed()
+    );
 }
 
 /// Building a biological assembly copies residue after residue, and each
@@ -464,15 +528,28 @@ fn a_large_assembly_builds_at_once() {
     let mut moved = IDENTITY;
     moved[0][3] = 1000.0;
     let chains: Vec<String> = s.chains.iter().map(|c| c.id.clone()).collect();
-    let a = Assembly { id: "1".into(), name: String::new(), parts: vec![Part { chains, ops: vec![IDENTITY, moved] }] };
+    let a = Assembly {
+        id: "1".into(),
+        name: String::new(),
+        parts: vec![Part {
+            chains,
+            ops: vec![IDENTITY, moved],
+        }],
+    };
     let t = std::time::Instant::now();
     let built = build(&s, &a);
-    assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(3),
+        "{:?}",
+        t.elapsed()
+    );
     // Each copy has every atom, in file order.
     let n = s.atoms.len();
     assert_eq!(built.atoms.len(), 2 * n);
     assert_eq!(built.residues.len(), 2 * s.residues.len());
-    assert!((0..n).all(|i| built.atoms[i].pos == s.atoms[i].pos && built.atoms[i].name() == s.atoms[i].name()));
+    assert!((0..n).all(
+        |i| built.atoms[i].pos == s.atoms[i].pos && built.atoms[i].name() == s.atoms[i].name()
+    ));
     assert!((0..n).all(|i| built.atoms[n + i].pos[0] == s.atoms[i].pos[0] + 1000.0));
 }
 
@@ -495,7 +572,11 @@ fn atoms_by_residue_are_each_residues_atoms() {
 #[test]
 fn a_free_nucleotide_stays_a_ligand() {
     // One residue on its own, linked to nothing.
-    let one: String = CGC.lines().filter(|l| l.get(22..26).is_some_and(|n| n.trim() == "2")).map(|l| format!("{}\n", l.replacen("ATOM  ", "HETATM", 1))).collect();
+    let one: String = CGC
+        .lines()
+        .filter(|l| l.get(22..26).is_some_and(|n| n.trim() == "2"))
+        .map(|l| format!("{}\n", l.replacen("ATOM  ", "HETATM", 1)))
+        .collect();
     let s = read(&one, Format::Pdb);
     assert!(s.residues[0].nucleic.is_none());
 }
@@ -507,11 +588,19 @@ fn a_helix_sits_where_helices_do_on_the_ramachandran_plot() {
     let t = s.torsions();
     // The ends have no neighbour to measure across.
     assert!(t[0].is_none() && t[45].is_none());
-    let helix: Vec<(f32, f32)> = (0..s.residues.len()).filter(|&r| s.residues[r].ss == crate::protein::Ss::Helix).filter_map(|r| t[r]).collect();
+    let helix: Vec<(f32, f32)> = (0..s.residues.len())
+        .filter(|&r| s.residues[r].ss == crate::protein::Ss::Helix)
+        .filter_map(|r| t[r])
+        .collect();
     assert!(helix.len() > 10);
-    let (phi, psi) = helix.iter().fold((0.0, 0.0), |(a, b), (p, q)| (a + p, b + q));
+    let (phi, psi) = helix
+        .iter()
+        .fold((0.0, 0.0), |(a, b), (p, q)| (a + p, b + q));
     let (phi, psi) = (phi / helix.len() as f32, psi / helix.len() as f32);
-    assert!((-80.0..-45.0).contains(&phi) && (-60.0..-25.0).contains(&psi), "{phi} {psi}");
+    assert!(
+        (-80.0..-45.0).contains(&phi) && (-60.0..-25.0).contains(&psi),
+        "{phi} {psi}"
+    );
 }
 
 #[test]
@@ -521,12 +610,21 @@ fn predicted_aligned_error_is_read_as_alphafold_writes_it() {
     assert_eq!((pae.n, pae.max), (3, 31.75));
     assert_eq!(pae.at(1, 2), 2.5);
     assert_eq!(pae.at(2, 0), 5.0);
-    assert!(crate::protein::Pae::from_json(r#"[{"predicted_aligned_error":[[0,1],[1]]}]"#).is_err());
+    assert!(
+        crate::protein::Pae::from_json(r#"[{"predicted_aligned_error":[[0,1],[1]]}]"#).is_err()
+    );
 }
 
 #[test]
 fn force_field_names_are_amino_acids() {
-    for (name, code) in [("HSD", 'H'), ("HIE", 'H'), ("CYX", 'C'), ("ASH", 'D'), ("GLH", 'E'), ("LYN", 'K')] {
+    for (name, code) in [
+        ("HSD", 'H'),
+        ("HIE", 'H'),
+        ("CYX", 'C'),
+        ("ASH", 'D'),
+        ("GLH", 'E'),
+        ("LYN", 'K'),
+    ] {
         assert_eq!(crate::protein::three_to_one(name), code, "{name}");
     }
 }
@@ -535,12 +633,23 @@ fn force_field_names_are_amino_acids() {
 fn cards_name_what_lies_beside_a_polymer() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/4hhb.pdb.gz");
     let s = load_bytes("4hhb.pdb.gz", std::fs::read(path).unwrap()).unwrap();
-    let first = |name: &str| s.atoms.iter().position(|a| s.residues[a.residue as usize].name == name).unwrap();
+    let first = |name: &str| {
+        s.atoms
+            .iter()
+            .position(|a| s.residues[a.residue as usize].name == name)
+            .unwrap()
+    };
     let haem = s.card(first("HEM"), false).unwrap();
-    assert_eq!((haem.title.as_str(), haem.class.map(|c| c.1)), ("Heme", Some("ligand")));
+    assert_eq!(
+        (haem.title.as_str(), haem.class.map(|c| c.1)),
+        ("Heme", Some("ligand"))
+    );
     assert!(haem.ss.is_none());
     let water = s.card(first("HOH"), false).unwrap();
-    assert_eq!((water.title.as_str(), water.class.map(|c| c.1)), ("Water", Some("solvent")));
+    assert_eq!(
+        (water.title.as_str(), water.class.map(|c| c.1)),
+        ("Water", Some("solvent"))
+    );
 }
 
 #[test]
@@ -553,20 +662,27 @@ fn cards_for_nucleic_acids_and_ions() {
     );
     let s = read(&pdb, Format::Pdb);
     let g = s.card(16, false).unwrap();
-    assert_eq!((g.title.as_str(), g.class.map(|c| c.1)), ("Deoxyguanosine", Some("purine")));
+    assert_eq!(
+        (g.title.as_str(), g.class.map(|c| c.1)),
+        ("Deoxyguanosine", Some("purine"))
+    );
     // A nucleic acid's strand has no helix or strand of a protein's kind.
     assert!(g.ss.is_none());
     let m = s.card(38, false).unwrap();
     assert_eq!(m.title, "Modified cytidine");
     let mg = s.card(57, false).unwrap();
-    assert_eq!((mg.title.as_str(), mg.class.map(|c| c.1)), ("Magnesium", Some("ion")));
+    assert_eq!(
+        (mg.title.as_str(), mg.class.map(|c| c.1)),
+        ("Magnesium", Some("ion"))
+    );
     // The ion's one atom is not named twice.
     assert!(mg.atom.is_none());
 }
 
 #[test]
 fn a_simulation_names_its_atoms_by_type() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/lj-melt.lammpstrj.gz");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("samples/lj-melt.lammpstrj.gz");
     let s = load_bytes("lj-melt.lammpstrj.gz", std::fs::read(path).unwrap()).unwrap();
     let card = s.card(0, false).unwrap();
     assert_eq!(card.title, "Type 1");
@@ -581,7 +697,12 @@ fn time_load() {
     let path = std::env::var("PROFOLD_LOAD").expect("PROFOLD_LOAD");
     let t = std::time::Instant::now();
     let s = super::load_path(std::path::Path::new(&path)).unwrap();
-    println!("{} atoms, {} frames in {:?}", s.atoms.len(), s.frames.len(), t.elapsed());
+    println!(
+        "{} atoms, {} frames in {:?}",
+        s.atoms.len(),
+        s.frames.len(),
+        t.elapsed()
+    );
 }
 
 #[test]
@@ -636,7 +757,10 @@ Cu 2.0 2.1 0.0 0.0 0.0 0.0 0.25 F
 ";
     let mut s = read(text, Format::Xyz);
     let names: Vec<&str> = s.props.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["forces_x", "forces_y", "forces_z", "charge", "fixed"]);
+    assert_eq!(
+        names,
+        ["forces_x", "forces_y", "forces_z", "charge", "fixed"]
+    );
     let q = s.prop("charge").unwrap();
     assert_eq!(s.props[q].values, vec![-0.5, 0.5]);
     assert_eq!(s.props[s.prop("fixed").unwrap()].values, vec![1.0, 0.0]);

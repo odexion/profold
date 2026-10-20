@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use gpui::{div, prelude::*, px, relative, Context, MouseButton, SharedString, Task};
 
 use super::{pill_keyed, spaced, swallow, Field, Viewer};
-use crate::movie::{self, Axis, Background, Corner, Format, Legend, Motion, Options, Sample, Size, TimeUnit};
+use crate::movie::{
+    self, Axis, Background, Corner, Format, Legend, Motion, Options, Sample, Size, TimeUnit,
+};
 use crate::protein::Structure;
 use crate::render::{self, Coloring, Repr, Scene, Species};
 use crate::settings;
@@ -82,7 +84,9 @@ fn saved() -> Options {
 }
 
 fn keep(o: &Options) {
-    let Some(p) = settings::file("movie.json") else { return };
+    let Some(p) = settings::file("movie.json") else {
+        return;
+    };
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -151,7 +155,12 @@ impl Viewer {
             self.movie.options = Some(o);
         }
         // Without ffmpeg, a GIF is the film that can be made.
-        if let Some(o) = self.movie.options.as_mut().filter(|o| o.format.needs_ffmpeg() && movie::ffmpeg().is_none()) {
+        if let Some(o) = self
+            .movie
+            .options
+            .as_mut()
+            .filter(|o| o.format.needs_ffmpeg() && movie::ffmpeg().is_none())
+        {
             o.format = Format::Gif;
         }
         self.movie.open = true;
@@ -179,11 +188,21 @@ impl Viewer {
     /// draws it, but at full detail.
     fn movie_job(&self, o: &Options) -> Option<movie::Job> {
         let s = self.structure.as_ref()?;
-        let (repr, coloring, style, palette, standard, cell) =
-            (self.repr, self.coloring, self.style, self.palette, self.standard_colors, self.show_cell);
+        let (repr, coloring, style, palette, standard, cell) = (
+            self.repr,
+            self.coloring,
+            self.style,
+            self.palette,
+            self.standard_colors,
+            self.show_cell,
+        );
         let mut appearance = self.appearance.clone();
         appearance.hidden = None;
-        let layers: Vec<_> = self.layers.iter().map(|l| (l.selection.clone(), l.style, l.color)).collect();
+        let layers: Vec<_> = self
+            .layers
+            .iter()
+            .map(|l| (l.selection.clone(), l.style, l.color))
+            .collect();
         let main = self.shown(0).is_some();
         let other = self.shown(1).map(|o| Structure::clone(o));
         // The volume's surface stands still through a film, built once.
@@ -211,13 +230,27 @@ impl Viewer {
                     })
                     .collect();
                 look.hidden = hidden.iter().any(|h| *h).then(|| Arc::new(hidden));
-                scene.merge(render::build_scene(s, repr, coloring, 1.0, style, palette, standard, cell, &look));
+                scene.merge(render::build_scene(
+                    s, repr, coloring, 1.0, style, palette, standard, cell, &look,
+                ));
                 for (atoms, st, c) in &found {
-                    scene.merge(render::build_layer(s, atoms, *st, *c, style, palette, standard, &look));
+                    scene.merge(render::build_layer(
+                        s, atoms, *st, *c, style, palette, standard, &look,
+                    ));
                 }
             }
             if let Some(other) = &other {
-                scene.merge(render::build_scene(other, repr, coloring, 1.0, style, palette, standard, cell, &appearance));
+                scene.merge(render::build_scene(
+                    other,
+                    repr,
+                    coloring,
+                    1.0,
+                    style,
+                    palette,
+                    standard,
+                    cell,
+                    &appearance,
+                ));
             }
             scene
         };
@@ -232,7 +265,11 @@ impl Viewer {
             shots,
             options: o.clone(),
             legend: self.film_legend(),
-            labels: self.labels.iter().map(|l| (l.atom, l.text.clone())).collect(),
+            labels: self
+                .labels
+                .iter()
+                .map(|l| (l.atom, l.text.clone()))
+                .collect(),
         })
     }
 
@@ -240,12 +277,17 @@ impl Viewer {
     fn film_legend(&self) -> Option<Legend> {
         let s = self.shown(0).or(self.shown(1))?;
         let palette = self.palette;
-        let ramp = |f: &dyn Fn(f32) -> [f32; 3]| (0..24).map(|i| f(i as f32 / 23.0)).collect::<Vec<_>>();
+        let ramp =
+            |f: &dyn Fn(f32) -> [f32; 3]| (0..24).map(|i| f(i as f32 / 23.0)).collect::<Vec<_>>();
         // No more than this many swatches; the rest are counted.
         const MOST: usize = 8;
         let swatches = |title: &str, all: Vec<([f32; 3], String)>| {
             let more = all.len().saturating_sub(MOST);
-            Legend::Swatches { title: title.into(), items: all.into_iter().take(MOST).collect(), more }
+            Legend::Swatches {
+                title: title.into(),
+                items: all.into_iter().take(MOST).collect(),
+                more,
+            }
         };
         Some(match self.coloring {
             Coloring::Property => {
@@ -260,15 +302,24 @@ impl Viewer {
             }
             Coloring::Hydrophobic => Legend::Ramp {
                 title: "Hydrophobicity".into(),
-                colors: ramp(&|t| render::diverging(t * 2.0 - 1.0, render::HYDROPHILIC, render::HYDROPHOBIC)),
+                colors: ramp(&|t| {
+                    render::diverging(t * 2.0 - 1.0, render::HYDROPHILIC, render::HYDROPHOBIC)
+                }),
                 low: "hydrophilic".into(),
                 high: "hydrophobic".into(),
             },
             Coloring::Charge => {
                 let surface = self.repr == Repr::Surface;
                 Legend::Ramp {
-                    title: if surface { "Electrostatic potential" } else { "Charge" }.into(),
-                    colors: ramp(&|t| render::diverging(t * 2.0 - 1.0, render::NEGATIVE, render::POSITIVE)),
+                    title: if surface {
+                        "Electrostatic potential"
+                    } else {
+                        "Charge"
+                    }
+                    .into(),
+                    colors: ramp(&|t| {
+                        render::diverging(t * 2.0 - 1.0, render::NEGATIVE, render::POSITIVE)
+                    }),
                     low: if surface { "−" } else { "acidic" }.into(),
                     high: if surface { "+" } else { "basic" }.into(),
                 }
@@ -290,11 +341,17 @@ impl Viewer {
             },
             Coloring::Structure => swatches(
                 "Secondary structure",
-                render::SS_COLORS.iter().map(|(_, name, c)| (*c, name.to_string())).collect(),
+                render::SS_COLORS
+                    .iter()
+                    .map(|(_, name, c)| (*c, name.to_string()))
+                    .collect(),
             ),
             Coloring::Confidence if s.has_confidence => swatches(
                 "pLDDT",
-                render::PLDDT_BANDS.iter().map(|(name, v)| (render::plddt_band_color(*v), name.to_string())).collect(),
+                render::PLDDT_BANDS
+                    .iter()
+                    .map(|(name, v)| (render::plddt_band_color(*v), name.to_string()))
+                    .collect(),
             ),
             Coloring::Chain if s.has_polymer() => swatches(
                 "Chains",
@@ -302,7 +359,11 @@ impl Viewer {
                     .iter()
                     .enumerate()
                     .map(|(i, c)| {
-                        let name = if c.id.trim().is_empty() { format!("Chain {}", i + 1) } else { format!("Chain {}", c.id) };
+                        let name = if c.id.trim().is_empty() {
+                            format!("Chain {}", i + 1)
+                        } else {
+                            format!("Chain {}", c.id)
+                        };
                         (s.chain_color(i, palette), name)
                     })
                     .collect(),
@@ -310,12 +371,19 @@ impl Viewer {
             _ => {
                 // Elements and atom types, as the atoms list colours them.
                 let colors = render::element_colors(s, palette, self.standard_colors);
-                let own = |species: Species, fallback: [f32; 3]| self.appearance.get(&species).color.unwrap_or(fallback);
+                let own = |species: Species, fallback: [f32; 3]| {
+                    self.appearance.get(&species).color.unwrap_or(fallback)
+                };
                 let mut rows: Vec<([f32; 3], String)> = s
                     .composition()
                     .into_iter()
                     .filter(|(e, _)| e.is_known())
-                    .map(|(e, _)| (own(Species::Element(e.0), colors[e.0 as usize]), e.symbol().to_string()))
+                    .map(|(e, _)| {
+                        (
+                            own(Species::Element(e.0), colors[e.0 as usize]),
+                            e.symbol().to_string(),
+                        )
+                    })
                     .collect();
                 let mut by_kind = vec![0usize; s.kinds.len()];
                 for a in s.atoms.iter().filter(|a| !a.element.is_known()) {
@@ -323,21 +391,40 @@ impl Viewer {
                         *n += 1;
                     }
                 }
-                rows.extend(by_kind.iter().enumerate().filter(|(_, n)| **n > 0).map(|(k, _)| {
-                    let name = s.kinds[k].clone();
-                    (own(Species::Kind(name.clone()), palette.chain(k)), format!("Type {name}"))
-                }));
+                rows.extend(
+                    by_kind
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, n)| **n > 0)
+                        .map(|(k, _)| {
+                            let name = s.kinds[k].clone();
+                            (
+                                own(Species::Kind(name.clone()), palette.chain(k)),
+                                format!("Type {name}"),
+                            )
+                        }),
+                );
                 if rows.is_empty() {
                     return None;
                 }
-                swatches(if by_kind.iter().any(|n| *n > 0) { "Atoms" } else { "Elements" }, rows)
+                swatches(
+                    if by_kind.iter().any(|n| *n > 0) {
+                        "Atoms"
+                    } else {
+                        "Elements"
+                    },
+                    rows,
+                )
             }
         })
     }
 
     /// How many frames the film would have, and how long it would run.
     pub(super) fn movie_length(&self, o: &Options) -> (usize, f32) {
-        let (now, count) = (self.structure.as_ref().map(|s| s.frame).unwrap_or(0), self.frame_count());
+        let (now, count) = (
+            self.structure.as_ref().map(|s| s.frame).unwrap_or(0),
+            self.frame_count(),
+        );
         let recorded = self.movie.recorded.as_deref().map(|v| v.as_slice());
         let n = movie::plan(o, &self.camera, now, count, recorded).len();
         (n, n as f32 / o.fps.max(1) as f32)
@@ -345,14 +432,17 @@ impl Viewer {
 
     /// Draw a few small frames of the film and play them in the dialog.
     fn preview_movie(&mut self, cx: &mut Context<Self>) {
-        let Some(job) = self.movie_job(&self.options()) else { return };
+        let Some(job) = self.movie_job(&self.options()) else {
+            return;
+        };
         self.stop_preview();
         let cancel = Arc::new(AtomicBool::new(false));
         self.movie.preview_cancel = Some(cancel.clone());
         self.movie.previewing = true;
         let fps = job.options.fps.max(1);
         let made = cx.background_executor().spawn(async move {
-            let (pictures, stride) = movie::preview(&job, (PREVIEW_WIDTH * 2.0) as usize, 150, &cancel);
+            let (pictures, stride) =
+                movie::preview(&job, (PREVIEW_WIDTH * 2.0) as usize, 150, &cancel);
             let images: Vec<Arc<gpui::RenderImage>> = pictures
                 .into_iter()
                 .map(|p| {
@@ -360,8 +450,11 @@ impl Viewer {
                     for px in bgra.chunks_exact_mut(4) {
                         px.swap(0, 2);
                     }
-                    let buffer = image::RgbaImage::from_raw(p.width as u32, p.height as u32, bgra).expect("sized to fit");
-                    Arc::new(gpui::RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]))
+                    let buffer = image::RgbaImage::from_raw(p.width as u32, p.height as u32, bgra)
+                        .expect("sized to fit");
+                    Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+                        image::Frame::new(buffer)
+                    ]))
                 })
                 .collect();
             (images, stride)
@@ -404,31 +497,47 @@ impl Viewer {
         self.commit_edit(cx);
         let o = self.options();
         if o.format.needs_ffmpeg() && movie::ffmpeg().is_none() {
-            self.error = Some(format!("{} needs ffmpeg, which was not found", o.format.label()).into());
+            self.error =
+                Some(format!("{} needs ffmpeg, which was not found", o.format.label()).into());
             cx.notify();
             return;
         }
-        let stem = self.structure.as_ref().map(|s| s.id.to_lowercase()).unwrap_or_else(|| "profold".into());
+        let stem = self
+            .structure
+            .as_ref()
+            .map(|s| s.id.to_lowercase())
+            .unwrap_or_else(|| "profold".into());
         let suggested = match o.format {
             Format::Png => format!("{stem}-frames"),
             f => format!("{stem}.{}", f.extension()),
         };
-        let directory = dirs::home_dir().map(|h| h.join("Desktop")).unwrap_or_else(|| PathBuf::from("."));
+        let directory = dirs::home_dir()
+            .map(|h| h.join("Desktop"))
+            .unwrap_or_else(|| PathBuf::from("."));
         let chosen = cx.prompt_for_new_path(&directory, Some(&suggested));
         self.export = Some(cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(path))) = chosen.await else { return };
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
             let _ = this.update(cx, |this, cx| this.export_movie(path, o, cx));
         }));
     }
 
     /// Make the film at `path`, with progress in the dialog.
-    pub(super) fn export_movie(&mut self, path: PathBuf, o: Options, cx: &mut Context<Self>) -> bool {
+    pub(super) fn export_movie(
+        &mut self,
+        path: PathBuf,
+        o: Options,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.movie.progress.is_some() {
             self.error = Some("a film is already being made".into());
             cx.notify();
             return false;
         }
-        let Some(job) = self.movie_job(&o) else { return false };
+        let Some(job) = self.movie_job(&o) else {
+            return false;
+        };
         self.stop_preview();
         let progress = Arc::new(movie::Progress::default());
         progress.total.store(job.shots.len(), Ordering::Relaxed);
@@ -444,7 +553,9 @@ impl Viewer {
                 .detach();
         }
         self.movie.task = Some(cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(Duration::from_millis(120)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(120))
+                .await;
             let done = result.lock().expect("not poisoned").take();
             let going = this.update(cx, |this, cx| {
                 let Some(r) = done else {
@@ -457,7 +568,9 @@ impl Viewer {
                         this.note(format!("Saved {}", path.display()));
                         cx.reveal_path(&path);
                     }
-                    Err(e) if e.to_string() == "cancelled" => this.note("Film cancelled".to_string()),
+                    Err(e) if e.to_string() == "cancelled" => {
+                        this.note("Film cancelled".to_string())
+                    }
                     Err(e) => this.error = Some(format!("{e:#}").into()),
                 }
                 cx.notify();
@@ -488,11 +601,15 @@ impl Viewer {
         self.movie.open = false;
         self.stop_preview();
         let task = cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(Duration::from_secs_f32(1.0 / movie::RECORD_HZ)).await;
+            cx.background_executor()
+                .timer(Duration::from_secs_f32(1.0 / movie::RECORD_HZ))
+                .await;
             let going = this.update(cx, |this, cx| {
                 let frame = this.structure.as_ref().map(|s| s.frame).unwrap_or(0);
                 let camera = this.camera;
-                let Some(rec) = this.movie.recording.as_mut() else { return false };
+                let Some(rec) = this.movie.recording.as_mut() else {
+                    return false;
+                };
                 let t = rec.started.elapsed().as_secs_f32();
                 rec.samples.push(Sample { t, camera, frame });
                 // Ten minutes is a long film.
@@ -510,7 +627,11 @@ impl Viewer {
         let frame = self.structure.as_ref().map(|s| s.frame).unwrap_or(0);
         self.movie.recording = Some(Recording {
             started: Instant::now(),
-            samples: vec![Sample { t: 0.0, camera: self.camera, frame }],
+            samples: vec![Sample {
+                t: 0.0,
+                camera: self.camera,
+                frame,
+            }],
             _task: task,
         });
         self.note("Recording: move, turn and play the trajectory as the film should".to_string());
@@ -523,7 +644,11 @@ impl Viewer {
         let mut samples = rec.samples;
         let t = rec.started.elapsed().as_secs_f32();
         let frame = self.structure.as_ref().map(|s| s.frame).unwrap_or(0);
-        samples.push(Sample { t, camera: self.camera, frame });
+        samples.push(Sample {
+            t,
+            camera: self.camera,
+            frame,
+        });
         self.movie.recorded = Some(Arc::new(samples));
         let mut o = self.options();
         o.motion = Motion::Recorded;
@@ -562,28 +687,52 @@ impl Viewer {
                     this.stop_recording(cx);
                 }))
                 .child(div().size(px(8.)).rounded_full().bg(gpui::rgb(0xe5484d)))
-                .child(div().font_family(theme::MONO).text_size(px(10.5)).text_color(theme::text()).child(clock(t)))
-                .child(div().text_size(px(10.5)).text_color(theme::muted()).child("Stop recording"))
+                .child(
+                    div()
+                        .font_family(theme::MONO)
+                        .text_size(px(10.5))
+                        .text_color(theme::text())
+                        .child(clock(t)),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(theme::muted())
+                        .child("Stop recording"),
+                )
                 .into_any_element(),
         )
     }
 
     /// Take what was typed into one of the dialog's values.
     pub(super) fn commit_movie(&mut self, knob: Knob, text: &str, cx: &mut Context<Self>) {
-        let n = || text.trim().trim_end_matches(['°', 's', '%']).trim().parse::<f32>().ok().filter(|v| v.is_finite());
+        let n = || {
+            text.trim()
+                .trim_end_matches(['°', 's', '%'])
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+        };
         let mut o = self.options();
         match knob {
             Knob::Degrees => o.degrees = n().unwrap_or(o.degrees),
             Knob::First => o.first = n().map(|v| v as usize).unwrap_or(o.first),
             Knob::Last => {
                 let count = self.frame_count();
-                o.last = n().map(|v| if v as usize >= count { 0 } else { v as usize }).unwrap_or(o.last);
+                o.last = n()
+                    .map(|v| if v as usize >= count { 0 } else { v as usize })
+                    .unwrap_or(o.last);
             }
             Knob::Every => o.every = n().map(|v| v as usize).unwrap_or(o.every),
             Knob::Fps => o.fps = n().map(|v| v as u32).unwrap_or(o.fps),
             Knob::Seconds => {
                 let t = text.trim();
-                o.seconds = if t.is_empty() || t.eq_ignore_ascii_case("auto") { 0.0 } else { n().unwrap_or(o.seconds) };
+                o.seconds = if t.is_empty() || t.eq_ignore_ascii_case("auto") {
+                    0.0
+                } else {
+                    n().unwrap_or(o.seconds)
+                };
             }
             Knob::Width => o.width = n().map(|v| v as u32).unwrap_or(o.width),
             Knob::Height => o.height = n().map(|v| v as u32).unwrap_or(o.height),
@@ -610,26 +759,52 @@ impl Viewer {
         set: fn(&mut Options, T),
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        div().flex().flex_wrap().gap(px(2.)).children(items.iter().enumerate().map(|(i, &(v, name, enabled))| {
-            let p = pill_keyed((id, i), name, v == current);
-            if enabled {
-                p.cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| this.change(cx, |o| set(o, v))))
-                    .into_any_element()
-            } else {
-                p.opacity(0.4).into_any_element()
-            }
-        }))
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(px(2.))
+            .children(items.iter().enumerate().map(|(i, &(v, name, enabled))| {
+                let p = pill_keyed((id, i), name, v == current);
+                if enabled {
+                    p.cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| this.change(cx, |o| set(o, v))))
+                        .into_any_element()
+                } else {
+                    p.opacity(0.4).into_any_element()
+                }
+            }))
     }
 
     /// A choice that is on or off.
-    fn switch(&self, id: &'static str, name: &'static str, on: bool, flip: fn(&mut Options), cx: &mut Context<Self>) -> impl IntoElement {
-        pill_keyed((id, 0), if on { format!("✓ {name}") } else { name.to_string() }, on)
-            .cursor_pointer()
-            .on_click(cx.listener(move |this, _, _, cx| this.change(cx, flip)))
+    fn switch(
+        &self,
+        id: &'static str,
+        name: &'static str,
+        on: bool,
+        flip: fn(&mut Options),
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        pill_keyed(
+            (id, 0),
+            if on {
+                format!("✓ {name}")
+            } else {
+                name.to_string()
+            },
+            on,
+        )
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _, _, cx| this.change(cx, flip)))
     }
 
-    fn knob(&self, id: &'static str, knob: Knob, text: String, width: f32, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn knob(
+        &self,
+        id: &'static str,
+        knob: Knob,
+        text: String,
+        width: f32,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         self.field(id, Field::Movie(knob), text, width, cx)
     }
 
@@ -646,35 +821,95 @@ impl Viewer {
         let (count, seconds) = self.movie_length(&o);
         let (w, h) = o.output_size(self.cache.borrow().size);
 
-        let heading = |text: &str| div().pt(px(6.)).text_size(px(9.)).text_color(theme::faint()).child(spaced(&text.to_uppercase()));
+        let heading = |text: &str| {
+            div()
+                .pt(px(6.))
+                .text_size(px(9.))
+                .text_color(theme::faint())
+                .child(spaced(&text.to_uppercase()))
+        };
         let row = |name: &str, content: gpui::AnyElement| {
             div()
                 .flex()
                 .items_center()
                 .gap(px(8.))
                 .min_h(px(22.))
-                .child(div().w(px(78.)).flex_none().text_size(px(10.5)).text_color(theme::muted()).child(name.to_string()))
-                .child(div().flex_1().flex().flex_wrap().items_center().gap(px(4.)).child(content))
+                .child(
+                    div()
+                        .w(px(78.))
+                        .flex_none()
+                        .text_size(px(10.5))
+                        .text_color(theme::muted())
+                        .child(name.to_string()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(content),
+                )
         };
-        let note = |text: String| div().text_size(px(9.5)).text_color(theme::faint()).child(text);
-        let inline = |items: Vec<gpui::AnyElement>| div().flex().flex_wrap().items_center().gap(px(4.)).children(items).into_any_element();
-        let small = |t: &str| div().text_size(px(10.)).text_color(theme::faint()).child(t.to_string()).into_any_element();
+        let note = |text: String| {
+            div()
+                .text_size(px(9.5))
+                .text_color(theme::faint())
+                .child(text)
+        };
+        let inline = |items: Vec<gpui::AnyElement>| {
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(4.))
+                .children(items)
+                .into_any_element()
+        };
+        let small = |t: &str| {
+            div()
+                .text_size(px(10.))
+                .text_color(theme::faint())
+                .child(t.to_string())
+                .into_any_element()
+        };
 
         // -- Motion
-        let mut motions = vec![(Motion::Still, "Still", true), (Motion::Turn, "Turn", true), (Motion::Rock, "Rock", true)];
+        let mut motions = vec![
+            (Motion::Still, "Still", true),
+            (Motion::Turn, "Turn", true),
+            (Motion::Rock, "Rock", true),
+        ];
         if self.movie.recorded.is_some() {
             motions.push((Motion::Recorded, "Recorded path", true));
         }
-        let camera_row = self.choices("movie-motion", &motions, o.motion, |o, v| o.motion = v, cx).into_any_element();
+        let camera_row = self
+            .choices("movie-motion", &motions, o.motion, |o, v| o.motion = v, cx)
+            .into_any_element();
         let turning = matches!(o.motion, Motion::Turn | Motion::Rock);
         let degrees = inline(vec![
-            self.knob("movie-degrees", Knob::Degrees, format!("{}°", o.degrees), 52., cx),
-            small(if o.motion == Motion::Rock { "either side" } else { "in all" }),
+            self.knob(
+                "movie-degrees",
+                Knob::Degrees,
+                format!("{}°", o.degrees),
+                52.,
+                cx,
+            ),
+            small(if o.motion == Motion::Rock {
+                "either side"
+            } else {
+                "in all"
+            }),
         ]);
         let axes = self
             .choices(
                 "movie-axis",
-                &[(Axis::Vertical, "Upright", true), (Axis::Horizontal, "Across", true), (Axis::View, "Line of sight", true)],
+                &[
+                    (Axis::Vertical, "Upright", true),
+                    (Axis::Horizontal, "Across", true),
+                    (Axis::View, "Line of sight", true),
+                ],
                 o.axis,
                 |o, v| o.axis = v,
                 cx,
@@ -685,39 +920,88 @@ impl Viewer {
             .debug_selector(|| "movie-record".into())
             .on_click(cx.listener(|this, _, _, cx| this.start_recording(cx)))
             .into_any_element();
-        let recorded_note = self.movie.recorded.as_ref().filter(|_| o.motion == Motion::Recorded).map(|r| {
-            let t = r.last().map(|s| s.t).unwrap_or(0.0);
-            note(format!("{} recorded, played back as it was shown, trajectory and all", clock(t)))
-        });
+        let recorded_note = self
+            .movie
+            .recorded
+            .as_ref()
+            .filter(|_| o.motion == Motion::Recorded)
+            .map(|r| {
+                let t = r.last().map(|s| s.t).unwrap_or(0.0);
+                note(format!(
+                    "{} recorded, played back as it was shown, trajectory and all",
+                    clock(t)
+                ))
+            });
 
         // -- Frames
         let range = inline(vec![
-            self.knob("movie-first", Knob::First, o.first.min(frames).to_string(), 44., cx),
+            self.knob(
+                "movie-first",
+                Knob::First,
+                o.first.min(frames).to_string(),
+                44.,
+                cx,
+            ),
             small("to"),
-            self.knob("movie-last", Knob::Last, if o.last == 0 || o.last > frames { frames.to_string() } else { o.last.to_string() }, 44., cx),
+            self.knob(
+                "movie-last",
+                Knob::Last,
+                if o.last == 0 || o.last > frames {
+                    frames.to_string()
+                } else {
+                    o.last.to_string()
+                },
+                44.,
+                cx,
+            ),
             small("every"),
             self.knob("movie-every", Knob::Every, o.every.to_string(), 32., cx),
         ]);
         let smooth = self
             .choices(
                 "movie-smooth",
-                &[(0, "Off", true), (1, "2×", true), (3, "4×", true), (7, "8×", true)],
+                &[
+                    (0, "Off", true),
+                    (1, "2×", true),
+                    (3, "4×", true),
+                    (7, "8×", true),
+                ],
                 o.smooth,
                 |o, v| o.smooth = v,
                 cx,
             )
             .into_any_element();
-        let pingpong = self.switch("movie-pingpong", "Ping-pong", o.pingpong, |o| o.pingpong = !o.pingpong, cx).into_any_element();
+        let pingpong = self
+            .switch(
+                "movie-pingpong",
+                "Ping-pong",
+                o.pingpong,
+                |o| o.pingpong = !o.pingpong,
+                cx,
+            )
+            .into_any_element();
         let timing = inline(vec![
             self.knob("movie-fps", Knob::Fps, o.fps.to_string(), 36., cx),
             small("fps ·"),
-            self.knob("movie-seconds", Knob::Seconds, if o.seconds > 0.0 { format!("{}s", o.seconds) } else { "auto".into() }, 48., cx),
+            self.knob(
+                "movie-seconds",
+                Knob::Seconds,
+                if o.seconds > 0.0 {
+                    format!("{}s", o.seconds)
+                } else {
+                    "auto".into()
+                },
+                48.,
+                cx,
+            ),
             small("long"),
         ]);
 
         // -- Image
         let sizes: Vec<_> = Size::ALL.iter().map(|s| (*s, s.label(), true)).collect();
-        let size = self.choices("movie-size", &sizes, o.size, |o, v| o.size = v, cx).into_any_element();
+        let size = self
+            .choices("movie-size", &sizes, o.size, |o, v| o.size = v, cx)
+            .into_any_element();
         let custom = (o.size == Size::Custom).then(|| {
             inline(vec![
                 self.knob("movie-width", Knob::Width, o.width.to_string(), 48., cx),
@@ -726,13 +1010,35 @@ impl Viewer {
             ])
         });
         let aa = self
-            .choices("movie-aa", &[(1, "Off", true), (2, "2×", true), (4, "4×", true)], o.supersample, |o, v| o.supersample = v, cx)
+            .choices(
+                "movie-aa",
+                &[(1, "Off", true), (2, "2×", true), (4, "4×", true)],
+                o.supersample,
+                |o, v| o.supersample = v,
+                cx,
+            )
             .into_any_element();
         let traced = inline(vec![
-            self.switch("movie-traced", "Ray traced", o.traced, |o| o.traced = !o.traced, cx).into_any_element(),
+            self.switch(
+                "movie-traced",
+                "Ray traced",
+                o.traced,
+                |o| o.traced = !o.traced,
+                cx,
+            )
+            .into_any_element(),
             small("shadows and ambient occlusion; slower"),
         ]);
-        let quality = inline(vec![self.knob("movie-quality", Knob::Quality, format!("{}", o.quality), 36., cx), small("of 100")]);
+        let quality = inline(vec![
+            self.knob(
+                "movie-quality",
+                Knob::Quality,
+                format!("{}", o.quality),
+                36.,
+                cx,
+            ),
+            small("of 100"),
+        ]);
         let color = match o.background {
             Background::Color(c) => c,
             _ => theme::view(),
@@ -771,14 +1077,28 @@ impl Viewer {
                     .rounded(px(3.))
                     .border_1()
                     .border_color(theme::border())
-                    .bg(gpui::Rgba { r: color[0], g: color[1], b: color[2], a: 1.0 })
+                    .bg(gpui::Rgba {
+                        r: color[0],
+                        g: color[1],
+                        b: color[2],
+                        a: 1.0,
+                    })
                     .into_any_element(),
-                self.knob("movie-hex", Knob::Hex, format!("#{:02x}{:02x}{:02x}", b[0], b[1], b[2]), 64., cx),
+                self.knob(
+                    "movie-hex",
+                    Knob::Hex,
+                    format!("#{:02x}{:02x}{:02x}", b[0], b[1], b[2]),
+                    64.,
+                    cx,
+                ),
             ])
         });
 
         // -- Format
-        let formats: Vec<_> = Format::ALL.iter().map(|f| (*f, f.label(), !f.needs_ffmpeg() || ffmpeg)).collect();
+        let formats: Vec<_> = Format::ALL
+            .iter()
+            .map(|f| (*f, f.label(), !f.needs_ffmpeg() || ffmpeg))
+            .collect();
         let format = self
             .choices(
                 "movie-format",
@@ -800,33 +1120,65 @@ impl Viewer {
             Format::WebM => "VP9 with soft transparency, for the web",
             Format::Mov => "ProRes 4444 with transparency, for Final Cut, Premiere, Keynote",
         };
-        let ffmpeg_note = (!ffmpeg).then(|| note("MP4, WebM and ProRes need ffmpeg installed".to_string()));
+        let ffmpeg_note =
+            (!ffmpeg).then(|| note("MP4, WebM and ProRes need ffmpeg installed".to_string()));
 
         // -- Overlays
         let overlays = inline(vec![
-            self.switch("movie-counter", "Frame counter", o.counter, |o| o.counter = !o.counter, cx).into_any_element(),
-            self.switch("movie-time", "Time", o.time, |o| o.time = !o.time, cx).into_any_element(),
-            self.switch("movie-scale", "Scale bar", o.scale_bar, |o| o.scale_bar = !o.scale_bar, cx).into_any_element(),
-            self.switch("movie-legend", "Legend", o.legend, |o| o.legend = !o.legend, cx).into_any_element(),
+            self.switch(
+                "movie-counter",
+                "Frame counter",
+                o.counter,
+                |o| o.counter = !o.counter,
+                cx,
+            )
+            .into_any_element(),
+            self.switch("movie-time", "Time", o.time, |o| o.time = !o.time, cx)
+                .into_any_element(),
+            self.switch(
+                "movie-scale",
+                "Scale bar",
+                o.scale_bar,
+                |o| o.scale_bar = !o.scale_bar,
+                cx,
+            )
+            .into_any_element(),
+            self.switch(
+                "movie-legend",
+                "Legend",
+                o.legend,
+                |o| o.legend = !o.legend,
+                cx,
+            )
+            .into_any_element(),
         ]);
         let legend = o.legend.then(|| match self.film_legend() {
             Some(_) => {
                 let corners: Vec<_> = Corner::ALL.iter().map(|c| (*c, c.label(), true)).collect();
-                self.choices("movie-corner", &corners, o.corner, |o, v| o.corner = v, cx).into_any_element()
+                self.choices("movie-corner", &corners, o.corner, |o, v| o.corner = v, cx)
+                    .into_any_element()
             }
             None => note("This colouring has no key to show".to_string()).into_any_element(),
         });
-        let steps = self.structure.as_ref().is_some_and(|s| s.frames.iter().any(|f| f.step.is_some()));
+        let steps = self
+            .structure
+            .as_ref()
+            .is_some_and(|s| s.frames.iter().any(|f| f.step.is_some()));
         let time = (o.time).then(|| {
             if !steps {
-                return note("This trajectory does not say which step each frame is".to_string()).into_any_element();
+                return note("This trajectory does not say which step each frame is".to_string())
+                    .into_any_element();
             }
             inline(vec![
                 small("timestep"),
                 self.knob("movie-dt", Knob::Dt, format!("{}", o.dt), 52., cx),
                 self.choices(
                     "movie-unit",
-                    &[(TimeUnit::Fs, "fs", true), (TimeUnit::Ps, "ps", true), (TimeUnit::Tau, "τ", true)],
+                    &[
+                        (TimeUnit::Fs, "fs", true),
+                        (TimeUnit::Ps, "ps", true),
+                        (TimeUnit::Tau, "τ", true),
+                    ],
                     o.unit,
                     |o, v| o.unit = v,
                     cx,
@@ -837,7 +1189,11 @@ impl Viewer {
         let caption = self.knob(
             "movie-caption",
             Knob::Caption,
-            if o.caption.is_empty() { "none".into() } else { o.caption.clone() },
+            if o.caption.is_empty() {
+                "none".into()
+            } else {
+                o.caption.clone()
+            },
             200.,
             cx,
         );
@@ -852,22 +1208,43 @@ impl Viewer {
             .when(has_traj && o.motion != Motion::Recorded, |d| {
                 d.child(row(
                     "Trajectory",
-                    self.switch("movie-traj", "Play the frames", o.trajectory, |o| o.trajectory = !o.trajectory, cx).into_any_element(),
+                    self.switch(
+                        "movie-traj",
+                        "Play the frames",
+                        o.trajectory,
+                        |o| o.trajectory = !o.trajectory,
+                        cx,
+                    )
+                    .into_any_element(),
                 ))
             })
             .child(row("Camera", camera_row))
-            .when(turning, |d| d.child(row("Angle", degrees)).child(row("About", axes)))
+            .when(turning, |d| {
+                d.child(row("Angle", degrees)).child(row("About", axes))
+            })
             .when(turning && o.motion == Motion::Turn, |d| {
                 d.child(row(
                     "",
-                    self.switch("movie-seamless", "Loop seamlessly", o.seamless, |o| o.seamless = !o.seamless, cx).into_any_element(),
+                    self.switch(
+                        "movie-seamless",
+                        "Loop seamlessly",
+                        o.seamless,
+                        |o| o.seamless = !o.seamless,
+                        cx,
+                    )
+                    .into_any_element(),
                 ))
             })
             .children(recorded_note)
             .child(row("", record))
-            .when(traj || o.motion == Motion::Recorded && has_traj, |d| d.child(heading("Frames")))
+            .when(traj || o.motion == Motion::Recorded && has_traj, |d| {
+                d.child(heading("Frames"))
+            })
             .children(traj.then(|| row("Range", range)))
-            .children((traj || o.motion == Motion::Recorded && has_traj).then(|| row("Smoothing", smooth)))
+            .children(
+                (traj || o.motion == Motion::Recorded && has_traj)
+                    .then(|| row("Smoothing", smooth)),
+            )
             .children(traj.then(|| row("", pingpong)))
             .child(row("Timing", timing))
             .child(heading("Image"))
@@ -907,20 +1284,34 @@ impl Viewer {
             .when_some(shown, |d, image| {
                 // What is showing is out of date while the next is drawn.
                 let stale = self.movie.previewing;
-                d.child(gpui::img(gpui::ImageSource::Render(image)).size_full().when(stale, |i| i.opacity(0.5)))
+                d.child(
+                    gpui::img(gpui::ImageSource::Render(image))
+                        .size_full()
+                        .when(stale, |i| i.opacity(0.5)),
+                )
             })
             .when(self.movie.preview.is_empty(), |d| {
-                d.child(
-                    div()
-                        .text_size(px(10.5))
-                        .text_color(theme::faint())
-                        .child(if self.movie.previewing { "Drawing the preview…" } else { "Nothing to preview" }),
-                )
+                d.child(div().text_size(px(10.5)).text_color(theme::faint()).child(
+                    if self.movie.previewing {
+                        "Drawing the preview…"
+                    } else {
+                        "Nothing to preview"
+                    },
+                ))
             });
         let at = (!self.movie.preview.is_empty()).then(|| {
             let shot = self.movie.preview_at * self.movie.preview_stride.max(1);
-            let updating = if self.movie.previewing { " · updating…" } else { "" };
-            note(format!("{} / {} · {}{updating}", shot + 1, count, clock(shot as f32 / o.fps.max(1) as f32)))
+            let updating = if self.movie.previewing {
+                " · updating…"
+            } else {
+                ""
+            };
+            note(format!(
+                "{} / {} · {}{updating}",
+                shot + 1,
+                count,
+                clock(shot as f32 / o.fps.max(1) as f32)
+            ))
         });
         let summary = format!(
             "{} × {} · {} frames · {} at {} fps",
@@ -961,7 +1352,10 @@ impl Viewer {
         };
         let actions: gpui::AnyElement = match &busy {
             Some(p) => {
-                let (done, total) = (p.done.load(Ordering::Relaxed), p.total.load(Ordering::Relaxed).max(1));
+                let (done, total) = (
+                    p.done.load(Ordering::Relaxed),
+                    p.total.load(Ordering::Relaxed).max(1),
+                );
                 let f = done as f32 / total as f32;
                 div()
                     .flex()
@@ -973,7 +1367,13 @@ impl Viewer {
                             .h(px(5.))
                             .rounded(px(3.))
                             .bg(theme::sunken())
-                            .child(div().h_full().w(relative(f)).rounded(px(3.)).bg(theme::ink())),
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(f))
+                                    .rounded(px(3.))
+                                    .bg(theme::ink()),
+                            ),
                     )
                     .child(
                         div()
@@ -981,7 +1381,10 @@ impl Viewer {
                             .justify_between()
                             .items_center()
                             .child(note(format!("Frame {done} of {total}")))
-                            .child(plain("movie-cancel", "Cancel").on_click(cx.listener(|this, _, _, cx| this.cancel_movie(cx)))),
+                            .child(
+                                plain("movie-cancel", "Cancel")
+                                    .on_click(cx.listener(|this, _, _, cx| this.cancel_movie(cx))),
+                            ),
                     )
                     .into_any_element()
             }
@@ -989,8 +1392,14 @@ impl Viewer {
                 .flex()
                 .gap(px(6.))
                 .justify_end()
-                .child(plain("movie-close", "Close").on_click(cx.listener(|this, _, _, cx| this.close_movie(cx))))
-                .child(primary("movie-export", "Export…").on_click(cx.listener(|this, _, _, cx| this.choose_movie_path(cx))))
+                .child(
+                    plain("movie-close", "Close")
+                        .on_click(cx.listener(|this, _, _, cx| this.close_movie(cx))),
+                )
+                .child(
+                    primary("movie-export", "Export…")
+                        .on_click(cx.listener(|this, _, _, cx| this.choose_movie_path(cx))),
+                )
                 .into_any_element(),
         };
         let right = div()
@@ -1002,8 +1411,15 @@ impl Viewer {
             .pt(px(6.))
             .child(screen)
             .children(at)
-            .child(div().text_size(px(10.5)).text_color(theme::text()).child(SharedString::from(summary)))
-            .when(o.format == Format::Gif && o.fps > 50, |d| d.child(note("GIFs play at most 50 fps".to_string())))
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(theme::text())
+                    .child(SharedString::from(summary)),
+            )
+            .when(o.format == Format::Gif && o.fps > 50, |d| {
+                d.child(note("GIFs play at most 50 fps".to_string()))
+            })
             .child(div().flex_1())
             .child(actions);
 
@@ -1016,7 +1432,10 @@ impl Viewer {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(gpui::Hsla { a: 0.35, ..theme::ink() })
+                .bg(gpui::Hsla {
+                    a: 0.35,
+                    ..theme::ink()
+                })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                 .child(
@@ -1033,7 +1452,12 @@ impl Viewer {
                         .flex()
                         .flex_col()
                         .gap(px(4.))
-                        .child(div().text_size(px(13.)).text_color(theme::ink()).child("Export a film"))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(theme::ink())
+                                .child("Export a film"),
+                        )
                         .child(div().flex().gap(px(22.)).child(left).child(right)),
                 )
                 .into_any_element(),
@@ -1041,7 +1465,11 @@ impl Viewer {
     }
 
     /// `movie <file> [key=value …]`: make a film without the dialog.
-    pub(super) fn movie_command(&mut self, rest: &str, cx: &mut Context<Self>) -> anyhow::Result<String> {
+    pub(super) fn movie_command(
+        &mut self,
+        rest: &str,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<String> {
         let words = movie::words(rest);
         // Alone, it opens the dialog.
         let Some((file, args)) = words.split_first() else {
@@ -1057,6 +1485,10 @@ impl Viewer {
         if !self.export_movie(path.clone(), o, cx) {
             anyhow::bail!("could not start the film");
         }
-        Ok(format!("making {} ({n} frames, {})", path.display(), clock(secs)))
+        Ok(format!(
+            "making {} ({n} frames, {})",
+            path.display(),
+            clock(secs)
+        ))
     }
 }

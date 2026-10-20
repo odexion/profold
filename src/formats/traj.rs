@@ -18,7 +18,11 @@ pub fn dcd(bytes: &[u8]) -> Result<(usize, Vec<Snapshot>)> {
     };
     let int = |b: &[u8]| -> i32 {
         let a: [u8; 4] = b.try_into().unwrap();
-        if little { i32::from_le_bytes(a) } else { i32::from_be_bytes(a) }
+        if little {
+            i32::from_le_bytes(a)
+        } else {
+            i32::from_be_bytes(a)
+        }
     };
     let mut at = 0usize;
     let mut record = || -> Option<&[u8]> {
@@ -43,12 +47,19 @@ pub fn dcd(bytes: &[u8]) -> Result<(usize, Vec<Snapshot>)> {
         bail!("DCD files with fixed atoms are not supported");
     }
     record().context("the DCD title is missing")?;
-    let natoms = int(record().context("the DCD atom count is missing")?.get(..4).context("no atom count")?) as usize;
+    let natoms = int(record()
+        .context("the DCD atom count is missing")?
+        .get(..4)
+        .context("no atom count")?) as usize;
     let floats = |b: &[u8]| -> Vec<f32> {
         b.chunks_exact(4)
             .map(|c| {
                 let a: [u8; 4] = c.try_into().unwrap();
-                if little { f32::from_le_bytes(a) } else { f32::from_be_bytes(a) }
+                if little {
+                    f32::from_le_bytes(a)
+                } else {
+                    f32::from_be_bytes(a)
+                }
             })
             .collect()
     };
@@ -60,14 +71,20 @@ pub fn dcd(bytes: &[u8]) -> Result<(usize, Vec<Snapshot>)> {
                 .chunks_exact(8)
                 .map(|c| {
                     let a: [u8; 8] = c.try_into().unwrap();
-                    if little { f64::from_le_bytes(a) } else { f64::from_be_bytes(a) }
+                    if little {
+                        f64::from_le_bytes(a)
+                    } else {
+                        f64::from_be_bytes(a)
+                    }
                 })
                 .collect();
             dcd_cell(&v)
         } else {
             None
         };
-        let (Some(x), Some(y), Some(z)) = (record(), record(), record()) else { break };
+        let (Some(x), Some(y), Some(z)) = (record(), record(), record()) else {
+            break;
+        };
         let (x, y, z) = (floats(x), floats(y), floats(z));
         if x.len() != natoms || y.len() != natoms || z.len() != natoms {
             bail!("a DCD frame has the wrong number of atoms");
@@ -76,7 +93,11 @@ pub fn dcd(bytes: &[u8]) -> Result<(usize, Vec<Snapshot>)> {
             record();
         }
         let pos = (0..natoms).map(|i| [x[i], y[i], z[i]]).collect();
-        frames.push(Snapshot { step: None, pos, cell });
+        frames.push(Snapshot {
+            step: None,
+            pos,
+            cell,
+        });
     }
     if frames.is_empty() {
         bail!("the DCD file has no frames");
@@ -91,7 +112,14 @@ fn dcd_cell(v: &[f64]) -> Option<Cell> {
         return None;
     }
     let angle = |x: f64| if x.abs() <= 1.0 { x.acos().to_degrees() } else { x } as f32;
-    Some(cell_from_parameters(v[0] as f32, v[2] as f32, v[5] as f32, angle(v[4]), angle(v[3]), angle(v[1])))
+    Some(cell_from_parameters(
+        v[0] as f32,
+        v[2] as f32,
+        v[5] as f32,
+        angle(v[4]),
+        angle(v[3]),
+        angle(v[1]),
+    ))
 }
 
 /// The atom count and every frame of an XTC file, in ångström.
@@ -121,8 +149,15 @@ pub fn xtc(bytes: &[u8]) -> Result<(usize, Vec<Snapshot>)> {
             ],
         });
         let coords = xtc_coords(&mut r, natoms)?;
-        let pos = coords.chunks_exact(3).map(|c| [c[0] * 10.0, c[1] * 10.0, c[2] * 10.0]).collect();
-        frames.push(Snapshot { step: None, pos, cell });
+        let pos = coords
+            .chunks_exact(3)
+            .map(|c| [c[0] * 10.0, c[1] * 10.0, c[2] * 10.0])
+            .collect();
+        frames.push(Snapshot {
+            step: None,
+            pos,
+            cell,
+        });
     }
     if frames.is_empty() {
         bail!("the XTC file has no frames");
@@ -138,7 +173,10 @@ struct Xdr<'a> {
 
 impl Xdr<'_> {
     fn word(&mut self) -> Result<[u8; 4]> {
-        let w = self.bytes.get(self.at..self.at + 4).context("the XTC file is truncated")?;
+        let w = self
+            .bytes
+            .get(self.at..self.at + 4)
+            .context("the XTC file is truncated")?;
         self.at += 4;
         Ok(w.try_into().unwrap())
     }
@@ -152,17 +190,21 @@ impl Xdr<'_> {
     }
 
     fn opaque(&mut self, n: usize) -> Result<&[u8]> {
-        let b = self.bytes.get(self.at..self.at + n).context("the XTC file is truncated")?;
+        let b = self
+            .bytes
+            .get(self.at..self.at + n)
+            .context("the XTC file is truncated")?;
         self.at += n.div_ceil(4) * 4;
         Ok(b)
     }
 }
 
 const MAGICINTS: [i32; 73] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64, 80, 101, 128, 161, 203, 256, 322, 406, 512, 645,
-    812, 1024, 1290, 1625, 2048, 2580, 3250, 4096, 5060, 6501, 8192, 10321, 13003, 16384, 20642, 26007, 32768, 41285,
-    52015, 65536, 82570, 104031, 131072, 165140, 208063, 262144, 330280, 416127, 524287, 660561, 832255, 1048576,
-    1321122, 1664510, 2097152, 2642245, 3329021, 4194304, 5284491, 6658042, 8388607, 10568983, 13316085, 16777216,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64, 80, 101, 128, 161, 203, 256,
+    322, 406, 512, 645, 812, 1024, 1290, 1625, 2048, 2580, 3250, 4096, 5060, 6501, 8192, 10321,
+    13003, 16384, 20642, 26007, 32768, 41285, 52015, 65536, 82570, 104031, 131072, 165140, 208063,
+    262144, 330280, 416127, 524287, 660561, 832255, 1048576, 1321122, 1664510, 2097152, 2642245,
+    3329021, 4194304, 5284491, 6658042, 8388607, 10568983, 13316085, 16777216,
 ];
 const FIRSTIDX: usize = 9;
 
@@ -297,14 +339,23 @@ fn xtc_coords(r: &mut Xdr, natoms: usize) -> Result<Vec<f32>> {
     let mut sizesmall = [MAGICINTS[smallidx]; 3];
     let count = r.int()? as usize;
     let data = r.opaque(count)?;
-    let mut bits = Bits { bytes: data, at: 0, lastbits: 0, lastbyte: 0 };
+    let mut bits = Bits {
+        bytes: data,
+        at: 0,
+        lastbits: 0,
+        lastbyte: 0,
+    };
     let inv = 1.0 / precision;
     let mut out = Vec::with_capacity(lsize * 3);
     let mut run: i32 = 0;
     let mut i = 0;
     while i < lsize {
         let mut this = if bitsize == 0 {
-            [bits.take(bitsizeint[0]), bits.take(bitsizeint[1]), bits.take(bitsizeint[2])]
+            [
+                bits.take(bitsizeint[0]),
+                bits.take(bitsizeint[1]),
+                bits.take(bitsizeint[2]),
+            ]
         } else {
             bits.ints(bitsize, sizeint)
         };
@@ -347,7 +398,11 @@ fn xtc_coords(r: &mut Xdr, natoms: usize) -> Result<Vec<f32>> {
         }
         if is_smaller < 0 {
             smallnum = smaller;
-            smaller = if smallidx > FIRSTIDX { MAGICINTS[smallidx - 1] / 2 } else { 0 };
+            smaller = if smallidx > FIRSTIDX {
+                MAGICINTS[smallidx - 1] / 2
+            } else {
+                0
+            };
         } else if is_smaller > 0 {
             smaller = smallnum;
             smallnum = MAGICINTS[smallidx] / 2;
@@ -388,7 +443,10 @@ mod tests {
         record(&title);
         record(&(n as i32).to_le_bytes());
         for f in frames {
-            let cell: Vec<u8> = [20.0f64, 90.0, 30.0, 90.0, 90.0, 40.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+            let cell: Vec<u8> = [20.0f64, 90.0, 30.0, 90.0, 90.0, 40.0]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
             record(&cell);
             for k in 0..3 {
                 let axis: Vec<u8> = f.iter().flat_map(|p| p[k].to_le_bytes()).collect();
@@ -400,13 +458,18 @@ mod tests {
 
     #[test]
     fn a_dcd_reads_back_as_written() {
-        let frames = vec![vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], vec![[1.5, 2.5, 3.5], [4.5, 5.5, 6.5]]];
+        let frames = vec![
+            vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+            vec![[1.5, 2.5, 3.5], [4.5, 5.5, 6.5]],
+        ];
         let (n, read) = dcd(&write_dcd(&frames)).unwrap();
         assert_eq!(n, 2);
         assert_eq!(read.len(), 2);
         assert_eq!(read[1].pos, frames[1]);
         let cell = read[0].cell.unwrap();
-        assert!((cell.vectors[0][0] - 20.0).abs() < 1e-4 && (cell.vectors[2][2] - 40.0).abs() < 1e-3);
+        assert!(
+            (cell.vectors[0][0] - 20.0).abs() < 1e-4 && (cell.vectors[2][2] - 40.0).abs() < 1e-3
+        );
         assert!(dcd(b"nothing of the sort").is_err());
     }
 
@@ -419,7 +482,12 @@ mod tests {
         // what the files are written with, so what they are read with.
         assert_eq!(sizeofints([2, 2, 2]), 4);
         assert_eq!(sizeofints([256, 256, 256]), 25);
-        let mut b = Bits { bytes: &[0b1011_0000, 0xff], at: 0, lastbits: 0, lastbyte: 0 };
+        let mut b = Bits {
+            bytes: &[0b1011_0000, 0xff],
+            at: 0,
+            lastbits: 0,
+            lastbyte: 0,
+        };
         assert_eq!(b.take(1), 1);
         assert_eq!(b.take(3), 0b011);
         assert_eq!(b.take(8), 0b0000_1111);
@@ -431,20 +499,41 @@ mod tests {
     #[test]
     #[ignore]
     fn adk_xtc_starts_where_its_gro_does() {
-        let Some(dir) = std::env::var_os("PROFOLD_TRAJ") else { return };
+        let Some(dir) = std::env::var_os("PROFOLD_TRAJ") else {
+            return;
+        };
         let dir = std::path::Path::new(&dir);
         let (n, frames) = xtc(&std::fs::read(dir.join("adk_oplsaa.xtc")).unwrap()).unwrap();
         let gro = crate::formats::load_path(&dir.join("adk_oplsaa.gro")).unwrap();
         assert_eq!(n, gro.atoms.len());
-        let worst = gro.atoms.iter().zip(&frames[0].pos).map(|(a, p)| (0..3).map(|k| (a.pos[k] - p[k]).abs()).fold(0.0, f32::max)).fold(0.0, f32::max);
-        eprintln!("{} frames of {n} atoms; frame 0 within {worst} Å of the .gro", frames.len());
+        let worst = gro
+            .atoms
+            .iter()
+            .zip(&frames[0].pos)
+            .map(|(a, p)| (0..3).map(|k| (a.pos[k] - p[k]).abs()).fold(0.0, f32::max))
+            .fold(0.0, f32::max);
+        eprintln!(
+            "{} frames of {n} atoms; frame 0 within {worst} Å of the .gro",
+            frames.len()
+        );
         assert!(worst < 0.011, "{worst}");
         let (dn, dframes) = dcd(&std::fs::read(dir.join("adk_dims.dcd")).unwrap()).unwrap();
         let pdb = crate::formats::load_path(&dir.join("adk_open.pdb")).unwrap();
         // Bonded neighbours stay bonded: the first atom's nearest is close.
         let p = &dframes[0].pos;
-        let near = (1..dn).map(|i| ((p[0][0] - p[i][0]).powi(2) + (p[0][1] - p[i][1]).powi(2) + (p[0][2] - p[i][2]).powi(2)).sqrt()).fold(f32::MAX, f32::min);
-        eprintln!("{} DCD frames of {dn} atoms (the PDB has {}); nearest neighbour {near} Å", dframes.len(), pdb.atoms.len());
+        let near = (1..dn)
+            .map(|i| {
+                ((p[0][0] - p[i][0]).powi(2)
+                    + (p[0][1] - p[i][1]).powi(2)
+                    + (p[0][2] - p[i][2]).powi(2))
+                .sqrt()
+            })
+            .fold(f32::MAX, f32::min);
+        eprintln!(
+            "{} DCD frames of {dn} atoms (the PDB has {}); nearest neighbour {near} Å",
+            dframes.len(),
+            pdb.atoms.len()
+        );
         assert!(near > 0.8 && near < 1.6);
     }
 }
