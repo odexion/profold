@@ -29,6 +29,7 @@ mod theme;
 mod trace;
 mod ui;
 mod update;
+mod volume;
 
 use gpui::{
     AppContext, point, px, size, App, Application, Bounds, TitlebarOptions, WindowBounds,

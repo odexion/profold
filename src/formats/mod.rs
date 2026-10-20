@@ -147,7 +147,7 @@ pub const SUPPORTED: &str =
     "PDB, PQR, mmCIF, BinaryCIF, CIF, XYZ, GRO, MOL2, SDF, LAMMPS data and dump, POSCAR, cube, XSF, DCD, XTC";
 
 /// Bytes, unzipped if they are gzipped.
-fn gunzip(bytes: Vec<u8>) -> Result<Vec<u8>> {
+pub(crate) fn gunzip(bytes: Vec<u8>) -> Result<Vec<u8>> {
     if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut out = Vec::new();
         flate2::read::MultiGzDecoder::new(&bytes[..])
@@ -204,6 +204,18 @@ pub fn load_bytes(name: &str, bytes: Vec<u8>) -> Result<Structure> {
             bail!("no atoms in {name}");
         }
         s.format = Some("BinaryCIF");
+        return Ok(s);
+    }
+    // A map has no atoms of its own: it is a box with values in it, to lay
+    // over the structure shown or to look at alone.
+    if crate::volume::is_map(name) {
+        let volume = crate::volume::read_map(name, bytes)?;
+        let stem = lower.trim_end_matches(".gz");
+        let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s);
+        let mut s = Structure::new(stem.to_string(), String::new(), Source::File);
+        s.cell = Some(volume.cell());
+        s.volume = Some(std::sync::Arc::new(volume));
+        s.format = Some("map");
         return Ok(s);
     }
     if let Some(found) = trajectory(name, &bytes) {

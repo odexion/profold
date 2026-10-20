@@ -34,6 +34,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("perspective on|off, slab on|off", "projection mode and clipping slab"),
     ("wrap, whole, unwrap, original", "put atoms in the cell, mend molecules cut by its walls, follow a trajectory through them, or undo"),
     ("replicate <a> <b> <c>", "repeat the cell, as in replicate 2 2 1"),
+    ("iso <level>|on|off|mesh|auto", "draw the volume's surface at a level, from a cube file or a map"),
     ("trace on|off", "ray trace the still view and saved images: shadows and ambient occlusion"),
     ("water on|off, hydrogens on|off", "toggle display"),
     ("frame <n>, play", "step a trajectory"),
@@ -316,6 +317,27 @@ impl Viewer {
                     _ => bail!("replicate takes three counts, as in replicate 2 2 1"),
                 };
                 self.periodic(crate::ui::app::Periodic::Replicate(n), cx)?
+            }
+            "iso" | "isosurface" => {
+                let s = shown()?;
+                let volume = s.volume.clone().ok_or_else(|| anyhow!("there is no volume; open a cube file or a map"))?;
+                let mut iso = self.iso;
+                match rest {
+                    "" | "on" | "show" | "solid" | "surface" => (iso.shown, iso.mesh) = (true, false),
+                    "mesh" | "wire" => (iso.shown, iso.mesh) = (true, true),
+                    "off" | "hide" => iso.shown = false,
+                    "auto" | "default" => iso.level = volume.default_level(),
+                    level => {
+                        iso.level = level.parse().with_context(|| format!("iso takes a level, on, off, mesh or auto, not {level}"))?;
+                        iso.shown = true;
+                    }
+                }
+                self.set_iso(iso, cx);
+                if iso.shown {
+                    format!("isosurface at {}{}", crate::ui::app::figure(iso.level), if iso.mesh { " as a mesh" } else { "" })
+                } else {
+                    "isosurface hidden".into()
+                }
             }
             "trace" | "raytrace" => {
                 self.traced = on_off(rest)?;

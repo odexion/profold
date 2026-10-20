@@ -434,6 +434,9 @@ pub struct Viewer {
     /// The structure as opened, while it is shown wrapped, unwrapped or
     /// replicated across its periodic boundaries.
     unwrapped_from: Option<Arc<Structure>>,
+    /// How the structure's volume is drawn, and the surface last drawn for it.
+    pub(crate) iso: Iso,
+    iso_cache: Option<(Iso, usize, Arc<Scene>)>,
     /// Whether what is opened next is laid over the structure shown rather
     /// than taking its place.
     overlay_next: bool,
@@ -692,6 +695,8 @@ impl Viewer {
             deposited: None,
             assembly: None,
             unwrapped_from: None,
+            iso: Iso::default(),
+            iso_cache: None,
             overlay_next: false,
             turning: None,
             turn_task: None,
@@ -921,6 +926,10 @@ impl Viewer {
         self.stop_playing();
         self.camera = Camera { perspective: self.camera.perspective, ..Camera::frame(&structure) };
         self.all_chains = false;
+        self.iso = match &structure.volume {
+            Some(v) => Iso { shown: true, level: v.default_level(), mesh: false },
+            None => Iso::default(),
+        };
         self.structure = Some(Arc::new(structure));
         self.compare = None;
         self.fit = None;
@@ -1135,6 +1144,7 @@ impl Viewer {
             _ => 0.3,
         };
         self.refresh_layers();
+        let iso = self.iso_scene();
         let mut scene = Scene::default();
         let mut parts = [(0..0, 0..0), (0..0, 0..0)];
         // What the layers hide is the loaded structure's alone.
@@ -1155,6 +1165,9 @@ impl Viewer {
                 appearance,
             ));
             if which == 0 {
+                if let Some(iso) = &iso {
+                    scene.merge((**iso).clone());
+                }
                 for layer in &self.layers {
                     scene.merge(render::build_layer(
                         s,
@@ -1588,6 +1601,18 @@ impl Viewer {
                     self.note(format!("{} frames from {} superimposed onto {}", thousands(n), s.id, moved.id));
                     self.stop_playing();
                     self.structure = Some(Arc::new(moved));
+                    self.rebuild(cx);
+                }
+            }
+            // A map, which has no atoms, is laid over the structure shown.
+            Ok(s) if s.format == Some("map") && self.structure.as_ref().is_some_and(|s| !s.atoms.is_empty()) => {
+                self.opening = None;
+                if let (Some(shown), Some(volume)) = (self.structure.as_mut(), s.volume) {
+                    let [a, b, c] = volume.dims;
+                    let said = format!("map {} · {a} × {b} × {c} laid over {}", s.id, shown.id);
+                    self.iso = Iso { shown: true, level: volume.default_level(), mesh: false };
+                    Arc::make_mut(shown).volume = Some(volume);
+                    self.note(said);
                     self.rebuild(cx);
                 }
             }
@@ -2252,6 +2277,120 @@ impl Viewer {
         self.measurements.clear();
         self.rebuild(cx);
         Ok(said)
+    }
+
+    /// The volume's surface as drawn now, built when its level or look last
+    /// changed: blue where the values pass the level, and for data with a
+    /// sign, red where they pass its negative.
+    pub(crate) fn iso_scene(&mut self) -> Option<Arc<Scene>> {
+        let volume = self.structure.as_ref()?.volume.clone()?;
+        if !self.iso.shown {
+            return None;
+        }
+        let key = Arc::as_ptr(&volume) as usize;
+        if let Some((iso, k, scene)) = &self.iso_cache {
+            if *iso == self.iso && *k == key {
+                return Some(scene.clone());
+            }
+        }
+        let level = self.iso.level;
+        let mut lobes = vec![(volume.isosurface(level, false), [0.22, 0.48, 0.86])];
+        if volume.signed() {
+            lobes.push((volume.isosurface(-level, true), [0.86, 0.30, 0.22]));
+        }
+        let step = volume.axes.iter().map(|a| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()).fold(f32::MAX, f32::min);
+        let mut scene = Scene::default();
+        for (facets, color) in lobes {
+            if self.iso.mesh {
+                // Each edge once, as a thin rod.
+                let key = |p: [f32; 3]| p.map(|x| (x * 1000.0).round() as i64);
+                let mut seen = std::collections::HashSet::new();
+                for f in &facets {
+                    for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+                        let (ka, kb) = (key(f.p[a]), key(f.p[b]));
+                        if seen.insert(if ka < kb { (ka, kb) } else { (kb, ka) }) {
+                            scene.capsules.push(render::Capsule {
+                                a: f.p[a],
+                                b: f.p[b],
+                                r: (step * 0.05).max(0.01),
+                                ca: color,
+                                cb: color,
+                                alpha: 1.0,
+                            });
+                        }
+                    }
+                }
+            } else {
+                scene.tris.extend(facets.iter().map(|f| render::Tri { p: f.p, n: f.n, c: color }));
+            }
+        }
+        let scene = Arc::new(scene);
+        self.iso_cache = Some((self.iso, key, scene.clone()));
+        Some(scene)
+    }
+
+    /// The volume's surface as last built, if it is shown.
+    pub(crate) fn iso_drawn(&self) -> Option<Arc<Scene>> {
+        let volume = self.structure.as_ref()?.volume.as_ref()?;
+        let (iso, key, scene) = self.iso_cache.as_ref()?;
+        (self.iso.shown && *iso == self.iso && *key == Arc::as_ptr(volume) as usize).then(|| scene.clone())
+    }
+
+    /// The volume's surface: shown or not, solid or a mesh, and its level.
+    pub(crate) fn set_iso(&mut self, iso: Iso, cx: &mut Context<Self>) {
+        self.iso = iso;
+        self.rebuild(cx);
+    }
+
+    /// Controls for the volume, under the structure's name.
+    fn volume_tools(&self, structure: &Structure, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let volume = structure.volume.as_ref()?;
+        let iso = self.iso;
+        let chip = |id: &'static str, label: String, on: bool, next: Iso| {
+            div()
+                .id(id)
+                .px(px(7.))
+                .py(px(2.))
+                .rounded(px(4.))
+                .text_size(px(10.))
+                .cursor_pointer()
+                .when(on, |d| d.bg(theme::sunken()).text_color(theme::text()))
+                .when(!on, |d| d.text_color(theme::muted()).hover(|s| s.bg(theme::sunken()).text_color(theme::text())))
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_iso(next, cx)))
+        };
+        let [a, b, c] = volume.dims;
+        let lobes = if volume.signed() { " · ± lobes" } else { "" };
+        Some(
+            div()
+                .pt(px(14.))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(key(&format!("volume · {a} × {b} × {c}{lobes}")))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(2.))
+                        .child(chip("iso-solid", "Surface".into(), iso.shown && !iso.mesh, Iso { shown: true, mesh: false, ..iso }))
+                        .child(chip("iso-mesh", "Mesh".into(), iso.shown && iso.mesh, Iso { shown: true, mesh: true, ..iso }))
+                        .child(chip("iso-hide", "Hide".into(), !iso.shown, Iso { shown: false, ..iso }))
+                        .child(div().w(px(8.)))
+                        .child(chip("iso-down", "−".into(), false, Iso { level: iso.level / 1.25, ..iso }))
+                        .child(
+                            div()
+                                .px(px(4.))
+                                .font_family(theme::MONO)
+                                .text_size(px(10.))
+                                .text_color(theme::text())
+                                .child(format!("level {}", figure(iso.level))),
+                        )
+                        .child(chip("iso-up", "+".into(), false, Iso { level: iso.level * 1.25, ..iso })),
+                )
+                .into_any_element(),
+        )
     }
 
     /// Buttons under the cell's size for what can be done across its walls.
@@ -3300,6 +3439,20 @@ const FOLD_EXAMPLES: [(&str, &str); 3] = [
 ];
 #[cfg(not(feature = "simplefold"))]
 const FOLD_EXAMPLES: [(&str, &str); 0] = [];
+
+/// How a volume is drawn: its surface at a level, solid or as a mesh.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Iso {
+    pub shown: bool,
+    pub level: f32,
+    pub mesh: bool,
+}
+
+impl Default for Iso {
+    fn default() -> Self {
+        Iso { shown: true, level: 1.0, mesh: false }
+    }
+}
 
 /// What can be done to a structure across its periodic boundaries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -6944,7 +7097,8 @@ impl Viewer {
                         .child(blurb),
                 )
             })
-            .children(self.colour_key(structure, cx));
+            .children(self.colour_key(structure, cx))
+            .children(self.volume_tools(structure, cx));
         let atoms = self.species_table(structure, cx);
         let facts = div()
             .flex()
@@ -7148,6 +7302,7 @@ impl Viewer {
             .children(self.assembly_choice(structure, cx))
             .child(self.legend(structure, cx))
             .children(self.colour_key(structure, cx))
+            .children(self.volume_tools(structure, cx))
             .child(self.ligand_list(structure, cx))
             .child(self.layer_list(cx));
         let atoms = self.species_table(structure, cx);
@@ -8534,6 +8689,79 @@ mod ui_tests {
         assert!(view.update(cx, |this, cx| this.run_command("replicate 2 2", cx)).is_err());
         // A box of plain beads has no properties to colour by.
         assert!(view.update(cx, |this, cx| this.run_command("color property", cx)).is_err());
+    }
+
+    /// A cube file of one carbon with a p orbital about it: positive above,
+    /// negative below.
+    fn p_orbital_cube() -> String {
+        let n = 20;
+        let mut text = String::from("p orbital\ntest\n    1   -4.75   -4.75   -4.75\n");
+        for k in 0..3 {
+            let mut v = [0.0; 3];
+            v[k] = 0.5;
+            text += &format!("   {n}   {:.3}   {:.3}   {:.3}\n", v[0], v[1], v[2]);
+        }
+        text += "    6    6.0    0.0    0.0    0.0\n";
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    let (x, y, z) = [i, j, k].map(|q| -4.75 + q as f32 * 0.5).into();
+                    let r2 = x * x + y * y + z * z;
+                    text += &format!("{:.5e} ", z * (-r2 / 4.0).exp());
+                }
+                text += "\n";
+            }
+        }
+        text
+    }
+
+    #[gpui::test]
+    fn an_orbital_shows_two_lobes_and_a_map_opens_alone(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        let s = formats::load_bytes("orbital.cube", p_orbital_cube().into_bytes()).unwrap();
+        let volume = s.volume.clone().expect("the cube's grid is read");
+        assert_eq!(volume.dims, [20, 20, 20]);
+        assert!(volume.signed());
+        view.update(cx, |this, cx| this.show(s, cx));
+        cx.run_until_parked();
+        let colours = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| {
+                let mut c: Vec<[u32; 3]> = this.base.tris.iter().map(|t| t.c.map(|x| (x * 100.0) as u32)).collect();
+                c.dedup();
+                c.sort();
+                c.dedup();
+                c.len()
+            })
+        };
+        assert_eq!(colours(&view, cx), 2, "a blue lobe and a red one");
+        view.update(cx, |this, cx| this.run_command("iso mesh", cx)).unwrap();
+        assert!(view.update(cx, |this, _| this.base.tris.is_empty() && this.base.capsules.len() > 100));
+        view.update(cx, |this, cx| this.run_command("iso off", cx)).unwrap();
+        // The grid's box is all that is left of rods.
+        assert!(view.update(cx, |this, _| this.base.capsules.len() <= 12 && this.base.tris.is_empty()));
+        assert!(view.update(cx, |this, cx| this.run_command("iso high", cx)).is_err());
+
+        // A map with no atoms opens on its own, as its surface in its box.
+        let mut map = vec![0u8; 1024];
+        for (o, v) in [(0, 8i32), (4, 8), (8, 8), (12, 2), (28, 8), (32, 8), (36, 8), (64, 1), (68, 2), (72, 3)] {
+            map[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        for (o, v) in [(40, 8.0f32), (44, 8.0), (48, 8.0)] {
+            map[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        for k in 0..8 {
+            for j in 0..8 {
+                for i in 0..8 {
+                    let d = [i, j, k].map(|q| q as f32 - 3.5);
+                    map.extend((4.0 - (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()).to_le_bytes());
+                }
+            }
+        }
+        let alone = formats::load_bytes("blob.mrc", map).unwrap();
+        assert!(alone.atoms.is_empty() && alone.volume.is_some());
+        view.update(cx, |this, cx| this.finish(Ok(alone), cx));
+        cx.run_until_parked();
+        assert!(view.update(cx, |this, _| !this.base.tris.is_empty()));
     }
 
     #[gpui::test]

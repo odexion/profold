@@ -15,6 +15,15 @@
 - **Ray-traced films.** The film dialog's *Ray traced* switch, or
   `movie … trace=on`, traces every frame the same way.
 
+### Volumes
+- **Isosurfaces.** A Gaussian cube file's grid is read at last, and CCP4,
+  MRC and OpenDX maps open too: laid over the structure shown, or on their
+  own in their box. The surface is drawn where the values cross a level
+  (mean plus 2.5 σ to begin with, − and + to step it), blue, and for an
+  orbital's signed values a red lobe where they cross its negative. Solid
+  or as a mesh, in the viewport, traced pictures and films. `iso 0.05`,
+  `iso mesh`, `iso off` and `iso auto` in the console.
+
 ### Simulations
 - **Per-atom properties.** A LAMMPS dump keeps every column beyond type and
   position (`c_pe`, `vx`, `q`, stresses…), and an extended XYZ every numeric

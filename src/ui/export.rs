@@ -186,8 +186,13 @@ impl Viewer {
         let layers: Vec<_> = self.layers.iter().map(|l| (l.selection.clone(), l.style, l.color)).collect();
         let main = self.shown(0).is_some();
         let other = self.shown(1).map(|o| Structure::clone(o));
+        // The volume's surface stands still through a film, built once.
+        let iso = self.iso_drawn();
         let build = move |s: &Structure| -> Scene {
             let mut scene = Scene::default();
+            if let Some(iso) = iso.as_ref().filter(|_| main) {
+                scene.merge((**iso).clone());
+            }
             if main {
                 // Layers are found anew for each pose, as they are for each
                 // frame in the viewport.

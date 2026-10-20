@@ -112,16 +112,7 @@ pub fn gaussian(points: &[[f32; 3]], radii: &[f32], spacing: f32) -> Vec<Facet> 
         [d(0, x, nx), d(1, y, ny), d(2, z, nz)]
     };
 
-    // The cube's corners, and its six tetrahedra about the 0–6 diagonal,
-    // which share faces with their neighbours' so the skin has no cracks.
-    const CORNER: [[usize; 3]; 8] = [
-        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
-        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
-    ];
-    const TETS: [[usize; 4]; 6] = [
-        [0, 5, 1, 6], [0, 1, 2, 6], [0, 2, 3, 6],
-        [0, 3, 7, 6], [0, 7, 4, 6], [0, 4, 5, 6],
-    ];
+    let world = |g: [usize; 3]| [0, 1, 2].map(|k| lo[k] + g[k] as f32 * h);
     let mut facets: Vec<Facet> = (0..nz - 1)
         .into_par_iter()
         .flat_map_iter(|z| {
@@ -134,7 +125,7 @@ pub fn gaussian(points: &[[f32; 3]], radii: &[f32], spacing: f32) -> Vec<Facet> 
                         continue;
                     }
                     for tet in TETS {
-                        march(&tet, &cell, &value, &lo, h, &gradient, &mut out);
+                        march(&tet, &cell, &value, &world, &gradient, &mut out);
                     }
                 }
             }
@@ -175,15 +166,25 @@ pub fn gaussian(points: &[[f32; 3]], radii: &[f32], spacing: f32) -> Vec<Facet> 
     facets
 }
 
+/// The cube's corners, and its six tetrahedra about the 0–6 diagonal,
+/// which share faces with their neighbours' so the skin has no cracks.
+pub(crate) const CORNER: [[usize; 3]; 8] = [
+    [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+];
+pub(crate) const TETS: [[usize; 4]; 6] = [
+    [0, 5, 1, 6], [0, 1, 2, 6], [0, 2, 3, 6],
+    [0, 3, 7, 6], [0, 7, 4, 6], [0, 4, 5, 6],
+];
+
 /// The surface's crossing of one tetrahedron: none, one triangle where one
 /// corner is on its own side, or two where the corners split two and two.
-#[allow(clippy::too_many_arguments)]
-fn march(
+/// `world` places a grid point, and `gradient` points out of the surface.
+pub(crate) fn march(
     tet: &[usize; 4],
     cell: &[[usize; 3]; 8],
     value: &[f32; 8],
-    lo: &[f32; 3],
-    h: f32,
+    world: &impl Fn([usize; 3]) -> [f32; 3],
     gradient: &impl Fn(usize, usize, usize) -> [f32; 3],
     out: &mut Vec<Facet>,
 ) {
@@ -192,7 +193,6 @@ fn march(
     if inside.is_empty() || outside.is_empty() {
         return;
     }
-    let world = |g: [usize; 3]| [0, 1, 2].map(|k| lo[k] + g[k] as f32 * h);
     // Where the surface crosses the edge from an inside corner to an outside one.
     let cross = |a: usize, b: usize| {
         let t = value[a] / (value[a] - value[b]);

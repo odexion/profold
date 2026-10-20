@@ -317,6 +317,8 @@ pub struct Structure {
     pub pae: Option<Arc<Pae>>,
     /// Values per atom from the file's other columns.
     pub props: Vec<Property>,
+    /// Values on a grid through the space, from the file or a map laid over.
+    pub volume: Option<Arc<crate::volume::Volume>>,
     /// Which of them `Coloring::Property` paints by.
     pub prop_color: Option<PropertyColor>,
     /// Each property's own span, worked out when first asked.
@@ -350,6 +352,7 @@ impl Structure {
             assemblies: Vec::new(),
             pae: None,
             props: Vec::new(),
+            volume: None,
             prop_color: None,
             prop_spans: std::sync::OnceLock::new(),
             b_span: std::sync::OnceLock::new(),

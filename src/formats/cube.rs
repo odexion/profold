@@ -1,5 +1,5 @@
-//! Gaussian cube files. Only the molecule and the grid's box are read; the
-//! volumetric data is left for another day.
+//! Gaussian cube files: a molecule, and an orbital or a density on a grid
+//! through it.
 
 use anyhow::{anyhow, bail, Result};
 
@@ -26,9 +26,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
     let natoms = head[0].abs() as usize;
 
     let mut vectors = [[0.0f32; 3]; 3];
+    let mut steps = [[0.0f32; 3]; 3];
+    let mut counts = [0usize; 3];
     // A negative voxel count means the vectors are already in ångström.
     let mut unit = BOHR;
-    for row in &mut vectors {
+    for ((row, step), count) in vectors.iter_mut().zip(&mut steps).zip(&mut counts) {
         let v = floats(lines.next())?;
         if v.len() < 4 {
             bail!("missing voxel axes");
@@ -37,9 +39,11 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
             unit = 1.0;
         }
         let n = v[0].abs();
+        *count = n as usize;
+        *step = [v[1], v[2], v[3]];
         *row = [v[1] * n, v[2] * n, v[3] * n];
     }
-    for row in &mut vectors {
+    for row in vectors.iter_mut().chain(&mut steps) {
         for x in row.iter_mut() {
             *x *= unit;
         }
@@ -65,5 +69,37 @@ pub fn parse(text: &str, id: String, source: Source) -> Result<Structure> {
             ..Record::default()
         });
     }
-    Ok(b.finish(id, title, source))
+    // A negative atom count says a line of orbital numbers follows the
+    // atoms, and that each point holds a value per orbital: the first is
+    // drawn.
+    let per_point = if head[0] < 0.0 {
+        let ids = floats(lines.next())?;
+        ids.first().map_or(1, |n| (*n as usize).max(1))
+    } else {
+        1
+    };
+    let total = counts.iter().product::<usize>();
+    let mut values = Vec::with_capacity(total);
+    'read: for line in lines {
+        for x in line.split_whitespace() {
+            let Ok(x) = x.parse::<f32>() else { continue };
+            values.push(x);
+            if values.len() >= total * per_point {
+                break 'read;
+            }
+        }
+    }
+    let mut s = b.finish(id, title, source);
+    if total > 0 && values.len() >= total * per_point {
+        // Points run with z fastest, so the cube's last axis is the grid's first.
+        let data = values.into_iter().step_by(per_point).collect::<Vec<f32>>();
+        let origin = [head[1] * unit, head[2] * unit, head[3] * unit];
+        s.volume = Some(std::sync::Arc::new(crate::volume::Volume {
+            origin,
+            axes: [steps[2], steps[1], steps[0]],
+            dims: [counts[2], counts[1], counts[0]],
+            data,
+        }));
+    }
+    Ok(s)
 }
