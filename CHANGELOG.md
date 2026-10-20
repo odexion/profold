@@ -23,14 +23,16 @@
   drawn into saved images and films.
 
 ### Trajectories
-- **Analysis.** *Trajectory analysis* in the side panel plots, frame by
-  frame, the RMSD from the first frame (each fitted onto it by Kabsch), the
-  radius of gyration, the solvent-accessible surface (Shrake–Rupley) and the
-  polar contacts between residues; the RMSF along the chain; and helices
-  and strands through time. It is worked out in the background, a line
-  marks the frame shown, and a click on a plot goes to that frame. *Fit
-  frames onto the first* takes out the tumbling. `analyse` and `fit` in the
-  console.
+- **Analysis.** *Trajectory analysis* in the side panel measures, frame
+  by frame, the RMSD from the first frame (each fitted onto it by Kabsch),
+  the radius of gyration, the solvent-accessible surface (Shrake–Rupley)
+  and the polar contacts between residues; the RMSF of each atom; and
+  helices and strands through time. Each is worked out only when picked,
+  in the background, of the atoms chosen: Cα, the backbone, or any atom
+  types or elements, and `analyse rmsd of <selection>` for anything else.
+  The plots mark their least and greatest values and their span, a line
+  marks the frame shown, and a click goes to that frame. *Fit frames onto
+  the first* takes out the tumbling. Selections gain `type 1+2`.
 
 ### Volumes
 - **Isosurfaces.** A Gaussian cube file's grid is read at last, and CCP4,

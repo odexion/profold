@@ -34,7 +34,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("perspective on|off, slab on|off", "projection mode and clipping slab"),
     ("wrap, whole, unwrap, original", "put atoms in the cell, mend molecules cut by its walls, follow a trajectory through them, or undo"),
     ("replicate <a> <b> <c>", "repeat the cell, as in replicate 2 2 1"),
-    ("analyse, fit", "plot RMSD, Rg, SASA, contacts, RMSF and secondary structure over a trajectory; fit its frames onto the first"),
+    ("analyse [rmsd|rg|rmsf|sasa|polar|secondary] [of <selection>], fit", "plot a measure over a trajectory, of the atoms chosen; fit its frames onto the first"),
     ("iso <level>|on|off|mesh|auto", "draw the volume's surface at a level, from a cube file or a map"),
     ("label [atoms] <selection> [\"text\"], label clear", "pin residue names, atom names or your own text to atoms"),
     ("trace on|off", "ray trace the still view and saved images: shadows and ambient occlusion"),
@@ -398,12 +398,36 @@ impl Viewer {
                 format!("{n} labels added")
             }
             "analyse" | "analyze" | "analysis" => {
+                // analyse [measure] [of <selection>]
                 if shown()?.frame_count() < 2 {
                     bail!("there is one frame");
                 }
+                use crate::analysis::Measure;
+                let (first, after) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                let named = Measure::ALL.into_iter().find(|m| {
+                    let w = first.to_ascii_lowercase();
+                    m.label().to_ascii_lowercase().starts_with(&w) && !w.is_empty()
+                });
+                let selection = match named {
+                    Some(_) => after.trim(),
+                    None => rest,
+                };
+                let selection = selection.strip_prefix("of ").unwrap_or(selection).trim();
+                if !selection.is_empty() {
+                    Selection::parse(selection)?;
+                    self.analysis_custom = Some(selection.to_string());
+                }
                 self.analysis_open = true;
-                self.start_analysis(cx);
-                "working out the trajectory's analysis; it is in the panel".into()
+                match named.or(self.analysis_pick) {
+                    Some(m) => {
+                        self.start_measure(m, cx);
+                        format!("working out {}; it is in the panel", m.label())
+                    }
+                    None => {
+                        cx.notify();
+                        "the analysis is open in the panel; pick a measure".into()
+                    }
+                }
             }
             "replicate" => {
                 let n: Vec<usize> = rest

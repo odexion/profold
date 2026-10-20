@@ -253,60 +253,57 @@ fn picture(
     ]))
 }
 
-/// Where protein backbones are found on the Ramachandran plot: the right-
-/// and left-handed helices and the strands, as soft regions to read the
-/// dots against.
-/// One of the analysis's plots as a picture `w` by `h`: a line through a
-/// series or RMSF, on faint rules, or secondary structure, frames across
-/// and residues down.
+/// An analysis plot as a picture `w` by `h`: a line through the values on
+/// faint rules at their least and greatest, or secondary structure, frames
+/// across and residues down.
 fn analysis_picture(
-    a: &crate::analysis::Analysis,
-    pick: usize,
+    plot: &crate::analysis::Plot,
     frames: usize,
     w: usize,
     h: usize,
     dark: bool,
 ) -> Arc<gpui::RenderImage> {
+    use crate::analysis::Plot;
     let page = theme::view();
-    if pick > a.series.len() {
-        let rows = a.ss_residues.len().max(1);
-        let columns = a.ss.len().max(1);
-        return picture(w, h, |x, y| {
-            let (_, ss) = &a.ss[(x * columns / w).min(columns - 1)];
-            let r = (y * rows / h).min(rows - 1);
-            match ss.get(r) {
-                Some(crate::protein::Ss::Coil) | None => {
-                    page.map(|c| c * 0.92 + if dark { 0.05 } else { 0.0 })
+    let (xs, ys): (Vec<f32>, Vec<f32>) = match plot {
+        Plot::Secondary {
+            frames: taken,
+            residues,
+        } => {
+            let rows = residues.len().max(1);
+            let columns = taken.len().max(1);
+            return picture(w, h, |x, y| {
+                let (_, ss) = &taken[(x * columns / w).min(columns - 1)];
+                match ss.get((y * rows / h).min(rows - 1)) {
+                    Some(crate::protein::Ss::Coil) | None => {
+                        page.map(|c| c * 0.92 + if dark { 0.05 } else { 0.0 })
+                    }
+                    Some(s) => render::SS_COLORS
+                        .iter()
+                        .find(|c| c.0 == *s)
+                        .map_or(page, |c| c.2),
                 }
-                Some(s) => render::SS_COLORS
-                    .iter()
-                    .find(|c| c.0 == *s)
-                    .map_or(page, |c| c.2),
-            }
-        });
-    }
-    // The values, across: by frame along time, by residue for RMSF.
-    let (xs, ys): (Vec<f32>, Vec<f32>) = match a.series.get(pick) {
-        Some(s) => s
-            .points
+            });
+        }
+        Plot::Time(points) => points
             .iter()
             .map(|(f, v)| (*f as f32 / (frames - 1).max(1) as f32, *v))
             .unzip(),
-        None => {
-            let n = a.rmsf.len().max(1);
-            a.rmsf
+        Plot::Along(values) => {
+            let n = values.len().max(1);
+            values
                 .iter()
                 .enumerate()
                 .map(|(i, v)| ((i as f32 + 0.5) / n as f32, *v))
                 .unzip()
         }
     };
-    let lo = ys.iter().cloned().fold(f32::MAX, f32::min);
-    let hi = ys.iter().cloned().fold(f32::MIN, f32::max);
-    let span = (hi - lo).max(1e-6);
-    let pad = 0.08;
-    let to_y = |v: f32| ((1.0 - pad) - (v - lo) / span * (1.0 - 2.0 * pad)) * (h - 1) as f32;
-    // Each column's height on the line, joined to the next so steep stretches stay unbroken.
+    let (lo, hi) = plot_range(&ys);
+    let to_y = |v: f32| {
+        ((1.0 - PLOT_PAD) - (v - lo) / (hi - lo) * (1.0 - 2.0 * PLOT_PAD)) * (h - 1) as f32
+    };
+    // Each column's height on the line, joined to the next so steep
+    // stretches stay unbroken.
     let column: Vec<f32> = (0..w)
         .map(|x| {
             let t = x as f32 / (w - 1).max(1) as f32;
@@ -333,8 +330,7 @@ fn analysis_picture(
     picture(w, h, |x, y| {
         let y = y as f32;
         let (a, b) = (column[x], column[(x + 1).min(w - 1)]);
-        let (top, bottom) = (a.min(b) - 1.5, a.max(b) + 1.5);
-        if y >= top && y <= bottom {
+        if y >= a.min(b) - 1.5 && y <= a.max(b) + 1.5 {
             line
         } else if (y - to_y(lo)).abs() < 1.0 || (y - to_y(hi)).abs() < 1.0 {
             rule
@@ -344,6 +340,34 @@ fn analysis_picture(
     })
 }
 
+/// How far in from top and bottom the rules at a plot's least and greatest
+/// values are, as a share of its height.
+const PLOT_PAD: f32 = 0.1;
+
+/// The least and greatest of `ys`, spread apart when they are one.
+fn plot_range(ys: &[f32]) -> (f32, f32) {
+    let lo = ys
+        .iter()
+        .cloned()
+        .filter(|v| v.is_finite())
+        .fold(f32::MAX, f32::min);
+    let hi = ys
+        .iter()
+        .cloned()
+        .filter(|v| v.is_finite())
+        .fold(f32::MIN, f32::max);
+    if lo > hi {
+        (0.0, 1.0)
+    } else if hi - lo < 1e-6 {
+        (lo - 0.5, hi + 0.5)
+    } else {
+        (lo, hi)
+    }
+}
+
+/// Where protein backbones are found on the Ramachandran plot: the right-
+/// and left-handed helices and the strands, as soft regions to read the
+/// dots against.
 fn ramachandran_ground() -> Arc<gpui::RenderImage> {
     // One for each page, light and dark, made when first wanted.
     static GROUND: [std::sync::OnceLock<Arc<gpui::RenderImage>>; 2] =
@@ -587,15 +611,22 @@ pub struct Viewer {
     /// it, and what is worked out once per structure.
     rama_bounds: Rc<Shared<Bounds<Pixels>>>,
     rama_hover: Option<usize>,
-    /// The trajectory's analysis: whether its row is open, which plot, what
-    /// was worked out and for which frames, the work under way and how far
+    /// The trajectory's analysis: whether its row is open, what is shown,
+    /// the atoms it is taken of (pills chosen, or a selection typed in the
+    /// console), what has been worked out, the work under way and how far
     /// it is, the plot drawn, and where the pointer is along it.
     pub(super) analysis_open: bool,
-    analysis_pick: usize,
-    analysis: Option<(usize, Arc<crate::analysis::Analysis>)>,
-    analysis_task: Option<Task<()>>,
+    analysis_pick: Option<crate::analysis::Measure>,
+    analysis_pills: Option<Vec<bool>>,
+    pub(super) analysis_custom: Option<String>,
+    analysis: HashMap<(usize, crate::analysis::Measure, String), Arc<crate::analysis::Plot>>,
+    analysis_task: Option<(
+        (usize, crate::analysis::Measure, String),
+        Arc<std::sync::atomic::AtomicBool>,
+        Task<()>,
+    )>,
     analysis_done: Option<(Arc<std::sync::atomic::AtomicUsize>, usize)>,
-    analysis_image: RefCell<Option<((usize, usize, bool), Arc<gpui::RenderImage>)>>,
+    analysis_image: RefCell<Option<((usize, bool), Arc<gpui::RenderImage>)>>,
     analysis_bounds: Rc<Shared<Bounds<Pixels>>>,
     analysis_hover: Option<f32>,
     pae_bounds: Rc<Shared<Bounds<Pixels>>>,
@@ -857,8 +888,10 @@ impl Viewer {
             rama_bounds: Rc::new(Shared::new(Bounds::default())),
             rama_hover: None,
             analysis_open: false,
-            analysis_pick: 0,
-            analysis: None,
+            analysis_pick: None,
+            analysis_pills: None,
+            analysis_custom: None,
+            analysis: HashMap::new(),
             analysis_task: None,
             analysis_done: None,
             analysis_image: RefCell::new(None),
@@ -2620,8 +2653,8 @@ impl Viewer {
         self.measurements.clear();
         self.rebuild(cx);
         // The frames have changed, so what was worked out from them has.
-        if self.analysis_open {
-            self.start_analysis(cx);
+        if let (true, Some(m)) = (self.analysis_open, self.analysis_pick) {
+            self.start_measure(m, cx);
         }
         Ok(said)
     }
@@ -2684,54 +2717,175 @@ impl Viewer {
         Some(scene)
     }
 
-    /// The analysis of the trajectory shown, if it is the one worked out.
-    fn analysis_for(&self, s: &Structure) -> Option<Arc<crate::analysis::Analysis>> {
-        let (key, a) = self.analysis.as_ref()?;
-        (*key == Arc::as_ptr(&s.frames) as usize).then(|| a.clone())
+    /// The atoms an analysis can be taken of, as pills, each with the
+    /// selection it stands for: alpha carbons and the backbone of a protein,
+    /// then each atom type of a simulation, or else each element.
+    fn analysis_choices(s: &Structure) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        if s.has_polymer() {
+            out.push(("Cα".to_string(), "protein and name CA".to_string()));
+            out.push(("Backbone".to_string(), "backbone".to_string()));
+        }
+        let by_type = !s.kinds.is_empty()
+            && !s
+                .kinds
+                .iter()
+                .all(|k| crate::protein::Element::from_symbol(k).is_known());
+        if by_type {
+            for k in &s.kinds {
+                out.push((format!("Type {k}"), format!("type {k}")));
+            }
+        } else {
+            for (e, _) in s.composition() {
+                if e.is_known() {
+                    out.push((e.symbol().to_string(), format!("elem {}", e.symbol())));
+                }
+            }
+        }
+        out
     }
 
-    /// Work out the trajectory's analysis in the background, unless it is
-    /// worked out or being worked out already.
-    pub(super) fn start_analysis(&mut self, cx: &mut Context<Self>) {
+    /// Which pills are on: those chosen, or by default a protein's alpha
+    /// carbons and otherwise every atom.
+    fn analysis_chosen(&self, s: &Structure) -> Vec<bool> {
+        let n = Self::analysis_choices(s).len();
+        match &self.analysis_pills {
+            Some(p) if p.len() == n => p.clone(),
+            _ if s.has_polymer() => (0..n).map(|i| i == 0).collect(),
+            _ => vec![true; n],
+        }
+    }
+
+    /// The selection the analysis is taken of now.
+    fn analysis_selection(&self, s: &Structure) -> String {
+        if let Some(c) = &self.analysis_custom {
+            return c.clone();
+        }
+        let parts: Vec<String> = Self::analysis_choices(s)
+            .into_iter()
+            .zip(self.analysis_chosen(s))
+            .filter(|(_, on)| *on)
+            .map(|((_, sel), _)| format!("({sel})"))
+            .collect();
+        if parts.is_empty() {
+            "none".into()
+        } else {
+            parts.join(" or ")
+        }
+    }
+
+    fn analysis_atoms(&self, s: &Structure) -> Vec<usize> {
+        Selection::parse(&self.analysis_selection(s))
+            .map(|sel| {
+                sel.atoms(s)
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| **t)
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn analysis_key(
+        &self,
+        s: &Structure,
+        m: crate::analysis::Measure,
+    ) -> (usize, crate::analysis::Measure, String) {
+        (
+            Arc::as_ptr(&s.frames) as usize,
+            m,
+            self.analysis_selection(s),
+        )
+    }
+
+    /// Show measure `m`, working it out in the background unless it has
+    /// been for these frames and atoms already. Whatever else was being
+    /// worked out is given up.
+    pub(super) fn start_measure(&mut self, m: crate::analysis::Measure, cx: &mut Context<Self>) {
+        self.analysis_pick = Some(m);
+        self.analysis_hover = None;
         let Some(s) = self.structure.clone() else {
             return;
         };
-        if s.frame_count() < 2 || self.analysis_for(&s).is_some() || self.analysis_task.is_some() {
+        if s.frame_count() < 2 {
             return;
         }
-        let key = Arc::as_ptr(&s.frames) as usize;
+        let key = self.analysis_key(&s, m);
+        if self
+            .analysis_task
+            .as_ref()
+            .is_some_and(|(k, _, _)| *k == key)
+        {
+            return;
+        }
+        if let Some((_, cancel, _)) = self.analysis_task.take() {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.analysis_done = None;
+        let atoms = self.analysis_atoms(&s);
+        if self.analysis.contains_key(&key) || !m.applies(&s, &atoms) {
+            cx.notify();
+            return;
+        }
         let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.analysis_done = Some((done.clone(), crate::analysis::total(&s)));
+        self.analysis_done = Some((done.clone(), crate::analysis::total(&s, m)));
         let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let work = cx.background_executor().spawn({
-            let (s, finished) = (s.clone(), finished.clone());
+            let (finished, cancel) = (finished.clone(), cancel.clone());
             async move {
-                let a = crate::analysis::analyse(&s, &cancel, &done);
+                let plot = crate::analysis::measure(&s, m, &atoms, &cancel, &done);
                 finished.store(true, std::sync::atomic::Ordering::Relaxed);
-                a
+                plot
             }
         });
-        self.analysis_task = Some(cx.spawn(async move |this, cx| {
-            while !finished.load(std::sync::atomic::Ordering::Relaxed) {
-                cx.background_executor()
-                    .timer(Duration::from_millis(200))
-                    .await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
-                    return;
+        let task = cx.spawn({
+            let (key, cancel) = (key.clone(), cancel.clone());
+            async move |this, cx| {
+                while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(200))
+                        .await;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        return;
+                    }
                 }
+                let plot = work.await;
+                let _ = this.update(cx, |this, cx| {
+                    if this
+                        .analysis_task
+                        .as_ref()
+                        .is_some_and(|(_, c, _)| Arc::ptr_eq(c, &cancel))
+                    {
+                        this.analysis_task = None;
+                        this.analysis_done = None;
+                    }
+                    if let Some(plot) = plot {
+                        this.analysis.insert(key, Arc::new(plot));
+                    }
+                    cx.notify();
+                });
             }
-            let a = work.await;
-            let _ = this.update(cx, |this, cx| {
-                this.analysis_task = None;
-                this.analysis_done = None;
-                if let Some(a) = a {
-                    this.analysis = Some((key, Arc::new(a)));
-                    *this.analysis_image.borrow_mut() = None;
-                }
-                cx.notify();
-            });
-        }));
+        });
+        self.analysis_task = Some((key, cancel, task));
+        cx.notify();
+    }
+
+    /// Turn an atom pill on or off, and measure again what is shown.
+    fn toggle_analysis_atoms(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(s) = self.structure.clone() else {
+            return;
+        };
+        let mut chosen = self.analysis_chosen(&s);
+        if let Some(on) = chosen.get_mut(i) {
+            *on = !*on;
+        }
+        self.analysis_pills = Some(chosen);
+        self.analysis_custom = None;
+        if let Some(m) = self.analysis_pick {
+            self.start_measure(m, cx);
+        }
         cx.notify();
     }
 
@@ -2745,25 +2899,32 @@ impl Viewer {
         );
     }
 
-    /// What is plotted for pick `i`: a series, then RMSF, then secondary
-    /// structure through time.
-    fn analysis_names(a: &crate::analysis::Analysis) -> Vec<&'static str> {
-        let mut names: Vec<&'static str> = a.series.iter().map(|s| s.name).collect();
-        names.push("RMSF");
-        if !a.ss.is_empty() {
-            names.push("Secondary");
+    /// Words for atom `i` along an RMSF plot: its residue where it stands
+    /// for one, or its name in its residue, or its number.
+    fn atom_words(s: &Structure, i: usize) -> String {
+        let r = s.atoms[i].residue as usize;
+        if s.has_polymer() && !s.residues[r].outside_polymer() {
+            if s.residues[r].ca == Some(i as u32) {
+                Self::residue_label(s, r)
+            } else {
+                format!("{} {}", s.atoms[i].name(), Self::residue_label(s, r))
+            }
+        } else {
+            format!("atom {}", i + 1)
         }
-        names
     }
 
-    /// The trajectory's plots: a value through time, how much each residue
-    /// moves, or its helices and strands frame by frame. Clicking a point
-    /// along time goes to that frame.
+    /// The trajectory's plots, each worked out only when picked: a value
+    /// through time, how much each chosen atom moves, or helices and
+    /// strands frame by frame, of the atoms picked above them. The least
+    /// and greatest values are marked up the side and the span along the
+    /// foot; a click along time goes to that frame.
     fn trajectory_analysis(
         &self,
         structure: &Structure,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        use crate::analysis::{Measure, Plot};
         if structure.frame_count() < 2 {
             return None;
         }
@@ -2802,9 +2963,6 @@ impl Viewer {
                                 .child(if open { "Hide" } else { "Show" })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.analysis_open = !this.analysis_open;
-                                    if this.analysis_open {
-                                        this.start_analysis(cx);
-                                    }
                                     cx.notify();
                                 })),
                         ),
@@ -2813,145 +2971,306 @@ impl Viewer {
         if !self.analysis_open {
             return Some(row(String::new(), false, cx).into_any_element());
         }
-        let Some(a) = self.analysis_for(structure) else {
-            let part = self.analysis_done.as_ref().map_or(0.0, |(d, n)| {
-                d.load(std::sync::atomic::Ordering::Relaxed) as f32 / (*n).max(1) as f32
-            });
-            return Some(
-                row(format!("working · {}%", (part * 100.0) as u32), true, cx).into_any_element(),
-            );
-        };
-        let names = Self::analysis_names(&a);
-        let pick = self.analysis_pick.min(names.len() - 1);
         let frames = structure.frame_count();
-        let dark = theme::dark();
-        let (w, h) = (PLOT as usize * 2, 220usize);
-        let key = (Arc::as_ptr(&a) as usize, pick, dark);
-        let image = {
-            let mut cache = self.analysis_image.borrow_mut();
-            match cache.as_ref().filter(|(k, _)| *k == key) {
-                Some((_, image)) => image.clone(),
-                None => {
-                    let image = analysis_picture(&a, pick, frames, w, h, dark);
-                    *cache = Some((key, image.clone()));
-                    image
-                }
-            }
+        let atoms = self.analysis_atoms(structure);
+        let small = |label: String| {
+            div()
+                .font_family(theme::MONO)
+                .text_size(px(9.))
+                .text_color(theme::faint())
+                .child(label)
         };
-        // Along time, or along the chain for RMSF.
-        let timeline = pick != a.series.len();
-        let value_at = |t: f32| -> Option<String> {
-            if let Some(series) = a.series.get(pick) {
-                let frame = (t * (frames - 1) as f32).round() as usize;
-                let (f, v) = series
-                    .points
-                    .iter()
-                    .min_by_key(|(f, _)| f.abs_diff(frame))?;
-                Some(format!("frame {} · {} {}", f + 1, figure(*v), series.unit))
-            } else if pick == a.series.len() {
-                let i = ((t * a.rmsf.len() as f32) as usize).min(a.rmsf.len().checked_sub(1)?);
-                let v = a.rmsf[i];
-                let what = if a.rmsf_by_residue {
-                    let r = structure
-                        .residues
-                        .iter()
-                        .filter(|r| r.ca.is_some())
-                        .nth(i)?;
-                    format!("{} {}", r.name, r.seq)
-                } else {
-                    format!("atom {}", i + 1)
-                };
-                Some(format!("{what} · {} Å", figure(v)))
-            } else {
-                let (f, _) =
-                    a.ss.get(((t * a.ss.len() as f32) as usize).min(a.ss.len() - 1))?;
-                Some(format!("frame {}", f + 1))
-            }
-        };
-        let caption = self
-            .analysis_hover
-            .and_then(value_at)
-            .or_else(|| {
-                a.series
-                    .get(pick)
-                    .map(|s| format!("{} through {} frames", s.name, thousands(frames)))
-            })
-            .unwrap_or_else(|| {
-                if pick == a.series.len() {
-                    "RMSF along the chain".into()
-                } else {
-                    "helix · strand · coil".into()
-                }
-            });
-        let at = structure.frame as f32 / (frames - 1).max(1) as f32;
-        let store = self.analysis_bounds.clone();
-        let pills = div()
+
+        // Which atoms: pills, or the selection typed in the console.
+        let choices = Self::analysis_choices(structure);
+        let chosen = self.analysis_chosen(structure);
+        let custom = self.analysis_custom.clone();
+        // Each row's name over it, so the pills have the panel's width.
+        let atom_pills = div()
             .flex()
             .flex_wrap()
+            .items_center()
             .gap(px(4.))
-            .children(names.iter().enumerate().map(|(i, n)| {
-                pill_keyed(("analysis", i), *n, i == pick)
+            .children(choices.iter().enumerate().map(|(i, (label, _))| {
+                pill_keyed(
+                    ("analysis-atoms", i),
+                    label.clone(),
+                    custom.is_none() && chosen[i],
+                )
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_analysis_atoms(i, cx)))
+            }))
+            .children(custom.map(|text| {
+                pill("analysis-custom", text, true)
                     .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.analysis_pick = i;
-                        this.analysis_hover = None;
-                        cx.notify();
+                    .tooltip(|_, cx| {
+                        cx.new(
+                            |_| Tip("Typed in the console; click to go back to the pills".into()),
+                        )
+                        .into()
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.analysis_custom = None;
+                        if let Some(m) = this.analysis_pick {
+                            this.start_measure(m, cx);
+                        }
                     }))
-            }));
-        let plot = div()
-            .id("analysis-plot")
-            .debug_selector(|| "analysis-plot".into())
-            .relative()
-            .w(px(PLOT))
-            .h(px(110.))
-            .rounded(px(4.))
-            .overflow_hidden()
-            .border_1()
-            .border_color(theme::border())
-            .child(
-                gpui::img(gpui::ImageSource::Render(image))
-                    .absolute()
-                    .inset_0()
-                    .size_full(),
-            )
-            .child(
-                canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {})
-                    .absolute()
-                    .inset_0()
-                    .size_full(),
-            )
-            .when(timeline, |d| {
-                d.child(
+            }))
+            .child(small(format!("{} atoms", thousands(atoms.len()))));
+        let atom_pills = div()
+            .flex()
+            .flex_col()
+            .gap(px(5.))
+            .child(key("atoms"))
+            .child(atom_pills);
+
+        // What to measure: each worked out only when picked.
+        let pick = self.analysis_pick;
+        let measure_pills =
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .children(Measure::ALL.iter().map(|&m| {
+                    let applies = m.applies(structure, &atoms);
+                    pill_keyed(("analysis-measure", m as usize), m.short(), pick == Some(m))
+                        .flex_none()
+                        .tooltip(move |_, cx| cx.new(|_| Tip(m.about().into())).into())
+                        .when(!applies, |d| d.text_color(theme::faint()))
+                        .when(applies, |d| {
+                            d.cursor_pointer().on_click(
+                                cx.listener(move |this, _, _, cx| this.start_measure(m, cx)),
+                            )
+                        })
+                }));
+        let measure_pills = div()
+            .flex()
+            .flex_col()
+            .gap(px(5.))
+            .child(key("measure"))
+            .child(measure_pills);
+
+        let plot = pick.and_then(|m| self.analysis.get(&self.analysis_key(structure, m)).cloned());
+        let mut caption = String::new();
+        let body: gpui::AnyElement = match (pick, plot) {
+            (None, _) => small("Pick a measure; each is worked out only when picked.".into())
+                .into_any_element(),
+            (Some(m), None) => {
+                let note = match &self.analysis_done {
+                    Some((d, n)) => format!(
+                        "Working out {} · {}%",
+                        m.label(),
+                        (d.load(std::sync::atomic::Ordering::Relaxed) * 100 / (*n).max(1)).min(100)
+                    ),
+                    None if !m.applies(structure, &atoms) => {
+                        format!("{} does not apply to these atoms", m.label())
+                    }
+                    None => String::new(),
+                };
+                small(note).into_any_element()
+            }
+            (Some(m), Some(plot)) => {
+                const GUTTER: f32 = 52.0;
+                const HEIGHT: f32 = 110.0;
+                let width = PLOT - GUTTER;
+                let dark = theme::dark();
+                let image = {
+                    let key = (Arc::as_ptr(&plot) as usize, dark);
+                    let mut cache = self.analysis_image.borrow_mut();
+                    match cache.as_ref().filter(|(k, _)| *k == key) {
+                        Some((_, image)) => image.clone(),
+                        None => {
+                            let image = analysis_picture(
+                                &plot,
+                                frames,
+                                width as usize * 2,
+                                HEIGHT as usize * 2,
+                                dark,
+                            );
+                            *cache = Some((key, image.clone()));
+                            image
+                        }
+                    }
+                };
+                let unit = |v: f32| {
+                    if m.unit().is_empty() {
+                        figure(v)
+                    } else {
+                        format!("{} {}", figure(v), m.unit())
+                    }
+                };
+                // Up the side: the greatest and least values, at their rules;
+                // along the foot, where the plot starts and ends.
+                let ((top, bottom), (left, right)) = match &*plot {
+                    Plot::Time(points) => {
+                        let (lo, hi) = plot_range(&points.iter().map(|p| p.1).collect::<Vec<_>>());
+                        let last = points.last().map_or(frames, |p| p.0 + 1);
+                        (
+                            (unit(hi), unit(lo)),
+                            ("frame 1".to_string(), format!("frame {last}")),
+                        )
+                    }
+                    Plot::Along(values) => {
+                        let (lo, hi) = plot_range(values);
+                        let words = |k: Option<&usize>| {
+                            k.map(|&i| Self::atom_words(structure, i))
+                                .unwrap_or_default()
+                        };
+                        (
+                            (unit(hi), unit(lo)),
+                            (words(atoms.first()), words(atoms.last())),
+                        )
+                    }
+                    Plot::Secondary {
+                        frames: taken,
+                        residues,
+                    } => {
+                        let words = |r: Option<&usize>| {
+                            r.map(|&r| Self::residue_label(structure, r))
+                                .unwrap_or_default()
+                        };
+                        let last = taken.last().map_or(frames, |t| t.0 + 1);
+                        (
+                            (words(residues.first()), words(residues.last())),
+                            ("frame 1".to_string(), format!("frame {last}")),
+                        )
+                    }
+                };
+                let secondary = matches!(&*plot, Plot::Secondary { .. });
+                let timeline = !matches!(&*plot, Plot::Along(_));
+                let place = |t: f32| -> Option<String> {
+                    match &*plot {
+                        Plot::Time(points) => {
+                            let frame = (t * (frames - 1) as f32).round() as usize;
+                            let (f, v) = points.iter().min_by_key(|(f, _)| f.abs_diff(frame))?;
+                            Some(format!("frame {} · {}", f + 1, unit(*v)))
+                        }
+                        Plot::Along(values) => {
+                            let k = ((t * values.len() as f32) as usize)
+                                .min(values.len().checked_sub(1)?);
+                            Some(format!(
+                                "{} · {}",
+                                Self::atom_words(structure, atoms[k]),
+                                unit(values[k])
+                            ))
+                        }
+                        Plot::Secondary { frames: taken, .. } => {
+                            let (f, _) = taken.get(
+                                ((t * taken.len() as f32) as usize)
+                                    .min(taken.len().checked_sub(1)?),
+                            )?;
+                            Some(format!("frame {}", f + 1))
+                        }
+                    }
+                };
+                caption = self
+                    .analysis_hover
+                    .and_then(place)
+                    .unwrap_or_else(|| m.label().to_string());
+                let at = structure.frame as f32 / (frames - 1).max(1) as f32;
+                let store = self.analysis_bounds.clone();
+                let side = |label: String, y: f32| {
                     div()
                         .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(px((PLOT - 2.0) * at))
-                        .w(px(1.5))
-                        .bg(gpui::Hsla {
-                            a: 0.6,
-                            ..theme::ink()
-                        }),
-                )
-            })
-            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
-                let b = this.analysis_bounds.get();
-                let w = f32::from(b.size.width).max(1.0);
-                let t = (f32::from(e.position.x - b.origin.x) / w).clamp(0.0, 1.0);
-                this.analysis_hover = Some(t);
-                cx.notify();
-            }))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if !*hovered {
-                    this.analysis_hover = None;
-                    cx.notify();
-                }
-            }))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if let (Some(t), true) = (this.analysis_hover, timeline) {
-                    this.go_to_plotted(t, cx);
-                }
-            }));
+                        .right(px(6.))
+                        .top(px(y - 6.))
+                        .whitespace_nowrap()
+                        .font_family(theme::MONO)
+                        .text_size(px(9.))
+                        .text_color(theme::muted())
+                        .child(label)
+                };
+                let (top_y, bottom_y) = if secondary {
+                    (6.0, HEIGHT - 6.0)
+                } else {
+                    (HEIGHT * PLOT_PAD, HEIGHT * (1.0 - PLOT_PAD))
+                };
+                let canvas_plot = div()
+                    .id("analysis-plot")
+                    .debug_selector(|| "analysis-plot".into())
+                    .relative()
+                    .w(px(width))
+                    .h(px(HEIGHT))
+                    .rounded(px(4.))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(theme::border())
+                    .child(
+                        gpui::img(gpui::ImageSource::Render(image))
+                            .absolute()
+                            .inset_0()
+                            .size_full(),
+                    )
+                    .child(
+                        canvas(move |bounds, _, _| store.set(bounds), |_, _, _, _| {})
+                            .absolute()
+                            .inset_0()
+                            .size_full(),
+                    )
+                    .when(timeline, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .left(px((width - 2.0) * at))
+                                .w(px(1.5))
+                                .bg(gpui::Hsla {
+                                    a: 0.6,
+                                    ..theme::ink()
+                                }),
+                        )
+                    })
+                    .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
+                        let b = this.analysis_bounds.get();
+                        let w = f32::from(b.size.width).max(1.0);
+                        this.analysis_hover =
+                            Some((f32::from(e.position.x - b.origin.x) / w).clamp(0.0, 1.0));
+                        cx.notify();
+                    }))
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if !*hovered {
+                            this.analysis_hover = None;
+                            cx.notify();
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let (Some(t), true) = (this.analysis_hover, timeline) {
+                            this.go_to_plotted(t, cx);
+                        }
+                    }));
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .flex()
+                            .child(
+                                div()
+                                    .relative()
+                                    .w(px(GUTTER))
+                                    .h(px(HEIGHT))
+                                    .flex_none()
+                                    .child(side(top, top_y))
+                                    .child(side(bottom, bottom_y)),
+                            )
+                            .child(canvas_plot),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .pl(px(GUTTER))
+                            .font_family(theme::MONO)
+                            .text_size(px(9.))
+                            .text_color(theme::muted())
+                            .child(left)
+                            .child(right),
+                    )
+                    .into_any_element()
+            }
+        };
         let fit = div()
             .id("fit-frames")
             .debug_selector(|| "fit-frames".into())
@@ -2984,8 +3303,9 @@ impl Viewer {
                         .flex()
                         .flex_col()
                         .gap(px(8.))
-                        .child(pills)
-                        .child(plot)
+                        .child(atom_pills)
+                        .child(measure_pills)
+                        .child(body)
                         .child(div().flex().child(fit)),
                 )
                 .into_any_element(),
@@ -4385,7 +4705,10 @@ pub(crate) enum Periodic {
 /// A value as a key shows it: no more figures than it needs.
 pub(crate) fn figure(v: f32) -> String {
     let a = v.abs();
-    if a == 0.0 || (0.01..1e5).contains(&a) {
+    if a == 0.0 {
+        return "0".into();
+    }
+    if (0.01..1e5).contains(&a) {
         let digits = if a >= 100.0 {
             0
         } else if a >= 1.0 {
@@ -10494,7 +10817,8 @@ mod ui_tests {
     }
 
     #[gpui::test]
-    fn a_trajectory_is_analysed_and_its_plot_goes_to_a_frame(cx: &mut TestAppContext) {
+    fn a_measure_is_worked_out_only_when_picked_and_of_the_atoms_chosen(cx: &mut TestAppContext) {
+        use crate::analysis::{Measure, Plot};
         let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
         let crambin = formats::load_bytes(SAMPLES[2].file, SAMPLES[2].bytes.to_vec()).unwrap();
         let frames: Vec<crate::protein::Snapshot> = (0..6)
@@ -10511,26 +10835,57 @@ mod ui_tests {
         let moving = crambin.with_frames(frames).unwrap();
         view.update(cx, |this, cx| this.show(moving, cx));
         cx.run_until_parked();
+        let settle = |cx: &mut VisualTestContext| {
+            for _ in 0..20 {
+                cx.executor().advance_clock(Duration::from_millis(300));
+                cx.run_until_parked();
+            }
+        };
+        // Opened, nothing is worked out until a measure is picked.
         view.update(cx, |this, cx| this.run_command("analyse", cx))
             .unwrap();
-        for _ in 0..20 {
-            cx.executor().advance_clock(Duration::from_millis(300));
-            cx.run_until_parked();
-        }
-        let names = view.update(cx, |this, _| {
+        settle(cx);
+        assert!(view.update(cx, |this, _| this.analysis.is_empty()
+            && this.analysis_task.is_none()));
+        // A protein is measured by its alpha carbons to begin with.
+        let (selection, count) = view.update(cx, |this, _| {
             let s = this.structure.clone().unwrap();
-            this.analysis_for(&s).map(|a| Viewer::analysis_names(&a))
+            (this.analysis_selection(&s), this.analysis_atoms(&s).len())
         });
-        let names = names.expect("worked out");
-        assert_eq!(&names[..2], ["RMSD", "Rg"]);
-        assert!(names.contains(&"RMSF") && names.contains(&"Secondary"));
+        assert_eq!(selection, "(protein and name CA)");
+        assert_eq!(count, 46);
+        view.update(cx, |this, cx| this.run_command("analyse rmsd", cx))
+            .unwrap();
+        settle(cx);
+        let rmsd = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| {
+                let s = this.structure.clone().unwrap();
+                this.analysis
+                    .get(&this.analysis_key(&s, Measure::Rmsd))
+                    .cloned()
+            })
+        };
         // Stretched further each frame, it drifts further each frame.
-        let rising = view.update(cx, |this, _| {
-            let s = this.structure.clone().unwrap();
-            let a = this.analysis_for(&s).unwrap();
-            a.series[0].points.windows(2).all(|w| w[1].1 > w[0].1)
-        });
-        assert!(rising);
+        let Some(plot) = rmsd(&view, cx) else {
+            panic!("worked out")
+        };
+        let Plot::Time(points) = &*plot else { panic!() };
+        assert!(points.windows(2).all(|w| w[1].1 > w[0].1));
+        assert_eq!(view.update(cx, |this, _| this.analysis.len()), 1);
+        // Of other atoms, it is worked out again for them.
+        view.update(cx, |this, cx| {
+            this.run_command("analyse rmsd of elem S", cx)
+        })
+        .unwrap();
+        settle(cx);
+        assert_eq!(view.update(cx, |this, _| this.analysis.len()), 2);
+        assert_eq!(
+            view.update(cx, |this, _| this.analysis_custom.clone()),
+            Some("elem S".into())
+        );
+        assert!(view
+            .update(cx, |this, cx| this.run_command("analyse rg of resn", cx))
+            .is_err());
         // The plot is laid out, and a click near its right end goes to the
         // last frame.
         assert!(cx.debug_bounds("analysis-plot").is_some());
@@ -10539,7 +10894,7 @@ mod ui_tests {
             view.update(cx, |this, _| this.structure.as_ref().unwrap().frame),
             5
         );
-        // Fitting changes the frames, so the analysis is worked out again.
+        // Fitting changes the frames, so what is shown is worked out again.
         view.update(cx, |this, cx| this.run_command("fit", cx))
             .unwrap();
         assert!(view.update(cx, |this, _| this.analysis_task.is_some()));

@@ -7,7 +7,7 @@
 //! protein  ligand  water  backbone  sidechain  hydrogen
 //! helix  strand  coil  all  none
 //! within 5 of ligand   byres (name CA)       not water and chain A
-//! c_pe < -3            vx >= 0.5             z > 10 and b < 30
+//! type 1+2            c_pe < -3            vx >= 0.5             z > 10 and b < 30
 //! ```
 //!
 //! A comparison reads a per-atom property of the file by its name, or `x`,
@@ -29,6 +29,8 @@ enum Expr {
     Resn(Vec<String>),
     Name(Vec<String>),
     Elem(Vec<String>),
+    /// A simulation's atom types, by the names `Structure::kinds` gives them.
+    Type(Vec<String>),
     Index(Vec<(i32, i32)>),
     Protein,
     Ligand,
@@ -267,6 +269,7 @@ impl Parser<'_> {
             "resn" | "resname" | "r." => Expr::Resn(list("resn")?),
             "name" | "n." => Expr::Name(list("name")?),
             "elem" | "element" | "e." => Expr::Elem(list("elem")?),
+            "type" | "types" => Expr::Type(list("type")?),
             "resi" | "resid" | "i." => Expr::Resi(ranges(&list("resi")?)?),
             "index" | "id" => Expr::Index(ranges(&list("index")?)?),
             "protein" | "polymer" => Expr::Protein,
@@ -324,6 +327,11 @@ fn eval(e: &Expr, s: &Structure) -> Vec<bool> {
         }),
         Expr::Resn(names) => each(&|i| any(names, &res(i).name)),
         Expr::Name(names) => each(&|i| any(names, s.atoms[i].name())),
+        Expr::Type(ts) => each(&|i| {
+            s.kinds
+                .get(s.atoms[i].kind as usize)
+                .is_some_and(|k| any(ts, k))
+        }),
         Expr::Elem(es) => each(&|i| {
             let e = s.atoms[i].element;
             e.is_known() && es.iter().any(|x| Element::from_symbol(x) == e)
