@@ -542,6 +542,8 @@ pub struct Viewer {
     /// The structure as opened, while it is shown wrapped, unwrapped or
     /// replicated across its periodic boundaries.
     unwrapped_from: Option<Arc<Structure>>,
+    /// Which of those changes are on.
+    boundary: Boundary,
     /// Text pinned to atoms, drawn over the view, images and films.
     pub(super) labels: Vec<Label>,
     /// How the structure's volume is drawn, and the surface last drawn for it.
@@ -828,6 +830,7 @@ impl Viewer {
             deposited: None,
             assembly: None,
             unwrapped_from: None,
+            boundary: Boundary::default(),
             iso: Iso::default(),
             iso_cache: None,
             labels: Vec::new(),
@@ -1083,6 +1086,7 @@ impl Viewer {
         self.compare = None;
         self.fit = None;
         self.unwrapped_from = None;
+        self.boundary = Boundary::default();
         self.labels.clear();
         self.deposited = None;
         self.assembly = None;
@@ -2525,8 +2529,10 @@ impl Viewer {
 
     /// Paint a kind of ligand, or `None` to give it back its elements'
     /// colours. It shows under any scheme, so the scheme is left alone.
-    /// Change the structure across its periodic boundaries; `Periodic::Original`
-    /// puts back what was opened. What it did, to say so.
+    /// Turn one of the periodic-boundary changes on, or off if it is on,
+    /// and show the structure as opened with those now on, in one order:
+    /// how atoms are placed, then frames fitted, then the cell repeated.
+    /// `Periodic::Original` turns them all off. What it did, to say so.
     pub(super) fn periodic(
         &mut self,
         op: Periodic,
@@ -2535,45 +2541,74 @@ impl Viewer {
         let Some(shown) = self.structure.clone() else {
             anyhow::bail!("nothing is open")
         };
-        let (next, said) = match op {
-            Periodic::Original => {
-                let Some(base) = self.unwrapped_from.take() else {
-                    anyhow::bail!("nothing to undo")
-                };
-                (base, "as opened".to_string())
-            }
-            Periodic::Replicate(n) => (
-                Arc::new(crate::pbc::replicate(&shown, n)?),
-                format!("replicated {} × {} × {}", n[0], n[1], n[2]),
-            ),
-            Periodic::Wrap | Periodic::Whole | Periodic::InTime | Periodic::Fit => {
-                let mut s = (*shown).clone();
-                let said = match op {
-                    Periodic::Fit => {
-                        crate::analysis::fit_frames(&mut s)?;
-                        "every frame fitted onto the first"
-                    }
-                    Periodic::Wrap => {
-                        crate::pbc::wrap(&mut s)?;
-                        "wrapped into the cell"
-                    }
-                    Periodic::Whole => {
-                        crate::pbc::make_whole(&mut s)?;
-                        "molecules made whole"
-                    }
-                    _ => {
-                        crate::pbc::unwrap_in_time(&mut s)?;
-                        "unwrapped through time"
-                    }
-                };
-                (Arc::new(s), said.to_string())
+        let was = self.boundary;
+        let mut now = was;
+        let toggle = |place: Place| {
+            if was.place == place {
+                Place::AsRead
+            } else {
+                place
             }
         };
-        if op != Periodic::Original && self.unwrapped_from.is_none() {
-            self.unwrapped_from = Some(shown);
+        match op {
+            Periodic::Original => {
+                if was == Boundary::default() {
+                    anyhow::bail!("nothing to undo")
+                }
+                now = Boundary::default();
+            }
+            Periodic::Wrap => now.place = toggle(Place::Wrap),
+            Periodic::Whole => now.place = toggle(Place::Whole),
+            Periodic::InTime => now.place = toggle(Place::InTime),
+            Periodic::Fit => now.fitted = !was.fitted,
+            Periodic::Replicate(n) => {
+                now.replicate = (n != [1, 1, 1] && was.replicate != Some(n)).then_some(n)
+            }
         }
-        let reframe = matches!(op, Periodic::Replicate(_) | Periodic::Original);
-        if reframe {
+        let base = self.unwrapped_from.clone().unwrap_or(shown);
+        let next = if now == Boundary::default() {
+            base.clone()
+        } else {
+            let mut s = (*base).clone();
+            match now.place {
+                Place::AsRead => {}
+                Place::Wrap => crate::pbc::wrap(&mut s)?,
+                Place::Whole => crate::pbc::make_whole(&mut s)?,
+                Place::InTime => crate::pbc::unwrap_in_time(&mut s)?,
+            }
+            if now.fitted {
+                crate::analysis::fit_frames(&mut s)?;
+            }
+            if let Some(n) = now.replicate {
+                s = crate::pbc::replicate(&s, n)?;
+            }
+            Arc::new(s)
+        };
+        let said = match op {
+            Periodic::Original => "as opened".to_string(),
+            Periodic::Replicate(n) => match now.replicate {
+                Some(_) => format!("replicated {} × {} × {}", n[0], n[1], n[2]),
+                None => "one cell".to_string(),
+            },
+            Periodic::Fit => format!(
+                "frames {}",
+                if now.fitted {
+                    "fitted onto the first"
+                } else {
+                    "as read"
+                }
+            ),
+            _ => match now.place {
+                Place::AsRead => "atoms where the file puts them",
+                Place::Wrap => "wrapped into the cell",
+                Place::Whole => "molecules made whole",
+                Place::InTime => "unwrapped through time",
+            }
+            .to_string(),
+        };
+        self.unwrapped_from = (now != Boundary::default()).then_some(base);
+        self.boundary = now;
+        if now.replicate != was.replicate {
             self.camera = Camera {
                 perspective: self.camera.perspective,
                 ..Camera::frame(&next)
@@ -2919,13 +2954,19 @@ impl Viewer {
             }));
         let fit = div()
             .id("fit-frames")
+            .debug_selector(|| "fit-frames".into())
             .px(px(7.))
             .py(px(2.))
             .rounded(px(4.))
             .text_size(px(10.))
             .cursor_pointer()
-            .text_color(theme::muted())
-            .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
+            .when(self.boundary.fitted, |d| {
+                d.bg(theme::sunken()).text_color(theme::ink())
+            })
+            .when(!self.boundary.fitted, |d| {
+                d.text_color(theme::muted())
+                    .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
+            })
             .child("Fit frames onto the first")
             .on_click(cx.listener(|this, _, _, cx| {
                 if let Err(e) = this.periodic(Periodic::Fit, cx) {
@@ -3074,9 +3115,20 @@ impl Viewer {
         if !periodic(structure) {
             return None;
         }
+        let b = self.boundary;
         let chip = |id: &'static str, label: &'static str, tip: &'static str, op: Periodic| {
+            // Lit while it is in effect; a click on a lit one turns it off.
+            let on = match op {
+                Periodic::Wrap => b.place == Place::Wrap,
+                Periodic::Whole => b.place == Place::Whole,
+                Periodic::InTime => b.place == Place::InTime,
+                Periodic::Replicate(n) => b.replicate == Some(n),
+                Periodic::Fit => b.fitted,
+                Periodic::Original => false,
+            };
             div()
                 .id(id)
+                .debug_selector(move || id.into())
                 .flex_none()
                 .whitespace_nowrap()
                 .tooltip(move |_, cx| cx.new(|_| Tip(tip.into())).into())
@@ -3084,9 +3136,12 @@ impl Viewer {
                 .py(px(2.))
                 .rounded(px(4.))
                 .text_size(px(10.))
-                .text_color(theme::muted())
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
+                .when(on, |d| d.bg(theme::sunken()).text_color(theme::ink()))
+                .when(!on, |d| {
+                    d.text_color(theme::muted())
+                        .hover(|s| s.bg(theme::sunken()).text_color(theme::text()))
+                })
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Err(e) = this.periodic(op, cx) {
@@ -3120,7 +3175,7 @@ impl Viewer {
                     "Repeat the cell twice along each edge; replicate a b c in the console for other sizes",
                     Periodic::Replicate([2, 2, 2]),
                 ))
-                .when(self.unwrapped_from.is_some(), |d| {
+                .when(b != Boundary::default(), |d| {
                     d.child(chip("pbc-original", "Original", "Undo these, back to the structure as opened", Periodic::Original))
                 })
                 .into_any_element(),
@@ -4294,6 +4349,25 @@ impl Default for Iso {
             mesh: false,
         }
     }
+}
+
+/// How atoms are placed across the cell's walls: as the file has them, or
+/// one of three ways, each undoing the others.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum Place {
+    #[default]
+    AsRead,
+    Wrap,
+    Whole,
+    InTime,
+}
+
+/// The periodic-boundary changes on now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct Boundary {
+    pub place: Place,
+    pub fitted: bool,
+    pub replicate: Option<[usize; 3]>,
 }
 
 /// What can be done to a structure across its periodic boundaries.
@@ -10227,13 +10301,42 @@ mod ui_tests {
         view.update(cx, |this, cx| this.run_command("replicate 2 1 1", cx))
             .unwrap();
         assert_eq!(atoms(&view, cx), 2 * n);
+        let boundary = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.boundary)
+        };
+        // Placing atoms one way stands in for another, and the copies stay.
         view.update(cx, |this, cx| this.run_command("unwrap", cx))
             .unwrap();
+        assert_eq!(boundary(&view, cx).place, Place::InTime);
         view.update(cx, |this, cx| this.run_command("wrap", cx))
+            .unwrap();
+        assert_eq!(boundary(&view, cx).place, Place::Wrap);
+        assert_eq!(atoms(&view, cx), 2 * n);
+        // Asked again, what is on goes off.
+        assert_eq!(boundary(&view, cx).replicate, Some([2, 1, 1]));
+        view.update(cx, |this, cx| this.run_command("wrap", cx))
+            .unwrap();
+        assert_eq!(boundary(&view, cx).place, Place::AsRead);
+        // Wrapped atoms are inside the cell, and back where the file had
+        // them once wrapping is off.
+        view.update(cx, |this, cx| this.run_command("replicate 2 1 1", cx))
+            .unwrap();
+        assert_eq!(atoms(&view, cx), n);
+        let as_read = view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms[0].pos);
+        view.update(cx, |this, cx| this.run_command("wrap", cx))
+            .unwrap();
+        view.update(cx, |this, cx| this.run_command("wrap", cx))
+            .unwrap();
+        assert_eq!(
+            view.update(cx, |this, _| this.structure.as_ref().unwrap().atoms[0].pos),
+            as_read
+        );
+        view.update(cx, |this, cx| this.run_command("replicate 3 1 1", cx))
             .unwrap();
         view.update(cx, |this, cx| this.run_command("original", cx))
             .unwrap();
         assert_eq!(atoms(&view, cx), n);
+        assert_eq!(boundary(&view, cx), Boundary::default());
         assert!(view
             .update(cx, |this, cx| this.run_command("original", cx))
             .is_err());
