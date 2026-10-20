@@ -3071,10 +3071,15 @@ impl Viewer {
         structure: &Structure,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        structure.cell?;
-        let chip = |id: &'static str, label: &'static str, op: Periodic| {
+        if !periodic(structure) {
+            return None;
+        }
+        let chip = |id: &'static str, label: &'static str, tip: &'static str, op: Periodic| {
             div()
                 .id(id)
+                .flex_none()
+                .whitespace_nowrap()
+                .tooltip(move |_, cx| cx.new(|_| Tip(tip.into())).into())
                 .px(px(7.))
                 .py(px(2.))
                 .rounded(px(4.))
@@ -3091,25 +3096,32 @@ impl Viewer {
                 }))
         };
         Some(
+            // One line, never wrapped: short names, each said in full on hover.
             div()
                 .flex()
-                .flex_wrap()
+                .items_center()
                 .gap(px(2.))
                 .py(px(6.))
                 .border_b_1()
                 .border_color(theme::border())
-                .child(chip("pbc-wrap", "Wrap", Periodic::Wrap))
-                .child(chip("pbc-whole", "Make whole", Periodic::Whole))
+                .child(chip("pbc-wrap", "Wrap", "Put every atom back inside the cell", Periodic::Wrap))
+                .child(chip("pbc-whole", "Whole", "Mend molecules cut by the cell's walls", Periodic::Whole))
                 .when(structure.frame_count() > 1, |d| {
-                    d.child(chip("pbc-time", "Unwrap in time", Periodic::InTime))
+                    d.child(chip(
+                        "pbc-time",
+                        "Unwrap",
+                        "Follow atoms through the walls from frame to frame, rather than letting them jump back",
+                        Periodic::InTime,
+                    ))
                 })
                 .child(chip(
                     "pbc-replicate",
-                    "Replicate 2×2×2",
+                    "2×2×2",
+                    "Repeat the cell twice along each edge; replicate a b c in the console for other sizes",
                     Periodic::Replicate([2, 2, 2]),
                 ))
                 .when(self.unwrapped_from.is_some(), |d| {
-                    d.child(chip("pbc-original", "Original", Periodic::Original))
+                    d.child(chip("pbc-original", "Original", "Undo these, back to the structure as opened", Periodic::Original))
                 })
                 .into_any_element(),
         )
@@ -4245,6 +4257,19 @@ const FOLD_EXAMPLES: [(&str, &str); 3] = [
 ];
 #[cfg(not(feature = "simplefold"))]
 const FOLD_EXAMPLES: [(&str, &str); 0] = [];
+
+/// Whether the structure's cell is a periodic box worth working across: a
+/// simulation's, a trajectory's, or a small molecule's or crystal's, and not
+/// the unit cell a protein crystallised in.
+fn periodic(s: &Structure) -> bool {
+    s.cell.is_some()
+        && (!s.has_polymer()
+            || s.frame_count() > 1
+            || matches!(
+                s.format,
+                Some("GROMACS" | "LAMMPS data" | "LAMMPS dump" | "XYZ" | "XSF" | "VASP")
+            ))
+}
 
 /// Text pinned to an atom of the structure shown.
 #[derive(Clone, Debug, PartialEq)]
@@ -8540,7 +8565,9 @@ impl Viewer {
                         format!("{:.1} kDa", structure.mass_kda()),
                         false,
                     ))
-                    .when_some(structure.cell, |d, cell| {
+                    // A deposited crystal's cell says nothing a reader of a
+                    // protein needs; a simulation box does.
+                    .when_some(structure.cell.filter(|_| periodic(structure)), |d, cell| {
                         let [a, b, c] = cell.lengths();
                         d.child(spec("cell", format!("{a:.2} × {b:.2} × {c:.2} Å"), false))
                     })
@@ -10366,6 +10393,20 @@ mod ui_tests {
         view.update(cx, |this, cx| this.run_command("fit", cx))
             .unwrap();
         assert!(view.update(cx, |this, _| this.analysis_task.is_some()));
+    }
+
+    #[test]
+    fn only_a_periodic_box_offers_the_cell_tools() {
+        let load = |name: &str| {
+            let sample = SAMPLES.iter().find(|s| s.file.starts_with(name)).unwrap();
+            formats::load_bytes(sample.file, sample.bytes.to_vec()).unwrap()
+        };
+        // Haemoglobin's crystal cell is not a box to work across.
+        let haemoglobin = load("4hhb");
+        assert!(haemoglobin.cell.is_some() && !super::periodic(&haemoglobin));
+        assert!(super::periodic(&load("lj-melt")));
+        assert!(super::periodic(&load("rocksalt")));
+        assert!(!super::periodic(&load("caffeine")));
     }
 
     #[gpui::test]
