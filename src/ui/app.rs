@@ -4504,6 +4504,30 @@ pub(crate) fn menu(width: f32) -> gpui::Div {
         .on_mouse_down(MouseButton::Left, swallow)
 }
 
+/// A menu card hung from the button it belongs to, just under it or, `up`,
+/// just over it, at its own width; moved along to stay inside the window
+/// where it would run past an edge, as in a narrow viewport it can.
+fn hang(list: gpui::Div, up: bool) -> impl IntoElement {
+    let (corner, below) = if up {
+        (gpui::Corner::BottomLeft, px(-4.))
+    } else {
+        (gpui::Corner::TopLeft, px(36.))
+    };
+    // Held at the button's top-left corner, the point it is measured from;
+    // left in the flow it would be under the button, wherever that ends.
+    div().absolute().top_0().left_0().child(
+        deferred(
+            gpui::anchored()
+                .anchor(corner)
+                .offset(gpui::point(px(-3.), below))
+                .snap_to_window_with_margin(px(8.))
+                // In the flow of the anchored element, which does the placing.
+                .child(list.relative().top_0().left_0()),
+        )
+        .with_priority(2),
+    )
+}
+
 /// Keep a press on a floating card to itself. A menu hangs out over the
 /// viewport, which closes menus on mouse down; without this the menu would
 /// be gone before the click on its item finished.
@@ -5217,6 +5241,7 @@ impl Viewer {
                         colour_name(c).to_string(),
                         c == coloring,
                     )
+                    .debug_selector(move || format!("colour-item-{}", c.label()))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.open = None;
                         this.set_coloring(c, cx);
@@ -5359,8 +5384,7 @@ impl Viewer {
     ) -> impl IntoElement {
         let open = self.open == Some(which);
         let list = menu(156.)
-            .when(up, |d| d.top_auto().bottom(px(36.)))
-            .when(!up, |d| d.top(px(36.)))
+            .debug_selector(move || format!("{id}-list"))
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.open = None;
                 cx.notify();
@@ -5401,7 +5425,7 @@ impl Viewer {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle(which, cx))),
             )
-            .when(open, |d| d.child(deferred(list).with_priority(2)))
+            .when(open, |d| d.child(hang(list, up)))
     }
 
     /// The current palette, shown as its own ramp; its menu opens upward,
@@ -5485,6 +5509,7 @@ impl Viewer {
         let list = menu(372.)
             .top_auto()
             .bottom(px(34.))
+            .debug_selector(|| "palette-menu".into())
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.open = None;
                 cx.notify();
@@ -5532,6 +5557,15 @@ impl Viewer {
                         ),
                 )
             });
+        // In a narrow viewport the menu is moved along, if it must be, to
+        // stay inside the window.
+        let list = open.then(|| {
+            if self.compact {
+                hang(list, true).into_any_element()
+            } else {
+                deferred(list).with_priority(2).into_any_element()
+            }
+        });
         div()
             .relative()
             .child(
@@ -5566,7 +5600,7 @@ impl Viewer {
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.toggle(Dropdown::Palette, cx))),
             )
-            .when(open, |d| d.child(deferred(list).with_priority(2)))
+            .children(list)
             .when_some(self.kept.clone().filter(|_| !open), |d, note| {
                 d.child(
                     deferred(
@@ -8717,8 +8751,8 @@ impl Viewer {
     /// The search, the status and what is known of the structure: a column
     /// down the left, or, in the vertical layout, a band under the viewport
     /// with the search at its left and the sections side by side beside it,
-    /// each as wide as the column would be. The masthead is left out of the
-    /// band to give the structure the room.
+    /// each as wide as the column would be. The masthead is then over the
+    /// viewport rather than in the band.
     fn panel(
         &self,
         folding: bool,
@@ -8732,7 +8766,8 @@ impl Viewer {
             None => vec![self.examples(cx).into_any_element()],
         };
         // Beside the view, or under it in a window too narrow for columns:
-        // one column, under the masthead when there is room for it.
+        // one column, under the masthead beside the view. Under it, the
+        // masthead is over the viewport instead, at the top of the window.
         if !vertical || self.narrow {
             return div()
                 .id("side")
@@ -10119,9 +10154,21 @@ impl Render for Viewer {
                         let divider = self.divider(vertical, cx).into_any_element();
                         let stage = self.stage(cx).into_any_element();
                         if vertical {
-                            [stage, divider, panel]
+                            // The name of the app over the viewport, as a
+                            // page's masthead is over its picture.
+                            let masthead = div()
+                                .flex_none()
+                                .w_full()
+                                .pt(px(14.))
+                                .pb(px(12.))
+                                .bg(theme::surface())
+                                .border_b_1()
+                                .border_color(theme::border())
+                                .child(self.masthead())
+                                .into_any_element();
+                            vec![masthead, stage, divider, panel]
                         } else {
-                            [panel, divider, stage]
+                            vec![panel, divider, stage]
                         }
                     }),
             )
@@ -11479,6 +11526,58 @@ mod ui_tests {
             cx.debug_bounds("recent-0").is_some(),
             "no recent entry in the menu"
         );
+    }
+
+    #[gpui::test]
+    fn menus_in_a_phone_shaped_window_stay_inside_it(cx: &mut TestAppContext) {
+        let (_view, cx) = open(cx);
+        theme::set_vertical(true);
+        let width = px(380.);
+        cx.simulate_resize(gpui::size(width, px(820.)));
+        cx.run_until_parked();
+        let bounds = |cx: &mut VisualTestContext, name: &str| {
+            let selector: &'static str = Box::leak(name.to_string().into_boxed_str());
+            cx.debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{name} is not on screen"))
+        };
+        // The card within the window, and each item within the card.
+        let check = |cx: &mut VisualTestContext, card: &str, items: Vec<String>| {
+            let c = bounds(cx, card);
+            assert!(
+                c.origin.x >= px(0.) && c.right() <= width,
+                "{card} runs off the window: {c:?}"
+            );
+            for name in items {
+                let b = bounds(cx, &name);
+                assert!(
+                    b.origin.x >= c.origin.x && b.right() <= c.right(),
+                    "{name} runs out of {card}: {b:?} in {c:?}"
+                );
+            }
+        };
+        click(cx, "palette-button");
+        let names = Palette::ALL
+            .iter()
+            .map(|p| format!("palette-{}", p.label()))
+            .collect();
+        check(cx, "palette-menu", names);
+        click(cx, "palette-button");
+        click(cx, "colour-menu");
+        let names = vec![format!("colour-item-{}", Coloring::Element.label())];
+        check(cx, "colour-menu-list", names);
+        // At its own width, hung from its button, not spread across the row.
+        let list = bounds(cx, "colour-menu-list");
+        let button = bounds(cx, "colour-menu");
+        assert_eq!(list.size.width, px(156.));
+        assert!(
+            list.bottom() <= button.top(),
+            "the colour menu is not over its button: {list:?} {button:?}"
+        );
+        click(cx, "colour-menu");
+        click(cx, "repr-menu");
+        let names = vec!["repr-item-Spacefill".to_string()];
+        check(cx, "repr-menu-list", names);
+        theme::set_vertical(false);
     }
 
     #[gpui::test]
