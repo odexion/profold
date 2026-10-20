@@ -7,6 +7,8 @@
 mod align;
 mod analysis;
 mod assembly;
+#[cfg(test)]
+mod bench;
 mod bonds;
 mod contacts;
 mod dssp;

@@ -610,6 +610,9 @@ pub struct Viewer {
     analysis_done: Option<(Arc<std::sync::atomic::AtomicUsize>, usize)>,
     analysis_image: RefCell<Option<((usize, bool), Arc<gpui::RenderImage>)>>,
     analysis_bounds: Rc<Shared<Bounds<Pixels>>>,
+    /// The atoms the selection takes, found once for each structure and
+    /// selection rather than at every repaint.
+    analysis_atoms_found: RefCell<Option<((usize, usize, usize, String), Arc<Vec<usize>>)>>,
     analysis_hover: Option<f32>,
     pae_bounds: Rc<Shared<Bounds<Pixels>>>,
     pae_hover: Option<(usize, usize)>,
@@ -878,6 +881,7 @@ impl Viewer {
             analysis_done: None,
             analysis_image: RefCell::new(None),
             analysis_bounds: Rc::new(Shared::new(Bounds::default())),
+            analysis_atoms_found: RefCell::new(None),
             analysis_hover: None,
             pae_bounds: Rc::new(Shared::new(Bounds::default())),
             pae_hover: None,
@@ -2756,17 +2760,34 @@ impl Viewer {
         }
     }
 
-    fn analysis_atoms(&self, s: &Structure) -> Vec<usize> {
-        Selection::parse(&self.analysis_selection(s))
-            .map(|sel| {
-                sel.atoms(s)
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, t)| **t)
-                    .map(|(i, _)| i)
-                    .collect()
-            })
-            .unwrap_or_default()
+    fn analysis_atoms(&self, s: &Structure) -> Arc<Vec<usize>> {
+        let selection = self.analysis_selection(s);
+        // The structure and its frames, by where they live, and the words.
+        let key = (
+            s as *const Structure as usize,
+            Arc::as_ptr(&s.frames) as usize,
+            s.atoms.len(),
+            selection,
+        );
+        if let Some((k, atoms)) = self.analysis_atoms_found.borrow().as_ref() {
+            if *k == key {
+                return atoms.clone();
+            }
+        }
+        let atoms: Arc<Vec<usize>> = Arc::new(
+            Selection::parse(&key.3)
+                .map(|sel| {
+                    sel.atoms(s)
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, t)| **t)
+                        .map(|(i, _)| i)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
+        *self.analysis_atoms_found.borrow_mut() = Some((key, atoms.clone()));
+        atoms
     }
 
     fn analysis_key(

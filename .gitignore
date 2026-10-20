@@ -1,2 +1,5 @@
 /target
 /dist
+
+# A large LAMMPS trajectory for benchmarks, kept out of the repository.
+/dump.lammpstrj

@@ -189,6 +189,38 @@ pub fn decode(bytes: Vec<u8>) -> Result<String> {
 
 /// Open a structure or trajectory from disk.
 pub fn load_path(path: &Path) -> Result<Structure> {
+    // A LAMMPS dump is read as it comes off the disk, a piece at a time,
+    // since a long trajectory runs to gigabytes of text.
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if matches!(Format::from_name(&file_name), Some(Format::LammpsDump)) {
+        use std::io::BufRead;
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("could not read {}", path.display()))?;
+        let mut reader = std::io::BufReader::new(file);
+        let gzipped = reader.fill_buf()?.starts_with(&[0x1f, 0x8b]);
+        let reader: Box<dyn Read + Send> = if gzipped {
+            Box::new(flate2::read::MultiGzDecoder::new(reader))
+        } else {
+            Box::new(reader)
+        };
+        let stem = file_name.strip_suffix(".gz").unwrap_or(&file_name);
+        let id = stem
+            .rsplit_once('.')
+            .map(|(s, _)| s)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(stem)
+            .to_string();
+        let mut s = lammps::read_dump(reader, id, Source::File)
+            .with_context(|| format!("reading {file_name} as {}", Format::LammpsDump.label()))?;
+        if s.atoms.is_empty() {
+            bail!("no atoms in {file_name}");
+        }
+        s.format = Some(Format::LammpsDump.label());
+        return Ok(s);
+    }
     let bytes =
         std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
     let name = path

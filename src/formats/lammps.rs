@@ -423,8 +423,110 @@ fn by_id(ids: &[i64]) -> Vec<usize> {
 }
 
 pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
+    parse_dump_chunks(std::iter::once(Ok(text)), id, source)
+}
+
+/// A dump read from `reader` a piece at a time, so a trajectory of
+/// gigabytes is never held as text whole: the frames of each piece are read
+/// in parallel and the piece let go before the next is read.
+pub fn read_dump(
+    reader: impl std::io::Read + Send,
+    id: String,
+    source: Source,
+) -> Result<Structure> {
+    // The next piece is read while this one is parsed, one piece ahead.
+    let chunks = Chunks {
+        reader,
+        size: CHUNK,
+        carry: Vec::new(),
+        done: false,
+    };
+    std::thread::scope(|scope| {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        scope.spawn(move || {
+            for chunk in chunks {
+                if send.send(chunk).is_err() {
+                    break;
+                }
+            }
+        });
+        parse_dump_chunks(receive.into_iter(), id, source)
+    })
+}
+
+/// How much text is read at once, cut back to where a frame begins: enough
+/// frames for every thread, and little beside the frames' own numbers.
+const CHUNK: usize = 64 << 20;
+
+/// Text from a reader in pieces of whole frames.
+struct Chunks<R> {
+    reader: R,
+    /// How much is read at a time.
+    size: usize,
+    /// What was read past the last whole frame, carried into the next piece.
+    carry: Vec<u8>,
+    done: bool,
+}
+
+impl<R: std::io::Read> Iterator for Chunks<R> {
+    type Item = Result<String>;
+
+    fn next(&mut self) -> Option<Result<String>> {
+        if self.done {
+            return None;
+        }
+        let mut buf = std::mem::take(&mut self.carry);
+        let start = buf.len();
+        buf.resize(start + self.size, 0);
+        let mut filled = start;
+        while filled < buf.len() {
+            match self.reader.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Some(Err(e.into())),
+            }
+        }
+        let full = filled == buf.len();
+        buf.truncate(filled);
+        if !full {
+            self.done = true;
+        } else {
+            // Cut where the last frame read begins; it goes on in the next.
+            const MARK: &[u8] = b"\nITEM: TIMESTEP";
+            match buf.windows(MARK.len()).rposition(|w| w == MARK) {
+                Some(at) if at > 0 => self.carry = buf.split_off(at + 1),
+                // One frame larger than a piece: read on until it ends.
+                _ => {
+                    self.carry = buf;
+                    return self.next();
+                }
+            }
+        }
+        if buf.is_empty() {
+            return None;
+        }
+        // The cut is at plain ASCII, so no character is split by it.
+        Some(Ok(match String::from_utf8(buf) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        }))
+    }
+}
+
+/// A dump from its text in pieces of whole frames, the first frame first.
+fn parse_dump_chunks<S: AsRef<str>>(
+    chunks: impl Iterator<Item = Result<S>>,
+    id: String,
+    source: Source,
+) -> Result<Structure> {
     use rayon::prelude::*;
 
+    let mut chunks = chunks;
+    let Some(text) = chunks.next().transpose()? else {
+        bail!("no frames in LAMMPS dump");
+    };
+    let text = text.as_ref();
     let pieces = split_frames(text);
     let mut head = read_frames(pieces[0], true)?.into_iter();
     let Some(first) = head.next() else {
@@ -477,20 +579,42 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
         ))
     };
     let first_extra: Vec<Vec<f32>> = first.extra.clone();
-    let rest: Vec<Vec<Option<(Snapshot, Vec<Vec<f32>>)>>> = pieces[1..]
-        .par_iter()
-        .map(|piece| {
-            Ok(read_frames(piece, false)?
-                .into_iter()
-                .map(snapshot)
-                .collect())
-        })
-        .collect::<Result<_>>()?;
-    let (frames, extras): (Vec<Snapshot>, Vec<Vec<Vec<f32>>>) = head
-        .map(snapshot)
-        .chain(rest.into_iter().flatten())
-        .map_while(|s| s)
-        .unzip();
+    // Frames in order; the first that does not fit ends the trajectory,
+    // and nothing after it is read.
+    let mut frames: Vec<Snapshot> = Vec::new();
+    let mut extras: Vec<Vec<Vec<f32>>> = Vec::new();
+    let mut ended = false;
+    let mut take = |list: Vec<Option<(Snapshot, Vec<Vec<f32>>)>>, ended: &mut bool| {
+        for f in list {
+            match f {
+                Some((snap, extra)) if !*ended => {
+                    frames.push(snap);
+                    extras.push(extra);
+                }
+                _ => *ended = true,
+            }
+        }
+    };
+    let parse = |pieces: &[&str]| -> Result<Vec<Option<(Snapshot, Vec<Vec<f32>>)>>> {
+        let read: Vec<Vec<Option<(Snapshot, Vec<Vec<f32>>)>>> = pieces
+            .par_iter()
+            .map(|piece| {
+                Ok(read_frames(piece, false)?
+                    .into_iter()
+                    .map(snapshot)
+                    .collect())
+            })
+            .collect::<Result<_>>()?;
+        Ok(read.into_iter().flatten().collect())
+    };
+    take(head.map(snapshot).collect(), &mut ended);
+    take(parse(&pieces[1..])?, &mut ended);
+    while !ended {
+        let Some(text) = chunks.next().transpose()? else {
+            break;
+        };
+        take(parse(&split_frames(text.as_ref()))?, &mut ended);
+    }
 
     let mut b = Builder::new("LAMMPS dump");
     b.cell = Some(first.cell);
@@ -543,4 +667,75 @@ pub fn parse_dump(text: &str, id: String, source: Source) -> Result<Structure> {
         })
         .collect();
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The same structure, frames, cells and properties either way.
+    fn same(a: &Structure, b: &Structure) {
+        assert_eq!(a.atoms.len(), b.atoms.len());
+        assert_eq!(a.frames.len(), b.frames.len());
+        for (x, y) in a.frames.iter().zip(b.frames.iter()) {
+            assert_eq!(x.step, y.step);
+            assert_eq!(x.pos, y.pos);
+            assert_eq!(x.cell.map(|c| c.vectors), y.cell.map(|c| c.vectors));
+        }
+        assert_eq!(a.props.len(), b.props.len());
+        for (x, y) in a.props.iter().zip(&b.props) {
+            assert_eq!(x.name, y.name);
+            assert_eq!(
+                x.values.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                y.values.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+            );
+            assert_eq!(x.frames.len(), y.frames.len());
+        }
+        assert!(a
+            .atoms
+            .iter()
+            .zip(&b.atoms)
+            .all(|(p, q)| p.pos == q.pos && p.kind == q.kind));
+    }
+
+    #[test]
+    fn a_dump_read_in_pieces_is_the_dump_read_whole() {
+        let melt = crate::samples::SAMPLES
+            .iter()
+            .find(|s| s.file.ends_with("lammpstrj.gz"))
+            .unwrap();
+        let text = crate::formats::decode(melt.bytes.to_vec()).unwrap();
+        // A property column, so properties are carried through too.
+        let text = text
+            .lines()
+            .map(|l| match l.strip_prefix("ITEM: ATOMS") {
+                Some(h) => format!("ITEM: ATOMS{h} c_pe"),
+                None if l.split_whitespace().count() == 5 => format!("{l} {}", l.len()),
+                None => l.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let whole = parse_dump(&text, "melt".into(), Source::File).unwrap();
+        assert!(whole.frame_count() > 10 && !whole.props.is_empty());
+        // Pieces much smaller than a frame, about a frame, and many frames.
+        for size in [97, 30_000, 1 << 20] {
+            let chunks = Chunks {
+                reader: text.as_bytes(),
+                size,
+                carry: Vec::new(),
+                done: false,
+            };
+            let read = parse_dump_chunks(chunks, "melt".into(), Source::File).unwrap();
+            same(&whole, &read);
+        }
+        // And gzipped, from the file as it is.
+        let gz = flate2::read::MultiGzDecoder::new(melt.bytes);
+        let plain = parse_dump(
+            &crate::formats::decode(melt.bytes.to_vec()).unwrap(),
+            "melt".into(),
+            Source::File,
+        )
+        .unwrap();
+        same(&plain, &read_dump(gz, "melt".into(), Source::File).unwrap());
+    }
 }

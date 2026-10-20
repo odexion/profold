@@ -5,7 +5,6 @@
 //! and its helices and strands frame by frame. Each is worked out only when
 //! asked for, over the atoms chosen.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -128,10 +127,77 @@ fn fit_atoms(s: &Structure) -> Vec<usize> {
     }
 }
 
-fn positions(s: &Structure, frame: usize) -> Vec<[f32; 3]> {
+/// A frame's positions, read where they are rather than copied.
+fn positions(s: &Structure, frame: usize) -> std::borrow::Cow<'_, [[f32; 3]]> {
     match s.frames.get(frame) {
-        Some(f) if f.pos.len() == s.atoms.len() => f.pos.clone(),
-        _ => s.atoms.iter().map(|a| a.pos).collect(),
+        Some(f) if f.pos.len() == s.atoms.len() => std::borrow::Cow::Borrowed(&f.pos),
+        _ => std::borrow::Cow::Owned(s.atoms.iter().map(|a| a.pos).collect()),
+    }
+}
+
+/// How far each atom strays from its mean place, gathered a frame at a
+/// time by Welford's method and merged between threads by Chan's, so the
+/// result is the two-pass one without holding the frames.
+struct Spread {
+    frames: f64,
+    mean: Vec<[f64; 3]>,
+    /// Summed squared distance from the mean, over the three axes.
+    m2: Vec<f64>,
+}
+
+impl Spread {
+    fn new(atoms: usize) -> Self {
+        Spread {
+            frames: 0.0,
+            mean: vec![[0.0; 3]; atoms],
+            m2: vec![0.0; atoms],
+        }
+    }
+
+    fn add(&mut self, fit: &[[f64; 3]]) {
+        self.frames += 1.0;
+        for ((mean, m2), p) in self.mean.iter_mut().zip(&mut self.m2).zip(fit) {
+            for k in 0..3 {
+                let d = p[k] - mean[k];
+                mean[k] += d / self.frames;
+                *m2 += d * (p[k] - mean[k]);
+            }
+        }
+    }
+
+    fn merge(mut self, other: Spread) -> Spread {
+        if other.frames == 0.0 {
+            return self;
+        }
+        if self.frames == 0.0 {
+            return other;
+        }
+        let n = self.frames + other.frames;
+        let w = self.frames * other.frames / n;
+        for (((mean, m2), om), om2) in self
+            .mean
+            .iter_mut()
+            .zip(&mut self.m2)
+            .zip(&other.mean)
+            .zip(&other.m2)
+        {
+            for k in 0..3 {
+                let d = om[k] - mean[k];
+                *m2 += d * d * w;
+                mean[k] += d * other.frames / n;
+            }
+            *m2 += om2;
+        }
+        self.frames = n;
+        self
+    }
+
+    /// Root-mean-square fluctuation of each atom, in Å.
+    fn rmsf(&self) -> Vec<f32> {
+        self.m2
+            .iter()
+            .map(|v| (v / self.frames.max(1.0)).sqrt() as f32)
+            .collect()
     }
 }
 
@@ -217,51 +283,42 @@ pub fn measure(
         Measure::Rmsd | Measure::Rmsf => {
             let first = positions(s, 0);
             let reference: Vec<[f64; 3]> = atoms.iter().map(|&i| first[i].map(f64::from)).collect();
-            let fits: Vec<Vec<[f64; 3]>> = (0..n)
-                .into_par_iter()
-                .map(|t| {
-                    if stop() {
-                        return Vec::new();
-                    }
-                    let fit = fitted(&positions(s, t), &reference, atoms);
-                    tick();
-                    fit
-                })
-                .collect();
-            if stop() {
-                return None;
-            }
+            // Each frame is fitted, used and let go: nothing of the length
+            // of the trajectory is held.
             if m == Measure::Rmsd {
-                Plot::Time(
-                    fits.iter()
-                        .enumerate()
-                        .map(|(t, fit)| {
-                            let msd = fit
-                                .iter()
-                                .zip(&reference)
-                                .map(|(a, b)| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>())
-                                .sum::<f64>()
-                                / atoms.len() as f64;
-                            (t, msd.sqrt() as f32)
-                        })
-                        .collect(),
-                )
-            } else {
-                let mut mean = vec![[0.0f64; 3]; atoms.len()];
-                for fit in &fits {
-                    for (m, p) in mean.iter_mut().zip(fit) {
-                        for k in 0..3 {
-                            m[k] += p[k] / n as f64;
+                let points: Vec<(usize, f32)> = (0..n)
+                    .into_par_iter()
+                    .map(|t| {
+                        if stop() {
+                            return (t, 0.0);
                         }
-                    }
-                }
-                let mut spread = vec![0.0f64; atoms.len()];
-                for fit in &fits {
-                    for ((v, m), p) in spread.iter_mut().zip(&mean).zip(fit) {
-                        *v += (0..3).map(|k| (p[k] - m[k]).powi(2)).sum::<f64>() / n as f64;
-                    }
-                }
-                Plot::Along(spread.iter().map(|v| v.sqrt() as f32).collect())
+                        let fit = fitted(&positions(s, t), &reference, atoms);
+                        let msd = fit
+                            .iter()
+                            .zip(&reference)
+                            .map(|(a, b)| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>())
+                            .sum::<f64>()
+                            / atoms.len() as f64;
+                        tick();
+                        (t, msd.sqrt() as f32)
+                    })
+                    .collect();
+                Plot::Time(points)
+            } else {
+                let spread = (0..n)
+                    .into_par_iter()
+                    .fold(
+                        || Spread::new(atoms.len()),
+                        |mut acc, t| {
+                            if !stop() {
+                                acc.add(&fitted(&positions(s, t), &reference, atoms));
+                                tick();
+                            }
+                            acc
+                        },
+                    )
+                    .reduce(|| Spread::new(atoms.len()), Spread::merge);
+                Plot::Along(spread.rmsf())
             }
         }
         Measure::Rg => Plot::Time(
@@ -332,34 +389,114 @@ pub fn measure(
 
 /// Nitrogens and oxygens of different residues closer than `CONTACT`.
 fn contacts(s: &Structure, pos: &[[f32; 3]], polar: &[usize]) -> usize {
-    let key = |p: [f32; 3]| p.map(|x| (x / CONTACT).floor() as i32);
-    let mut grid: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
-    for &i in polar {
-        grid.entry(key(pos[i])).or_default().push(i);
-    }
-    let mut count = 0;
-    for &i in polar {
-        let c = key(pos[i]);
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                for dz in -1..=1 {
-                    let Some(list) = grid.get(&[c[0] + dx, c[1] + dy, c[2] + dz]) else {
-                        continue;
-                    };
-                    for &j in list {
-                        if j <= i || s.atoms[i].residue == s.atoms[j].residue {
-                            continue;
-                        }
-                        let d2 = (0..3).map(|k| (pos[i][k] - pos[j][k]).powi(2)).sum::<f32>();
-                        if d2 < CONTACT * CONTACT {
-                            count += 1;
-                        }
-                    }
-                }
+    let at: Vec<[f32; 3]> = polar.iter().map(|&i| pos[i]).collect();
+    let cells = CellList::new(&at, CONTACT / 2.0);
+    (0..polar.len())
+        .into_par_iter()
+        .map(|a| {
+            cells
+                .around(at[a])
+                .filter(|&&b| {
+                    let (i, j) = (polar[a], polar[b]);
+                    j > i
+                        && s.atoms[i].residue != s.atoms[j].residue
+                        && (0..3).map(|k| (at[a][k] - at[b][k]).powi(2)).sum::<f32>()
+                            < CONTACT * CONTACT
+                })
+                .count()
+        })
+        .sum()
+}
+
+/// Atoms sorted into cubes `h` wide on a dense grid over their box, so
+/// every atom within twice `h` of a point is found by reading 25 runs of
+/// neighbouring cubes, each a contiguous slice: no hashing, no lists to
+/// allocate.
+struct CellList {
+    lo: [f32; 3],
+    h: f32,
+    dims: [usize; 3],
+    /// Where each cube's atoms start in `atoms`, and one past the last.
+    start: Vec<u32>,
+    atoms: Vec<usize>,
+}
+
+impl CellList {
+    fn new(pos: &[[f32; 3]], reach: f32) -> Self {
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for p in pos {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
             }
         }
+        if pos.is_empty() {
+            (lo, hi) = ([0.0; 3], [0.0; 3]);
+        }
+        // Cubes no smaller than the reach, and no more of them than a few
+        // per atom, however spread out the atoms are.
+        let span =
+            |h: f32| -> [usize; 3] { std::array::from_fn(|k| ((hi[k] - lo[k]) / h) as usize + 1) };
+        let mut h = reach.max(1e-3);
+        while span(h).iter().product::<usize>() > 8 * pos.len().max(64) {
+            h *= 1.5;
+        }
+        let dims = span(h);
+        let index = |p: [f32; 3]| -> usize {
+            let c: [usize; 3] =
+                std::array::from_fn(|k| (((p[k] - lo[k]) / h) as usize).min(dims[k] - 1));
+            (c[2] * dims[1] + c[1]) * dims[0] + c[0]
+        };
+        let mut start = vec![0u32; dims.iter().product::<usize>() + 1];
+        for p in pos {
+            start[index(*p) + 1] += 1;
+        }
+        for c in 1..start.len() {
+            start[c] += start[c - 1];
+        }
+        let mut fill = start.clone();
+        let mut atoms = vec![0; pos.len()];
+        for (i, p) in pos.iter().enumerate() {
+            let c = index(*p);
+            atoms[fill[c] as usize] = i;
+            fill[c] += 1;
+        }
+        CellList {
+            lo,
+            h,
+            dims,
+            start,
+            atoms,
+        }
     }
-    count
+
+    /// Every atom in the cubes two either side of the one `p` is in: all
+    /// within `2h` of it, and some further.
+    fn around(&self, p: [f32; 3]) -> impl Iterator<Item = &usize> + '_ {
+        let c: [i64; 3] = std::array::from_fn(|k| ((p[k] - self.lo[k]) / self.h).floor() as i64);
+        let [nx, ny, nz] = self.dims.map(|d| d as i64);
+        let (x0, x1) = ((c[0] - 2).max(0), (c[0] + 2).min(nx - 1));
+        (c[2] - 2..=c[2] + 2)
+            .filter(move |z| (0..nz).contains(z))
+            .flat_map(move |z| {
+                (c[1] - 2..=c[1] + 2)
+                    .filter(move |y| (0..ny).contains(y))
+                    .map(move |y| (y, z))
+            })
+            .flat_map(move |(y, z)| {
+                let row = ((z * ny + y) * nx) as usize;
+                let (a, b) = if x0 <= x1 {
+                    (
+                        self.start[row + x0 as usize] as usize,
+                        self.start[row + x1 as usize + 1] as usize,
+                    )
+                } else {
+                    (0, 0)
+                };
+                self.atoms[a..b].iter()
+            })
+    }
 }
 
 /// Solvent-accessible surface area by Shrake and Rupley: points over each
@@ -382,38 +519,45 @@ pub fn sasa(s: &Structure, pos: &[[f32; 3]], of: &[usize]) -> f32 {
         .iter()
         .map(|a| if a.element.is_known() { a.element.vdw() } else { s.unknown_radius } + PROBE)
         .collect();
-    let cell = radius.iter().cloned().fold(0.0, f32::max) * 2.0;
-    let key = |p: [f32; 3]| p.map(|x| (x / cell).floor() as i32);
-    let mut grid: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
-    for (i, p) in pos.iter().enumerate() {
-        grid.entry(key(*p)).or_default().push(i);
-    }
+    let cells = CellList::new(pos, radius.iter().cloned().fold(0.0, f32::max));
     of.par_iter()
         .map(|&i| {
-            let c = key(pos[i]);
-            let near: Vec<usize> = (-1..=1)
-                .flat_map(|dx| {
-                    (-1..=1).flat_map(move |dy| {
-                        (-1..=1).map(move |dz| [c[0] + dx, c[1] + dy, c[2] + dz])
-                    })
-                })
-                .filter_map(|k| grid.get(&k))
-                .flatten()
+            let near = cells
+                .around(pos[i])
                 .copied()
                 .filter(|&j| j != i)
-                .filter(|&j| {
-                    (0..3).map(|k| (pos[i][k] - pos[j][k]).powi(2)).sum::<f32>()
-                        < (radius[i] + radius[j]).powi(2)
+                .map(|j| {
+                    (
+                        j,
+                        (0..3).map(|k| (pos[i][k] - pos[j][k]).powi(2)).sum::<f32>(),
+                    )
                 })
-                .collect();
+                .filter(|&(j, d2)| d2 < (radius[i] + radius[j]).powi(2))
+                .map(|(j, d2)| (d2, pos[j], radius[j] * radius[j]))
+                .collect::<Vec<_>>();
+            // Nearest first, and whichever hid the last dot tried first for
+            // the next, as dots side by side are mostly hidden by the same
+            // neighbour: the same count, sooner.
+            let mut near = near;
+            near.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+            let mut last = 0;
             let open = dots
                 .iter()
                 .filter(|d| {
                     let p: [f32; 3] = std::array::from_fn(|k| pos[i][k] + d[k] * radius[i]);
-                    near.iter().all(|&j| {
-                        (0..3).map(|k| (p[k] - pos[j][k]).powi(2)).sum::<f32>()
-                            >= radius[j] * radius[j]
-                    })
+                    let hides = |&(_, c, r2): &(f32, [f32; 3], f32)| {
+                        (0..3).map(|k| (p[k] - c[k]).powi(2)).sum::<f32>() < r2
+                    };
+                    if near.get(last).is_some_and(hides) {
+                        return false;
+                    }
+                    match near.iter().position(hides) {
+                        Some(j) => {
+                            last = j;
+                            false
+                        }
+                        None => true,
+                    }
                 })
                 .count();
             4.0 * std::f32::consts::PI * radius[i] * radius[i] * open as f32 / POINTS as f32
@@ -521,6 +665,95 @@ mod tests {
             .sum::<f32>()
             .sqrt();
         assert!(d < 1e-3, "{d}");
+    }
+
+    #[test]
+    fn the_spread_gathered_in_pieces_is_the_spread_of_the_whole() {
+        let frames: Vec<Vec<[f64; 3]>> = (0..7)
+            .map(|t| {
+                (0..3)
+                    .map(|i| {
+                        [
+                            (t * t + i) as f64 * 0.37,
+                            (t as f64).sin() * 2.0 + 100.0,
+                            i as f64 - t as f64 * 0.1,
+                        ]
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut whole = Spread::new(3);
+        frames.iter().for_each(|f| whole.add(f));
+        let (mut a, mut b) = (Spread::new(3), Spread::new(3));
+        frames[..3].iter().for_each(|f| a.add(f));
+        frames[3..].iter().for_each(|f| b.add(f));
+        let merged = a.merge(b).merge(Spread::new(3));
+        // Against the two passes written out.
+        let direct: Vec<f32> = (0..3)
+            .map(|i| {
+                let mean: [f64; 3] =
+                    std::array::from_fn(|k| frames.iter().map(|f| f[i][k]).sum::<f64>() / 7.0);
+                let v = frames
+                    .iter()
+                    .map(|f| (0..3).map(|k| (f[i][k] - mean[k]).powi(2)).sum::<f64>())
+                    .sum::<f64>()
+                    / 7.0;
+                v.sqrt() as f32
+            })
+            .collect();
+        for (x, y) in [whole.rmsf(), merged.rmsf()]
+            .iter()
+            .flat_map(|r| r.iter().zip(&direct))
+        {
+            assert!((x - y).abs() < 1e-5, "{x} against {y}");
+        }
+    }
+
+    #[test]
+    fn sasa_of_a_protein_is_the_brute_force_count() {
+        // Every dot against every other atom, as Shrake and Rupley wrote it.
+        let s = crambin();
+        let pos: Vec<[f32; 3]> = s.atoms.iter().map(|a| a.pos).collect();
+        let all: Vec<usize> = (0..pos.len()).collect();
+        const POINTS: usize = 64;
+        let r: Vec<f32> = s.atoms.iter().map(|a| a.element.vdw() + PROBE).collect();
+        let mut brute = 0.0;
+        for i in 0..pos.len() {
+            let mut open = 0;
+            for n in 0..POINTS {
+                let y = 1.0 - (n as f32 + 0.5) * 2.0 / POINTS as f32;
+                let rr = (1.0 - y * y).sqrt();
+                let phi = n as f32 * std::f32::consts::PI * (3.0 - 5f32.sqrt());
+                let d = [rr * phi.cos(), y, rr * phi.sin()];
+                let p: [f32; 3] = std::array::from_fn(|k| pos[i][k] + d[k] * r[i]);
+                if (0..pos.len()).all(|j| {
+                    j == i || (0..3).map(|k| (p[k] - pos[j][k]).powi(2)).sum::<f32>() >= r[j] * r[j]
+                }) {
+                    open += 1;
+                }
+            }
+            brute += 4.0 * std::f32::consts::PI * r[i] * r[i] * open as f32 / POINTS as f32;
+        }
+        let fast = sasa(&s, &pos, &all);
+        assert!((fast - brute).abs() < 1e-2, "{fast} against {brute}");
+    }
+
+    #[test]
+    fn contacts_are_the_brute_force_count() {
+        let s = crambin();
+        let pos: Vec<[f32; 3]> = s.atoms.iter().map(|a| a.pos).collect();
+        let polar: Vec<usize> = (0..pos.len()).filter(|&i| polar(&s, i)).collect();
+        let mut brute = 0;
+        for (n, &i) in polar.iter().enumerate() {
+            for &j in &polar[n + 1..] {
+                let d2 = (0..3).map(|k| (pos[i][k] - pos[j][k]).powi(2)).sum::<f32>();
+                if s.atoms[i].residue != s.atoms[j].residue && d2 < CONTACT * CONTACT {
+                    brute += 1;
+                }
+            }
+        }
+        assert!(brute > 20);
+        assert_eq!(contacts(&s, &pos, &polar), brute);
     }
 
     #[test]
