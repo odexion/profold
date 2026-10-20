@@ -2,15 +2,17 @@
 
 What OVITO and VMD offer that profold does not yet, ranked by how much each
 would be used against what it costs. Rendering quality (ray-traced pictures
-with shadows and ambient occlusion) was the first of these and is done.
+and films with shadows and ambient occlusion) came first, then 1–5 below,
+each in a first, deliberately small form: what is done is struck through,
+with what was left for later.
 
 | # | Feature | Why here | Size |
 | --- | --- | --- | --- |
-| 1 | **Per-atom properties.** Keep every column of a LAMMPS dump or an extended XYZ (`c_pe`, `vx`, `q`, stress…) and colour, size and select by any of them, with a ramp and a range. | The gap every simulation user hits first, and what most of the rest builds on. The readers already find the columns; they skip them. | S–M |
-| 2 | **Periodic boundaries.** Wrap atoms into the cell, unwrap molecules split across it, unwrap a trajectory through time, and replicate the cell (n×m×k images). | Expected of any viewer of simulation boxes; the cell is drawn but nothing uses it. | S–M |
-| 3 | **Volumetric data and isosurfaces.** Read the grid of Gaussian cube (already parsed for its box), CCP4/MRC maps and OpenDX; draw isosurfaces at a level picked on a histogram, two-signed for orbitals. | Orbitals, densities, cryo-EM and electrostatic maps: the largest gap for chemists and structural biologists. `surface.rs` already meshes a field. | M |
-| 4 | **Trajectory analysis with plots.** RMSD and RMSF against a reference, fit every frame onto the first, radius of gyration, SASA, hydrogen bonds and salt bridges over time, secondary structure along time (VMD's Timeline). One plot panel, clicking a point goes to its frame. | Most of what VMD is opened for after looking. Kabsch, DSSP, contacts and the plot drawing exist. | M |
-| 5 | **Labels in 3D.** Residue and atom names, measurements and free text pinned to atoms, drawn over the frame and into images and films. | Small, and every figure wants it. | S |
+| 1 | ~~**Per-atom properties.**~~ | Done: colour by and select on any column. Left: size by property. | done |
+| 2 | ~~**Periodic boundaries.**~~ | Done: wrap, make whole, unwrap in time, replicate. Left: a replicate size picker in the panel (the console takes any). | done |
+| 3 | ~~**Volumetric data and isosurfaces.**~~ | Done: cube, CCP4/MRC, OpenDX; solid or mesh, two lobes. Left: a histogram to pick the level on, see-through surfaces. | done |
+| 4 | ~~**Trajectory analysis with plots.**~~ | Done: RMSD, Rg, SASA, polar contacts, RMSF, secondary structure, fit frames. Left: true hydrogen bonds and salt bridges, a chosen reference and selection, exporting the series. | done |
+| 5 | ~~**Labels in 3D.**~~ | Done: residue, atom and free-text labels in the view, images and films. Left: measurements in images and films, saving labels with a session. | done |
 | 6 | **Expression selection and a modifier list.** `Position.Z > 10 && c_pe < -3` style selection over properties, and a stack of steps (select, slice, delete, colour code, replicate) re-run on every frame, as in OVITO's pipeline. | Turns 1 and 2 into a workflow; the selection language is half of it. | M–L |
 | 7 | **Materials analysis.** RDF, MSD, coordination number, cluster analysis, displacement from a reference frame, atomic strain, spatial binning, histograms and time averages, each exportable as a table. | OVITO's daily tools; needs 1 and the plot panel from 4. | M |
 | 8 | **More topology and trajectory formats.** PSF, AMBER prmtop and NetCDF, GROMACS TPR/TOP and TRR, H5MD, binary LAMMPS dumps; writing trajectories out. | Opens MD outputs as people have them; each reader is small, there are many. | M |

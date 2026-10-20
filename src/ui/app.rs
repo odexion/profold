@@ -493,6 +493,8 @@ pub struct Viewer {
     /// The structure as opened, while it is shown wrapped, unwrapped or
     /// replicated across its periodic boundaries.
     unwrapped_from: Option<Arc<Structure>>,
+    /// Text pinned to atoms, drawn over the view, images and films.
+    pub(super) labels: Vec<Label>,
     /// How the structure's volume is drawn, and the surface last drawn for it.
     pub(crate) iso: Iso,
     iso_cache: Option<(Iso, usize, Arc<Scene>)>,
@@ -767,6 +769,7 @@ impl Viewer {
             unwrapped_from: None,
             iso: Iso::default(),
             iso_cache: None,
+            labels: Vec::new(),
             overlay_next: false,
             turning: None,
             turn_task: None,
@@ -1012,6 +1015,7 @@ impl Viewer {
         self.compare = None;
         self.fit = None;
         self.unwrapped_from = None;
+        self.labels.clear();
         self.deposited = None;
         self.assembly = None;
         self.layers.clear();
@@ -2971,6 +2975,14 @@ impl Viewer {
         let camera = self.camera;
         let style = self.style;
         let transparent = self.transparent;
+        // The labels where their atoms are, set at the picture's scale.
+        let pinned: Vec<([f32; 3], String)> = self
+            .shown(0)
+            .map(|s| self.labels.iter().filter_map(|l| Some((s.atoms.get(l.atom as usize)?.pos, l.text.clone()))).collect())
+            .unwrap_or_default();
+        let label_size = 10.5 * (width as f32 / f32::from(self.cache.borrow().bounds.size.width).max(1.0));
+        let ink = theme::view().map(|c| if c > 0.5 { 0.07 } else { 0.92 });
+        let page = theme::view();
         let traced = self.traced.then(|| {
             let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             (done, crate::trace::rows(height, width))
@@ -3025,6 +3037,15 @@ impl Viewer {
                         }
                         rgba
                     };
+                    let mut rgba = rgba;
+                    if !pinned.is_empty() {
+                        if let Some(font) = crate::movie::font() {
+                            let mut pic = crate::movie::Picture { width, height, rgba };
+                            let labels: Vec<([f32; 3], &str)> = pinned.iter().map(|(p, t)| (*p, t.as_str())).collect();
+                            crate::movie::draw_labels(&mut pic, &font, &camera, &labels, label_size, ink, page);
+                            rgba = pic.rgba;
+                        }
+                    }
                     let saved = image::save_buffer(
                         &path,
                         &rgba,
@@ -3765,6 +3786,13 @@ const FOLD_EXAMPLES: [(&str, &str); 3] = [
 ];
 #[cfg(not(feature = "simplefold"))]
 const FOLD_EXAMPLES: [(&str, &str); 0] = [];
+
+/// Text pinned to an atom of the structure shown.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Label {
+    pub atom: u32,
+    pub text: String,
+}
 
 /// How a volume is drawn: its surface at a level, solid or as a mesh.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -7918,6 +7946,7 @@ impl Viewer {
                 .flatten()
                 .collect();
                 d.children(self.site_labels())
+                    .children(self.atom_labels())
                     .children(self.slab_gauge())
                     .children(self.measure_lines())
                     .children(self.measure_labels())
@@ -8506,6 +8535,13 @@ impl Viewer {
                             action("focus-selected", "Focus")
                                 .on_click(cx.listener(|this, _, _, cx| this.focus_selected(cx))),
                         )
+                        .when(t.which == 0, |d| {
+                            let labelled = self.labels.iter().any(|l| l.atom as usize == t.picked.atom);
+                            d.child(
+                                action("label-selected", if labelled { "Unlabel" } else { "Label" })
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_label(cx))),
+                            )
+                        })
                         .when(ligand, |d| {
                             d.child(action("site-selected", "Binding site").on_click(cx.listener(
                                 move |this, _, _, cx| this.show_site(residue, cx),
@@ -8626,6 +8662,100 @@ impl Viewer {
     }
 
     /// The binding site's residues, each named beside its side chain.
+    /// The labels pinned to atoms, where the atoms are drawn.
+    fn atom_labels(&self) -> Vec<gpui::AnyElement> {
+        let Some(s) = self.shown(0) else { return Vec::new() };
+        self.labels
+            .iter()
+            .filter_map(|l| {
+                let at = self.project(s.atoms.get(l.atom as usize)?.pos)?;
+                Some(
+                    div()
+                        .absolute()
+                        .left(at.x + px(4.))
+                        .top(at.y - px(8.))
+                        .px(px(4.))
+                        .rounded(px(3.))
+                        .bg(theme::surface())
+                        .opacity(0.9)
+                        .text_color(theme::ink())
+                        .text_size(px(10.5))
+                        .whitespace_nowrap()
+                        .child(l.text.clone())
+                        .into_any_element(),
+                )
+            })
+            .collect()
+    }
+
+    /// The words a residue is labelled with: its name and number, and its
+    /// chain where there are several.
+    fn residue_label(s: &Structure, r: usize) -> String {
+        let res = &s.residues[r];
+        let chain = s.chains.get(res.chain as usize).map(|c| c.id.trim()).filter(|c| !c.is_empty() && s.chains.len() > 1);
+        match chain {
+            Some(c) => format!("{} {}:{c}", res.name, res.seq),
+            None => format!("{} {}", res.name, res.seq),
+        }
+    }
+
+    /// Label what `selection` takes: a residue each, at its alpha carbon or
+    /// first atom; with `atoms`, each atom by name; with `text`, the first
+    /// atom with that. How many labels it added.
+    pub(super) fn add_labels(&mut self, selection: &Selection, atoms: bool, text: Option<String>, cx: &mut Context<Self>) -> usize {
+        let Some(s) = self.structure.clone() else { return 0 };
+        let taken = selection.atoms(&s);
+        let chosen: Vec<usize> = taken.iter().enumerate().filter(|(_, t)| **t).map(|(i, _)| i).collect();
+        let before = self.labels.len();
+        if let Some(text) = text {
+            if let Some(&a) = chosen.first() {
+                self.labels.push(Label { atom: a as u32, text });
+            }
+        } else if atoms || !s.has_polymer() {
+            for a in chosen {
+                let name = s.atoms[a].name();
+                let text = if name.is_empty() { format!("{} {}", s.atoms[a].element.symbol(), a + 1) } else { name.to_string() };
+                self.labels.push(Label { atom: a as u32, text });
+            }
+        } else {
+            let mut seen = std::collections::HashSet::new();
+            for a in chosen {
+                let r = s.atoms[a].residue as usize;
+                if seen.insert(r) {
+                    let at = s.residues[r].ca.map_or(a, |c| c as usize);
+                    self.labels.push(Label { atom: at as u32, text: Self::residue_label(&s, r) });
+                }
+            }
+        }
+        // One label to an atom: a new one replaces what was there.
+        let mut seen = std::collections::HashSet::new();
+        let mut kept: Vec<Label> = self.labels.drain(..).rev().filter(|l| seen.insert(l.atom)).collect();
+        kept.reverse();
+        let added = kept.len().saturating_sub(before.min(kept.len()));
+        self.labels = kept;
+        cx.notify();
+        added
+    }
+
+    /// Label the picked residue or atom, or take its label off again.
+    fn toggle_label(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self.selected.filter(|t| t.which == 0) else { return };
+        let Some(s) = self.structure.clone() else { return };
+        let atom = t.picked.atom as u32;
+        if let Some(i) = self.labels.iter().position(|l| l.atom == atom) {
+            self.labels.remove(i);
+        } else {
+            let r = s.atoms[t.picked.atom].residue as usize;
+            let text = if t.picked.residue || s.residues[r].ca == Some(atom) {
+                Self::residue_label(&s, r)
+            } else {
+                format!("{} {}", s.atoms[t.picked.atom].name(), Self::residue_label(&s, r))
+            };
+            self.labels.push(Label { atom, text });
+        }
+        cx.notify();
+    }
+
     fn site_labels(&self) -> Vec<gpui::AnyElement> {
         let (Some(site), Some(s)) = (&self.site, self.shown(0)) else {
             return Vec::new();
@@ -9135,6 +9265,31 @@ mod ui_tests {
         // Fitting changes the frames, so the analysis is worked out again.
         view.update(cx, |this, cx| this.run_command("fit", cx)).unwrap();
         assert!(view.update(cx, |this, _| this.analysis_task.is_some()));
+    }
+
+    #[gpui::test]
+    fn residues_and_atoms_are_labelled_from_the_console(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(SAMPLES[2].file, SAMPLES[2].bytes.to_vec()).unwrap();
+            this.show(s, cx);
+        });
+        cx.run_until_parked();
+        let labels = |view: &Entity<Viewer>, cx: &mut VisualTestContext| view.update(cx, |this, _| this.labels.clone());
+        view.update(cx, |this, cx| this.run_command("label resi 1-3", cx)).unwrap();
+        let l = labels(&view, cx);
+        assert_eq!(l.len(), 3);
+        assert_eq!(l[0].text, "THR 1");
+        view.update(cx, |this, cx| this.run_command("label atoms resi 5 and name CA+CB", cx)).unwrap();
+        assert_eq!(labels(&view, cx).len(), 5);
+        // Text of one's own, on the first atom taken; it replaces a label there.
+        view.update(cx, |this, cx| this.run_command("label resi 1 and name CA \"the start\"", cx)).unwrap();
+        let l = labels(&view, cx);
+        assert_eq!(l.len(), 5);
+        assert!(l.iter().any(|l| l.text == "the start"));
+        view.update(cx, |this, cx| this.run_command("label clear", cx)).unwrap();
+        assert!(labels(&view, cx).is_empty());
+        assert!(view.update(cx, |this, cx| this.run_command("label", cx)).is_err());
     }
 
     #[gpui::test]
@@ -9724,6 +9879,7 @@ mod ui_tests {
             shots,
             options,
             legend: None,
+            labels: Vec::new(),
         };
         let dir = std::env::temp_dir().join(format!("profold-gif-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

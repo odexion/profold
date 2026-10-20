@@ -726,6 +726,8 @@ pub struct Job {
     pub options: Options,
     /// The colour key, drawn when the options ask for it.
     pub legend: Option<Legend>,
+    /// Text pinned to atoms, by atom index, following them frame by frame.
+    pub labels: Vec<(u32, String)>,
 }
 
 /// A drawn frame, as straight (not premultiplied) RGBA.
@@ -796,6 +798,7 @@ impl<'a> Drawer<'a> {
                 }
             };
             let mut pic = Picture { width, height, rgba };
+            self.pin_labels(&mut pic, &cam);
             self.overlay(&mut pic, &shot, &cam, 1);
             return pic;
         }
@@ -827,8 +830,24 @@ impl<'a> Drawer<'a> {
             }
         };
         let mut pic = Picture { width, height, rgba: shrink(&big, rw, rh, ss) };
+        let mut small = cam;
+        small.pan = [cam.pan[0] / ss as f32, cam.pan[1] / ss as f32];
+        self.pin_labels(&mut pic, &small);
         self.overlay(&mut pic, &shot, &cam, ss);
         pic
+    }
+
+    /// The labels pinned to atoms, where the atoms are in this shot.
+    fn pin_labels(&self, pic: &mut Picture, cam: &Camera) {
+        let Some(font) = &self.font else { return };
+        let pinned: Vec<([f32; 3], &str)> = self
+            .job
+            .labels
+            .iter()
+            .filter_map(|(a, t)| Some((self.posed.atoms.get(*a as usize)?.pos, t.as_str())))
+            .collect();
+        let size = (pic.width.min(pic.height) as f32 * 0.022).max(10.0);
+        draw_labels(pic, font, cam, &pinned, size, self.ink(), self.job.page);
     }
 
     /// The text, the scale bar and the legend, over the frame. Each keeps
@@ -1164,6 +1183,43 @@ fn text(pic: &mut Picture, font: &ab_glyph::FontRef<'static>, s: &str, x: f32, y
 // ---------------------------------------------------------------------------
 // Writing
 // ---------------------------------------------------------------------------
+
+/// Text pinned to points of the structure, as `cam` sees them in `pic`: a
+/// little to the right of each point, on a patch of the page so it reads
+/// over whatever is behind.
+pub fn draw_labels(
+    pic: &mut Picture,
+    font: &ab_glyph::FontRef<'static>,
+    cam: &Camera,
+    labels: &[([f32; 3], &str)],
+    size: f32,
+    ink: [f32; 3],
+    page: [f32; 3],
+) {
+    let (w, h) = (pic.width as f32, pic.height as f32);
+    let m = cam.basis();
+    let scale = w.min(h) / (2.2 * cam.radius) * cam.zoom;
+    for (p, label) in labels {
+        let q = [p[0] - cam.center[0], p[1] - cam.center[1], p[2] - cam.center[2]];
+        let d = |r: [f32; 3]| r[0] * q[0] + r[1] * q[1] + r[2] * q[2];
+        let (v, _) = cam.warp([d(m[0]), d(m[1]), d(m[2])]);
+        let x = w * 0.5 + cam.pan[0] + v[0] * scale + size * 0.4;
+        let y = h * 0.5 + cam.pan[1] - v[1] * scale;
+        let tw = text_width(font, label, size);
+        let pad = size * 0.25;
+        for py in (y - size * 0.6 - pad) as i64..(y + size * 0.45 + pad) as i64 {
+            for px in (x - pad) as i64..(x + tw + pad) as i64 {
+                blend(pic, px, py, 0.85, page);
+            }
+        }
+        text(pic, font, label, x, y + size * 0.35, size, ink);
+    }
+}
+
+/// The font the film's text is set in, for anything else drawing text.
+pub fn font() -> Option<ab_glyph::FontRef<'static>> {
+    ab_glyph::FontRef::try_from_slice(FONT).ok()
+}
 
 /// Takes drawn frames into a file.
 trait Sink {
@@ -1741,6 +1797,7 @@ mod tests {
                 shots,
                 options,
                 legend: None,
+                labels: Vec::new(),
             };
             Drawer::new(&job).draw(0, 160, 120, 2)
         };
@@ -1749,6 +1806,34 @@ mod tests {
         assert_ne!(plain.rgba, traced.rgba);
         let o = parse_args(Options::default(), Path::new("out.mp4"), &words("trace=on")).unwrap();
         assert!(o.traced);
+    }
+
+    #[test]
+    fn a_label_is_drawn_where_its_atom_is_in_each_frame() {
+        let melt = crate::samples::SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+        let s = crate::formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap();
+        let camera = Camera::frame(&s);
+        let frame = |labels: Vec<(u32, String)>| {
+            let options = Options { trajectory: false, ..Options::default() };
+            let shots = plan(&options, &camera, 0, s.frame_count(), None);
+            let job = Job {
+                structure: s.clone(),
+                build: Arc::new(|s: &Structure| {
+                    render::build_scene(s, render::Repr::Spacefill, render::Coloring::Element, 1.0, Style::Flat, render::Palette::Spectrum, true, true, &render::Appearance::default())
+                }),
+                style: Style::Flat,
+                page: [0.97, 0.97, 0.96],
+                view: (320, 240),
+                shots,
+                options,
+                legend: None,
+                labels,
+            };
+            Drawer::new(&job).draw(0, 320, 240, 1)
+        };
+        let (plain, labelled) = (frame(Vec::new()), frame(vec![(0, "first atom".into())]));
+        let changed = plain.rgba.chunks_exact(4).zip(labelled.rgba.chunks_exact(4)).filter(|(a, b)| a != b).count();
+        assert!(changed > 100, "{changed} pixels changed");
     }
 
     #[test]
@@ -1823,6 +1908,7 @@ fn film_samples() {
                 items: vec![([0.13, 0.45, 0.85], "Type 1".into()), ([0.90, 0.35, 0.15], "Type 2".into())],
                 more: 0,
             }),
+            labels: Vec::new(),
         };
         let t = std::time::Instant::now();
         let progress = Progress::default();

@@ -15,6 +15,13 @@
 - **Ray-traced films.** The film dialog's *Ray traced* switch, or
   `movie … trace=on`, traces every frame the same way.
 
+### Labels
+- **Labels in 3D.** Pin a residue's name and number, an atom's name or text
+  of your own to atoms: *Label* on the picked atom's card, or `label resi
+  10-20`, `label atoms name CA`, `label ligand "the drug"` and `label clear`
+  in the console. They follow their atoms through a trajectory, and are
+  drawn into saved images and films.
+
 ### Trajectories
 - **Analysis.** *Trajectory analysis* in the side panel plots, frame by
   frame, the RMSD from the first frame (each fitted onto it by Kabsch), the

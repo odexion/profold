@@ -36,6 +36,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("replicate <a> <b> <c>", "repeat the cell, as in replicate 2 2 1"),
     ("analyse, fit", "plot RMSD, Rg, SASA, contacts, RMSF and secondary structure over a trajectory; fit its frames onto the first"),
     ("iso <level>|on|off|mesh|auto", "draw the volume's surface at a level, from a cube file or a map"),
+    ("label [atoms] <selection> [\"text\"], label clear", "pin residue names, atom names or your own text to atoms"),
     ("trace on|off", "ray trace the still view and saved images: shadows and ambient occlusion"),
     ("water on|off, hydrogens on|off", "toggle display"),
     ("frame <n>, play", "step a trajectory"),
@@ -311,6 +312,28 @@ impl Viewer {
             "unwrap" => self.periodic(crate::ui::app::Periodic::InTime, cx)?,
             "original" => self.periodic(crate::ui::app::Periodic::Original, cx)?,
             "fit" => self.periodic(crate::ui::app::Periodic::Fit, cx)?,
+            "label" | "labels" => {
+                shown()?;
+                if matches!(rest, "clear" | "off" | "none") {
+                    let n = self.labels.len();
+                    self.labels.clear();
+                    cx.notify();
+                    return Ok(format!("{n} labels taken off"));
+                }
+                need("a selection, as in label resi 10-20, label atoms name CA, or label ligand \"the drug\"")?;
+                // A quoted end is the label's own text.
+                let (rest, text) = match rest.split_once('"') {
+                    Some((sel, quoted)) => (sel.trim(), Some(quoted.trim_end_matches('"').to_string())),
+                    None => (rest, None),
+                };
+                let (atoms, rest) = match rest.strip_prefix("atoms ") {
+                    Some(r) => (true, r.trim()),
+                    None => (false, rest),
+                };
+                let selection = Selection::parse(rest)?;
+                let n = self.add_labels(&selection, atoms, text, cx);
+                format!("{n} labels added")
+            }
             "analyse" | "analyze" | "analysis" => {
                 if shown()?.frame_count() < 2 {
                     bail!("there is one frame");

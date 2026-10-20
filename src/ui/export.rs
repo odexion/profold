@@ -232,6 +232,7 @@ impl Viewer {
             shots,
             options: o.clone(),
             legend: self.film_legend(),
+            labels: self.labels.iter().map(|l| (l.atom, l.text.clone())).collect(),
         })
     }
 
