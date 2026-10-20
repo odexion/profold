@@ -12,6 +12,8 @@
   and fog and all, and slabs, perspective and see-through atoms are traced as
   they are drawn. A protein at 1200 × 900 takes about a second. The console
   has `trace on|off`, and `save x.png` follows it.
+- **Ray-traced films.** The film dialog's *Ray traced* switch, or
+  `movie … trace=on`, traces every frame the same way.
 
 ### Viewing
 - **⌘-click to focus** (Ctrl-click on Linux and Windows) picks an atom or

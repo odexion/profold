@@ -233,6 +233,9 @@ pub struct Options {
     pub height: u32,
     /// Each frame is drawn this many times larger, then scaled down.
     pub supersample: u32,
+    /// Each frame is ray traced, with shadows and ambient occlusion, and
+    /// smoothed by the tracer's own oversampling rather than `supersample`.
+    pub traced: bool,
     /// 1–100, for formats that lose detail to stay small.
     pub quality: u32,
     pub background: Background,
@@ -268,6 +271,7 @@ impl Default for Options {
             width: 1920,
             height: 1080,
             supersample: 2,
+            traced: false,
             quality: 75,
             background: Background::Theme,
             format: Format::Mp4,
@@ -334,6 +338,7 @@ impl Options {
             "width": self.width,
             "height": self.height,
             "supersample": self.supersample,
+            "traced": self.traced,
             "quality": self.quality,
             "background": background,
             "format": name(&FORMATS, self.format),
@@ -372,6 +377,7 @@ impl Options {
         o.width = u("width", o.width);
         o.height = u("height", o.height);
         o.supersample = u("supersample", o.supersample);
+        o.traced = b("traced", o.traced);
         o.quality = u("quality", o.quality);
         o.background = match s("background") {
             "theme" => Background::Theme,
@@ -768,6 +774,31 @@ impl<'a> Drawer<'a> {
             self.last = Some(key);
         }
         let scene = self.scene.as_ref().expect("built above");
+
+        if o.traced {
+            let mut cam = shot.camera;
+            let k = width.min(height) as f32 / job.view.0.min(job.view.1).max(1) as f32;
+            cam.pan = [cam.pan[0] * k, cam.pan[1] * k];
+            let traced = crate::trace::trace(scene, &cam, width, height, job.style, &Default::default())
+                .expect("not cancelled");
+            let rgba = match o.background {
+                Background::Transparent => traced.transparent(),
+                Background::Theme | Background::Color(_) => {
+                    let page = match o.background {
+                        Background::Color(c) => c,
+                        _ => job.page,
+                    };
+                    let mut rgba = traced.develop(page).bgra;
+                    for p in rgba.chunks_exact_mut(4) {
+                        p.swap(0, 2);
+                    }
+                    rgba
+                }
+            };
+            let mut pic = Picture { width, height, rgba };
+            self.overlay(&mut pic, &shot, &cam, 1);
+            return pic;
+        }
 
         let mut ss = ss.max(1);
         while ss > 1 && (width * ss > MAX_SIDE || height * ss > MAX_SIDE) {
@@ -1460,6 +1491,7 @@ pub fn parse_args(base: Options, path: &Path, words: &[String]) -> Result<Option
                 }
             }
             "aa" | "supersample" => o.supersample = num(k, v)? as u32,
+            "trace" | "traced" | "raytrace" => o.traced = on(v)?,
             "quality" => o.quality = num(k, v)? as u32,
             "bg" | "background" => {
                 o.background = match v {
@@ -1688,6 +1720,35 @@ mod tests {
         assert!(log.contains("h264"), "{log}");
         assert!(log.contains("frame=   12") || log.contains("frame=12"), "{log}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_traced_film_frame_is_drawn_at_its_size_and_differs_from_a_plain_one() {
+        let melt = crate::samples::SAMPLES.iter().find(|s| s.file.ends_with("lammpstrj.gz")).unwrap();
+        let s = crate::formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap();
+        let camera = Camera::frame(&s);
+        let frame = |traced: bool| {
+            let options = Options { traced, trajectory: false, ..Options::default() };
+            let shots = plan(&options, &camera, 0, s.frame_count(), None);
+            let job = Job {
+                structure: s.clone(),
+                build: Arc::new(|s: &Structure| {
+                    render::build_scene(s, render::Repr::Spacefill, render::Coloring::Element, 1.0, Style::Studio, render::Palette::Spectrum, true, true, &render::Appearance::default())
+                }),
+                style: Style::Studio,
+                page: [0.97, 0.97, 0.96],
+                view: (320, 240),
+                shots,
+                options,
+                legend: None,
+            };
+            Drawer::new(&job).draw(0, 160, 120, 2)
+        };
+        let (plain, traced) = (frame(false), frame(true));
+        assert_eq!((traced.width, traced.height, traced.rgba.len()), (160, 120, 160 * 120 * 4));
+        assert_ne!(plain.rgba, traced.rgba);
+        let o = parse_args(Options::default(), Path::new("out.mp4"), &words("trace=on")).unwrap();
+        assert!(o.traced);
     }
 
     #[test]

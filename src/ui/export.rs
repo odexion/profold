@@ -712,6 +712,10 @@ impl Viewer {
         let aa = self
             .choices("movie-aa", &[(1, "Off", true), (2, "2×", true), (4, "4×", true)], o.supersample, |o, v| o.supersample = v, cx)
             .into_any_element();
+        let traced = inline(vec![
+            self.switch("movie-traced", "Ray traced", o.traced, |o| o.traced = !o.traced, cx).into_any_element(),
+            small("shadows and ambient occlusion; slower"),
+        ]);
         let quality = inline(vec![self.knob("movie-quality", Knob::Quality, format!("{}", o.quality), 36., cx), small("of 100")]);
         let color = match o.background {
             Background::Color(c) => c,
@@ -853,7 +857,8 @@ impl Viewer {
             .child(heading("Image"))
             .child(row("Size", size))
             .children(custom.map(|c| row("", c)))
-            .child(row("Antialias", aa))
+            .when(!o.traced, |d| d.child(row("Antialias", aa)))
+            .child(row("", traced))
             .when(o.format.lossy(), |d| d.child(row("Quality", quality)))
             .child(row("Background", backgrounds))
             .children(hex.map(|c| row("", c)))
