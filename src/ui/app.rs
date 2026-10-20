@@ -6173,11 +6173,12 @@ impl Viewer {
             this.transparent = !this.transparent;
             cx.notify();
         }));
-        let traced = item("traced", "Ray traced".into(), self.traced)
+        let traced_on = self.traced;
+        let traced = item("traced", "Ray traced · slower".into(), self.traced)
             .debug_selector(|| "traced".into())
             .tooltip(|_, cx| {
                 cx.new(|_| {
-                    Tip("Shadows, ambient occlusion and smooth edges: in the view once it holds still, and in saved images".into())
+                    Tip("Shadows, ambient occlusion and smooth edges, in the view once it holds still and in saved images. Off by default: a traced picture takes seconds where a plain one takes milliseconds, a traced film minutes".into())
                 })
                 .into()
             })
@@ -6185,7 +6186,7 @@ impl Viewer {
                 this.traced = !this.traced;
                 cx.notify();
             }));
-        menu(200.)
+        menu(if traced_on { 290. } else { 200. })
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.open = None;
                 cx.notify();
@@ -6193,7 +6194,17 @@ impl Viewer {
             .child(traced)
             .child(divide())
             .children([1usize, 2, 3].into_iter().map(move |scale| {
-                let size = format!("{} × {}", w * scale, h * scale);
+                // Traced, how long it will be, as this machine last traced.
+                let size = match (traced_on, crate::trace::estimate(w * scale, h * scale)) {
+                    (true, Some(t)) => format!(
+                        "{} × {} · ≈ {}",
+                        w * scale,
+                        h * scale,
+                        crate::trace::roughly(t)
+                    ),
+                    (true, None) => format!("{} × {} · seconds", w * scale, h * scale),
+                    (false, _) => format!("{} × {}", w * scale, h * scale),
+                };
                 div()
                     .id(("image", scale))
                     .flex()
@@ -11400,6 +11411,9 @@ mod ui_tests {
         click(cx, "tab-image");
         click(cx, "transparent");
         assert!(view.update(cx, |this, _| this.transparent));
+        // Ray tracing is slow, so nothing is traced until it is asked for.
+        assert!(!view.update(cx, |this, _| this.traced));
+        assert!(!crate::movie::Options::default().traced);
         click(cx, "tab-image");
         click(cx, "traced");
         assert!(view.update(cx, |this, _| this.traced));

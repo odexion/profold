@@ -1018,6 +1018,16 @@ impl Viewer {
                 cx,
             )
             .into_any_element();
+        // Traced, how long the film will be, as this machine last traced.
+        let traced_note: String = match (o.traced, crate::trace::estimate(w as usize, h as usize)) {
+            (true, Some(t)) => format!(
+                "≈ {} a frame, {} for all {count}",
+                crate::trace::roughly(t),
+                crate::trace::roughly(t * count as u32)
+            ),
+            (true, None) => format!("seconds a frame, so minutes for all {count}"),
+            (false, _) => "shadows and ambient occlusion; seconds a frame".into(),
+        };
         let traced = inline(vec![
             self.switch(
                 "movie-traced",
@@ -1027,7 +1037,7 @@ impl Viewer {
                 cx,
             )
             .into_any_element(),
-            small("shadows and ambient occlusion; slower"),
+            small(&traced_note),
         ]);
         let quality = inline(vec![
             self.knob(

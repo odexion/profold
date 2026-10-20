@@ -13,6 +13,9 @@ use wgpu::util::DeviceExt;
 
 use crate::render::{Camera, Frame, Scene, Style, OPAQUE};
 
+#[path = "gpu_trace.rs"]
+mod tracing;
+
 /// A sphere or a capsule, as the impostor shader takes it. A sphere is a
 /// capsule whose ends coincide, told apart so it can keep its ink rim.
 #[repr(C)]
@@ -69,6 +72,8 @@ pub struct Gpu {
     post: wgpu::RenderPipeline,
     uniforms: wgpu::Buffer,
     state: Mutex<State>,
+    /// The ray tracer's compute pipeline, built when first traced with.
+    tracer: OnceLock<Option<tracing::Tracer>>,
 }
 
 /// What is kept between frames: the scene's buffers, rebuilt when the scene
@@ -340,6 +345,7 @@ impl Gpu {
             post,
             uniforms,
             state: Mutex::new(State::default()),
+            tracer: OnceLock::new(),
         }
     }
 

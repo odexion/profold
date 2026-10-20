@@ -258,7 +258,10 @@ fn ray_hit(p: &Prim, o: V, d: V) -> Option<f32> {
 struct Node {
     lo: V,
     hi: V,
+    /// A leaf's first primitive, or an inner node's first child; the
+    /// second follows it.
     first: u32,
+    /// Primitives in a leaf; none in an inner node.
     count: u32,
 }
 
@@ -267,11 +270,22 @@ struct Bvh {
     prims: Vec<Prim>,
 }
 
-const LEAF: usize = 4;
+/// Leaves hold no more than this.
+const LEAF: usize = 8;
+/// Below this depth splits are chosen by surface area; past it they halve,
+/// so no tree grows deeper than the traversal's stack.
+const DEEP: usize = 40;
+/// Centre positions are sorted into this many bins to weigh splits.
+const BINS: usize = 12;
+
+fn area(lo: V, hi: V) -> f32 {
+    let d = sub(hi, lo).map(|x| x.max(0.0));
+    d[0] * d[1] + d[1] * d[2] + d[2] * d[0]
+}
 
 impl Bvh {
     fn new(mut prims: Vec<Prim>) -> Self {
-        let mut nodes = Vec::with_capacity(prims.len().div_ceil(LEAF) * 2 + 1);
+        let mut nodes = Vec::with_capacity(prims.len() / 2 + 1);
         if !prims.is_empty() {
             let boxes: Vec<(V, V)> = prims.iter().map(Prim::bounds).collect();
             let mut order: Vec<u32> = (0..prims.len() as u32).collect();
@@ -281,50 +295,140 @@ impl Bvh {
                 first: 0,
                 count: 0,
             });
-            Self::split(&mut nodes, 0, &boxes, &mut order, 0);
+            Self::split(&mut nodes, 0, &boxes, &mut order, 0, 0);
             prims = order.iter().map(|&i| prims[i as usize]).collect();
         }
         Bvh { nodes, prims }
     }
 
-    /// Fill node `at` with `order`, which starts at `first` in the whole,
-    /// halving at the median along its longest spread of centres.
-    fn split(nodes: &mut Vec<Node>, at: usize, boxes: &[(V, V)], order: &mut [u32], first: usize) {
+    /// Fill node `at` with `order`, which starts at `first` in the whole:
+    /// split where the surface area heuristic says a ray will meet least,
+    /// or kept as a leaf where no split pays for itself.
+    fn split(
+        nodes: &mut Vec<Node>,
+        at: usize,
+        boxes: &[(V, V)],
+        order: &mut [u32],
+        first: usize,
+        depth: usize,
+    ) {
         let mut lo = [f32::MAX; 3];
         let mut hi = [f32::MIN; 3];
         let mut clo = [f32::MAX; 3];
         let mut chi = [f32::MIN; 3];
+        let centre = |i: u32, k: usize| {
+            let (l, h) = boxes[i as usize];
+            (l[k] + h[k]) * 0.5
+        };
         for &i in order.iter() {
             let (l, h) = boxes[i as usize];
             for k in 0..3 {
                 lo[k] = lo[k].min(l[k]);
                 hi[k] = hi[k].max(h[k]);
-                let c = (l[k] + h[k]) * 0.5;
-                clo[k] = clo[k].min(c);
-                chi[k] = chi[k].max(c);
+                clo[k] = clo[k].min(centre(i, k));
+                chi[k] = chi[k].max(centre(i, k));
             }
         }
         nodes[at].lo = lo;
         nodes[at].hi = hi;
+        let n = order.len();
         let spread = sub(chi, clo);
-        if order.len() <= LEAF || spread.iter().all(|&s| s <= 0.0) {
+        let leaf = |nodes: &mut Vec<Node>| {
             nodes[at].first = first as u32;
-            nodes[at].count = order.len() as u32;
-            return;
+            nodes[at].count = n as u32;
+        };
+        if n <= 2 || spread.iter().all(|&s| s <= 0.0) && n <= LEAF {
+            return leaf(nodes);
         }
-        let axis = if spread[0] >= spread[1] && spread[0] >= spread[2] {
-            0
-        } else if spread[1] >= spread[2] {
-            1
-        } else {
-            2
+
+        // The cheapest split over every axis and bin boundary: the area of
+        // each side, times what it holds.
+        let mut best: Option<(f32, usize, usize)> = None;
+        if depth < DEEP {
+            for k in 0..3 {
+                if spread[k] <= 0.0 {
+                    continue;
+                }
+                let bin = |i: u32| {
+                    (((centre(i, k) - clo[k]) / spread[k] * BINS as f32) as usize).min(BINS - 1)
+                };
+                let mut count = [0usize; BINS];
+                let mut blo = [[f32::MAX; 3]; BINS];
+                let mut bhi = [[f32::MIN; 3]; BINS];
+                for &i in order.iter() {
+                    let b = bin(i);
+                    let (l, h) = boxes[i as usize];
+                    count[b] += 1;
+                    for c in 0..3 {
+                        blo[b][c] = blo[b][c].min(l[c]);
+                        bhi[b][c] = bhi[b][c].max(h[c]);
+                    }
+                }
+                // Areas and counts swept in from the right, then from the left.
+                let mut right = [(0.0f32, 0usize); BINS];
+                let (mut rlo, mut rhi, mut rn) = ([f32::MAX; 3], [f32::MIN; 3], 0);
+                for b in (1..BINS).rev() {
+                    for c in 0..3 {
+                        rlo[c] = rlo[c].min(blo[b][c]);
+                        rhi[c] = rhi[c].max(bhi[b][c]);
+                    }
+                    rn += count[b];
+                    right[b] = (area(rlo, rhi), rn);
+                }
+                let (mut llo, mut lhi, mut ln) = ([f32::MAX; 3], [f32::MIN; 3], 0);
+                for b in 0..BINS - 1 {
+                    for c in 0..3 {
+                        llo[c] = llo[c].min(blo[b][c]);
+                        lhi[c] = lhi[c].max(bhi[b][c]);
+                    }
+                    ln += count[b];
+                    let (ra, rn) = right[b + 1];
+                    if ln == 0 || rn == 0 {
+                        continue;
+                    }
+                    let cost = area(llo, lhi) * ln as f32 + ra * rn as f32;
+                    if best.is_none_or(|(c, _, _)| cost < c) {
+                        best = Some((cost, k, b));
+                    }
+                }
+            }
+        }
+        // A leaf where splitting costs more than testing all of them.
+        let whole = area(lo, hi).max(1e-12);
+        if let Some((cost, _, _)) = best {
+            if n <= LEAF && cost / whole >= n as f32 - 1.0 {
+                return leaf(nodes);
+            }
+        }
+        let mid = match best {
+            Some((_, k, b)) => {
+                // Those in bins up to `b` to the front.
+                let bin = |i: u32| {
+                    (((centre(i, k) - clo[k]) / spread[k] * BINS as f32) as usize).min(BINS - 1)
+                };
+                let mut mid = 0;
+                for j in 0..n {
+                    if bin(order[j]) <= b {
+                        order.swap(j, mid);
+                        mid += 1;
+                    }
+                }
+                mid
+            }
+            None => {
+                // Halved at the median of the widest spread.
+                let k = if spread[0] >= spread[1] && spread[0] >= spread[2] {
+                    0
+                } else if spread[1] >= spread[2] {
+                    1
+                } else {
+                    2
+                };
+                let mid = n / 2;
+                order.select_nth_unstable_by(mid, |a, b| centre(*a, k).total_cmp(&centre(*b, k)));
+                mid
+            }
         };
-        let mid = order.len() / 2;
-        let centre = |i: &u32| {
-            let (l, h) = boxes[*i as usize];
-            l[axis] + h[axis]
-        };
-        order.select_nth_unstable_by(mid, |a, b| centre(a).total_cmp(&centre(b)));
         let left = nodes.len();
         nodes[at].first = left as u32;
         nodes[at].count = 0;
@@ -337,8 +441,8 @@ impl Bvh {
             });
         }
         let (a, b) = order.split_at_mut(mid);
-        Self::split(nodes, left, boxes, a, first);
-        Self::split(nodes, left + 1, boxes, b, first + mid);
+        Self::split(nodes, left, boxes, a, first, depth + 1);
+        Self::split(nodes, left + 1, boxes, b, first + mid, depth + 1);
     }
 
     /// Every primitive whose box the vertical line through `(x, y)` passes
@@ -348,7 +452,7 @@ impl Bvh {
         if self.nodes.is_empty() {
             return;
         }
-        let mut stack = [0u32; 64];
+        let mut stack = [0u32; 2 * DEEP + 64];
         let mut top = 1;
         while top > 0 {
             top -= 1;
@@ -389,7 +493,7 @@ impl Bvh {
             return false;
         }
         let inv = d.map(|c| 1.0 / c);
-        let mut stack = [0u32; 64];
+        let mut stack = [0u32; 2 * DEEP + 64];
         let mut top = 1;
         while top > 0 {
             top -= 1;
@@ -416,12 +520,101 @@ impl Bvh {
                     }
                 }
             } else {
+                // Children in their own order: most rays here are never
+                // blocked, so which is searched first gains nothing, and
+                // choosing costs a branch at every node.
                 stack[top] = node.first;
                 stack[top + 1] = node.first + 1;
                 top += 2;
             }
         }
         false
+    }
+}
+
+/// A primitive as the tracing shader reads it (`trace.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct GpuPrim {
+    v0: [f32; 4],
+    v1: [f32; 4],
+    v2: [f32; 4],
+    n0: [f32; 4],
+    n1: [f32; 4],
+    n2: [f32; 4],
+    ca: [f32; 4],
+    cb: [f32; 4],
+}
+
+/// A node of the tree as the tracing shader reads it.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct GpuNode {
+    lo: [f32; 3],
+    first: u32,
+    hi: [f32; 3],
+    count: u32,
+}
+
+/// What the tracing shader is told of the frame.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct GpuParams {
+    pub view: [f32; 4],
+    pub cut: [f32; 4],
+    pub look: [f32; 4],
+    pub light: [f32; 4],
+    pub lt: [f32; 4],
+    pub lb: [f32; 4],
+    /// Samples across, first row of the band, rows in it, oversampling.
+    pub size: [u32; 4],
+    pub rays: [u32; 4],
+}
+
+impl Bvh {
+    /// The tree and its primitives laid out for the card.
+    fn for_gpu(&self) -> (Vec<GpuNode>, Vec<GpuPrim>) {
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|n| GpuNode {
+                lo: n.lo,
+                first: n.first,
+                hi: n.hi,
+                count: n.count,
+            })
+            .collect();
+        let four = |v: V, w: f32| [v[0], v[1], v[2], w];
+        let prims = self
+            .prims
+            .iter()
+            .map(|p| {
+                let z = [0.0; 4];
+                let (v0, v1, v2, n0, n1, n2) = match p.shape {
+                    Shape::Sphere(c, r) => (four(c, 0.0), four([0.0; 3], r), z, z, z, z),
+                    Shape::Capsule(a, b, r) => (four(a, 1.0), four(b, r), z, z, z, z),
+                    Shape::Tri(v, n) => (
+                        four(v[0], 2.0),
+                        four(v[1], 0.0),
+                        four(v[2], 0.0),
+                        four(n[0], 0.0),
+                        four(n[1], 0.0),
+                        four(n[2], 0.0),
+                    ),
+                };
+                GpuPrim {
+                    v0,
+                    v1,
+                    v2,
+                    n0,
+                    n1,
+                    n2,
+                    ca: four(p.ca, 1.0),
+                    cb: four(p.cb, 1.0),
+                }
+            })
+            .collect();
+        (nodes, prims)
     }
 }
 
@@ -531,6 +724,46 @@ pub struct Traced {
 /// once, which at its size is fine enough.
 const BUDGET: usize = 25_000_000;
 
+/// Rays traced a second by the last trace here, on whichever of the card or
+/// the CPU did it; none until one has.
+static RATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// About how long a frame of this size will take to trace, judged by the
+/// last trace on this machine: `None` until there has been one.
+pub fn estimate(width: usize, height: usize) -> Option<std::time::Duration> {
+    let rate = RATE.load(Ordering::Relaxed);
+    (rate > 0).then(|| std::time::Duration::from_secs_f64(work(width, height) / rate as f64))
+}
+
+/// The rays a frame of this size takes: for each sample, its line of sight
+/// and its share of the pixel's shadow and sky rays. A large frame has
+/// fewer samples, each with more rays.
+fn work(width: usize, height: usize) -> f64 {
+    let ss = oversampling(width, height);
+    let per = (ss * ss) as u32;
+    let rays = 1 + SHADOW_RAYS.div_ceil(per) + SKY_RAYS.div_ceil(per);
+    (width * height * ss * ss) as f64 * rays as f64
+}
+
+/// Shadow and sky rays for each pixel of the picture, shared among its
+/// samples.
+const SHADOW_RAYS: u32 = 36;
+const SKY_RAYS: u32 = 96;
+
+/// A duration as a person would say it, roughly.
+pub fn roughly(d: std::time::Duration) -> String {
+    let s = d.as_secs_f64();
+    if s < 1.0 {
+        "under a second".into()
+    } else if s < 90.0 {
+        format!("{} s", s.round() as u64)
+    } else if s < 5400.0 {
+        format!("{} min", (s / 60.0).round() as u64)
+    } else {
+        format!("{:.1} h", s / 3600.0)
+    }
+}
+
 /// How many times over each way a frame of this size is traced.
 pub fn oversampling(width: usize, height: usize) -> usize {
     (1..=3)
@@ -544,8 +777,9 @@ pub fn rows(height: usize, width: usize) -> usize {
     height * oversampling(width, height)
 }
 
-/// Trace `scene` as `cam` sees it into a frame `width` by `height`. Nothing
-/// if `control` cancels it.
+/// Trace `scene` as `cam` sees it into a frame `width` by `height`, on the
+/// graphics card where there is one that can, else on the CPU. Nothing if
+/// `control` cancels it.
 pub fn trace(
     scene: &Scene,
     cam: &Camera,
@@ -554,6 +788,22 @@ pub fn trace(
     style: Style,
     control: &Control,
 ) -> Option<Traced> {
+    // `PROFOLD_TRACE_CPU` keeps the tracing on the CPU, for comparing.
+    let gpu = std::env::var_os("PROFOLD_TRACE_CPU").is_none();
+    trace_on(scene, cam, width, height, style, control, gpu)
+}
+
+/// As `trace`, with the card used only if `gpu`.
+pub fn trace_on(
+    scene: &Scene,
+    cam: &Camera,
+    width: usize,
+    height: usize,
+    style: Style,
+    control: &Control,
+    gpu: bool,
+) -> Option<Traced> {
+    let started = std::time::Instant::now();
     let ss = oversampling(width, height);
     let (w, h) = (width * ss, height * ss);
     let m = cam.basis();
@@ -635,8 +885,8 @@ pub fn trace(
     let (shadow_k, sky_k) = strengths(style);
     let per = (ss * ss) as u32;
     // Rays for each pixel of the picture, shared among its samples.
-    let shadow_rays = 36u32.div_ceil(per);
-    let sky_rays = 96u32.div_ceil(per);
+    let shadow_rays = SHADOW_RAYS.div_ceil(per);
+    let sky_rays = SKY_RAYS.div_ceil(per);
 
     let (near, far) = cam.depths();
     let scale = (w.min(h) as f32) / (2.2 * cam.radius) * cam.zoom;
@@ -650,75 +900,105 @@ pub fn trace(
     let mut depth = vec![f32::NEG_INFINITY; w * h];
     let cancelled = || control.cancel.is_some_and(|c| c.load(Ordering::Relaxed));
 
-    color
-        .par_chunks_mut(w * 3)
-        .zip(depth.par_chunks_mut(w))
-        .enumerate()
-        .for_each(|(py, (row, zrow))| {
-            if cancelled() {
-                return;
-            }
-            let y = -(py as f32 + 0.5 - cy) * inv;
-            for px in 0..w {
-                let x = (px as f32 + 0.5 - cx) * inv;
-                let Some(s) = first_surface(&opaque, x, y, near, far) else {
-                    continue;
-                };
-                let o = add([x, y, s.z], mul(s.n, eps));
-                // One sequence for the pixel of the picture this sample is
-                // part of, each sample taking its own stretch of it, so the
-                // samples averaged together spread evenly between them.
-                let (ox, oy) = ((px / ss) as u32, (py / ss) as u32);
-                let part = ((py % ss) * ss + px % ss) as u32;
-                let seed = hash(ox, oy, 0);
+    // On the card where there is one that can: the same loop, in
+    // `trace.wgsl`, a band of rows at a time. Otherwise here.
+    let on_card = gpu.then(crate::gpu::get).flatten().and_then(|card| {
+        let (nodes, prims) = opaque.for_gpu();
+        // No slab is infinite depths, which a shader may not keep.
+        let cut = |v: f32| v.clamp(-3.0e38, 3.0e38);
+        let four = |v: V| [v[0], v[1], v[2], 0.0];
+        let params = GpuParams {
+            view: [cx, cy, inv, eps],
+            cut: [cut(near), cut(far), reach, shadow_k],
+            look: [sky_k, style.code(), 0.0, 0.0],
+            light: four(light),
+            lt: four(lt),
+            lb: four(lb),
+            size: [w as u32, 0, 0, ss as u32],
+            rays: [shadow_rays, sky_rays, 0, 0],
+        };
+        card.trace(&nodes, &prims, params, w, h, control)
+    });
+    match on_card {
+        Some(None) => return None,
+        Some(Some((c, d))) => {
+            color = c;
+            depth = d;
+        }
+        None => color
+            .par_chunks_mut(w * 3)
+            .zip(depth.par_chunks_mut(w))
+            .enumerate()
+            .for_each(|(py, (row, zrow))| {
+                if cancelled() {
+                    return;
+                }
+                let y = -(py as f32 + 0.5 - cy) * inv;
+                for px in 0..w {
+                    let x = (px as f32 + 0.5 - cx) * inv;
+                    let Some(s) = first_surface(&opaque, x, y, near, far) else {
+                        continue;
+                    };
+                    let o = add([x, y, s.z], mul(s.n, eps));
+                    // One sequence for the pixel of the picture this sample is
+                    // part of, each sample taking its own stretch of it, so the
+                    // samples averaged together spread evenly between them.
+                    let (ox, oy) = ((px / ss) as u32, (py / ss) as u32);
+                    let part = ((py % ss) * ss + px % ss) as u32;
+                    let seed = hash(ox, oy, 0);
 
-                let lit = if dot(s.n, light) > 0.0 {
-                    let mut through = 0;
-                    for i in 0..shadow_rays {
-                        let (u, v) = r2(part * shadow_rays + i, seed);
-                        let (rr, phi) = (u.sqrt() * LAMP, v * std::f32::consts::TAU);
-                        let d = unit(add(
-                            light,
-                            add(mul(lt, rr * phi.cos()), mul(lb, rr * phi.sin())),
-                        ));
-                        if !opaque.blocked(o, d, f32::MAX, near, far) {
-                            through += 1;
+                    let lit = if dot(s.n, light) > 0.0 {
+                        let mut through = 0;
+                        for i in 0..shadow_rays {
+                            let (u, v) = r2(part * shadow_rays + i, seed);
+                            let (rr, phi) = (u.sqrt() * LAMP, v * std::f32::consts::TAU);
+                            let d = unit(add(
+                                light,
+                                add(mul(lt, rr * phi.cos()), mul(lb, rr * phi.sin())),
+                            ));
+                            if !opaque.blocked(o, d, f32::MAX, near, far) {
+                                through += 1;
+                            }
+                        }
+                        1.0 - shadow_k * (1.0 - through as f32 / shadow_rays as f32)
+                    } else {
+                        1.0
+                    };
+
+                    let (t, b) = frame(s.n);
+                    let seed = hash(ox, oy, 1);
+                    let mut shut = 0;
+                    for i in 0..sky_rays {
+                        let (u, v) = r2(part * sky_rays + i, seed);
+                        let (rr, phi) = (u.sqrt(), v * std::f32::consts::TAU);
+                        let up = (1.0 - u).max(0.0).sqrt();
+                        let d = add(
+                            add(mul(t, rr * phi.cos()), mul(b, rr * phi.sin())),
+                            mul(s.n, up),
+                        );
+                        if opaque.blocked(o, d, reach, near, far) {
+                            shut += 1;
                         }
                     }
-                    1.0 - shadow_k * (1.0 - through as f32 / shadow_rays as f32)
-                } else {
-                    1.0
-                };
+                    let open = 1.0 - sky_k * shut as f32 / sky_rays as f32;
 
-                let (t, b) = frame(s.n);
-                let seed = hash(ox, oy, 1);
-                let mut shut = 0;
-                for i in 0..sky_rays {
-                    let (u, v) = r2(part * sky_rays + i, seed);
-                    let (rr, phi) = (u.sqrt(), v * std::f32::consts::TAU);
-                    let up = (1.0 - u).max(0.0).sqrt();
-                    let d = add(
-                        add(mul(t, rr * phi.cos()), mul(b, rr * phi.sin())),
-                        mul(s.n, up),
-                    );
-                    if opaque.blocked(o, d, reach, near, far) {
-                        shut += 1;
-                    }
+                    let c = render::shade_lit(s.n, s.base, style, lit, open);
+                    row[px * 3..px * 3 + 3].copy_from_slice(&c);
+                    zrow[px] = s.z;
                 }
-                let open = 1.0 - sky_k * shut as f32 / sky_rays as f32;
-
-                let c = render::shade_lit(s.n, s.base, style, lit, open);
-                row[px * 3..px * 3 + 3].copy_from_slice(&c);
-                zrow[px] = s.z;
-            }
-            if let Some(done) = control.done {
-                done.fetch_add(1, Ordering::Relaxed);
-            }
-        });
+                if let Some(done) = control.done {
+                    done.fetch_add(1, Ordering::Relaxed);
+                }
+            }),
+    }
     if cancelled() {
         return None;
     }
 
+    RATE.store(
+        (work(width, height) / started.elapsed().as_secs_f64().max(1e-6)) as u64,
+        Ordering::Relaxed,
+    );
     Some(Traced {
         width,
         height,
@@ -1011,6 +1291,88 @@ mod tests {
                 assert!(a.abs_diff(b) <= 12, "{style:?}: {a} against {b}");
             }
         }
+    }
+
+    /// The card traces the same picture as the CPU: every style, cartoon,
+    /// atoms and a surface, through a slab in perspective too. Its sines and
+    /// square roots differ from the CPU's in the last bits, which can turn a
+    /// shadow or sky ray at a grazing edge, so a few samples may differ by a
+    /// ray's worth; no more.
+    #[test]
+    fn gpu_traces_what_the_cpu_traces() {
+        if crate::gpu::get().is_none() {
+            eprintln!("no GPU here; skipped");
+            return;
+        }
+        let s = crate::formats::load_bytes(
+            "1crn.pdb.gz",
+            include_bytes!("../samples/1crn.pdb.gz").to_vec(),
+        )
+        .unwrap();
+        let page = [0.97, 0.96, 0.94];
+        for repr in [
+            Repr::Cartoon,
+            Repr::BallAndStick,
+            Repr::Spacefill,
+            Repr::Surface,
+        ] {
+            for style in Style::ALL {
+                for cut in [false, true] {
+                    let scene = build_scene(
+                        &s,
+                        repr,
+                        Coloring::Chain,
+                        1.0,
+                        style,
+                        Palette::Spectrum,
+                        false,
+                        false,
+                        &Appearance::default(),
+                    );
+                    let mut cam = Camera::frame(&s);
+                    cam.rotate(0.3, 0.2);
+                    if cut {
+                        cam.perspective = true;
+                        cam.slab = Some([0.4 * cam.radius, -0.3 * cam.radius]);
+                    }
+                    let (w, h) = (240, 180);
+                    let control = Control::default();
+                    let card = trace_on(&scene, &cam, w, h, style, &control, true)
+                        .unwrap()
+                        .develop(page);
+                    let cpu = trace_on(&scene, &cam, w, h, style, &control, false)
+                        .unwrap()
+                        .develop(page);
+                    let off = |by: u8| {
+                        card.bgra
+                            .chunks_exact(4)
+                            .zip(cpu.bgra.chunks_exact(4))
+                            .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > by))
+                            .count()
+                    };
+                    let (some, many) = (off(4), off(24));
+                    assert!(
+                        some * 100 < w * h && many * 1000 < w * h,
+                        "{repr:?} {style:?} cut {cut}: {some} pixels off by more than 4, {many} by more than 24"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_larger_picture_is_judged_to_take_longer_by_its_rays() {
+        // A view traced nine times over and a picture three times as wide
+        // traced once have as many samples, but the picture has every
+        // pixel's shadow and sky rays on each: several times the work.
+        let (view, big) = (work(1616, 1436), work(1616 * 3, 1436 * 3));
+        assert!(big > 5.0 * view, "{big} against {view}");
+        assert_eq!(
+            roughly(std::time::Duration::from_millis(400)),
+            "under a second"
+        );
+        assert_eq!(roughly(std::time::Duration::from_secs(42)), "42 s");
+        assert_eq!(roughly(std::time::Duration::from_secs(600)), "10 min");
     }
 
     #[test]

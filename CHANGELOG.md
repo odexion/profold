@@ -12,6 +12,16 @@
   and fog and all, and slabs, perspective and see-through atoms are traced as
   they are drawn. A protein at 1200 × 900 takes about a second. The console
   has `trace on|off`, and `save x.png` follows it.
+- **Ray tracing on the graphics card.** Traced pictures, the traced view
+  and traced films are traced by a compute shader where there is a card
+  that can (Metal, Vulkan, DirectX 12), the CPU otherwise: a retina window's
+  view in 0.6 s rather than 4.5, a picture at three times its size in 3.6 s
+  rather than 25, a 1080p film frame in 0.4 s rather than 2.2. The CPU
+  tracer is faster too, by a tree built for least cost (1.1–1.6×). The
+  pictures are the same, to the last bits of a few grazing rays.
+  Tracing stays off until asked for: *Image › Ray traced · slower* says so,
+  and once anything has been traced each picture size and the film dialog
+  say about how long it will take on this machine.
 - **Ray-traced films.** The film dialog's *Ray traced* switch, or
   `movie … trace=on`, traces every frame the same way.
 

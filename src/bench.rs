@@ -269,3 +269,209 @@ fn dump_bench() {
     }
     eprintln!("{op}: {:.2?}", t.elapsed());
 }
+
+/// The features that draw and read, at the sizes they meet:
+/// `cargo test --release features_bench -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn features_bench() {
+    use crate::render::{build_scene, Appearance, Camera, Coloring, Palette, Repr, Style};
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/dump.lammpstrj");
+    let dump =
+        crate::formats::load_path(std::path::Path::new(path)).expect("dump.lammpstrj in the root");
+    let hb = crate::formats::load_bytes(
+        "4hhb.pdb.gz",
+        include_bytes!("../samples/4hhb.pdb.gz").to_vec(),
+    )
+    .unwrap();
+    let page = [0.97, 0.96, 0.94];
+    let control = crate::trace::Control::default();
+
+    // Ray tracing: the still view of a retina window, and saved images.
+    for (name, s, repr) in [
+        ("haemoglobin cartoon", &hb, Repr::Cartoon),
+        ("dump spacefill", &dump, Repr::Spacefill),
+    ] {
+        let scene = build_scene(
+            s,
+            repr,
+            Coloring::Chain,
+            1.0,
+            Style::Studio,
+            Palette::Spectrum,
+            true,
+            true,
+            &Appearance::default(),
+        );
+        let cam = Camera::frame(s);
+        time(&format!("raster {name}, 1616×1436 (CPU)"), 3, || {
+            crate::render::render_cpu(&scene, &cam, 1616, 1436, page, Style::Studio);
+        });
+        for (label, w, h) in [
+            ("view 1616×1436", 1616, 1436),
+            ("image 2× 3232×2872", 3232, 2872),
+            ("image 3× 4848×4308", 4848, 4308),
+            ("film 1080p", 1920, 1080),
+        ] {
+            time(&format!("trace {name}, {label}"), 1, || {
+                crate::trace::render(&scene, &cam, w, h, page, Style::Studio, &control).unwrap();
+            });
+        }
+    }
+
+    // Labels drawn into a 4K frame.
+    let font = crate::movie::font().unwrap();
+    let cam = Camera::frame(&hb);
+    let labels: Vec<([f32; 3], String)> = hb
+        .atoms
+        .iter()
+        .step_by(hb.atoms.len() / 200)
+        .map(|a| (a.pos, "HIS 87:A".to_string()))
+        .collect();
+    let labels: Vec<([f32; 3], &str)> = labels.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    let mut pic = crate::movie::Picture {
+        width: 3840,
+        height: 2160,
+        rgba: vec![255; 3840 * 2160 * 4],
+    };
+    time(
+        &format!("{} labels into a 4K frame", labels.len()),
+        3,
+        || {
+            crate::movie::draw_labels(&mut pic, &font, &cam, &labels, 26.0, [0.0; 3], page);
+        },
+    );
+
+    // Volumes: reading a 200³ grid as cube text, as an MRC map, and as OpenDX.
+    let k = 200usize;
+    let value = |i: usize, j: usize, l: usize| {
+        ((i as f32 * 0.11).sin() + (j as f32 * 0.07).cos()) * (l as f32 - 100.0) / 100.0
+    };
+    let mut cube = format!(
+        "big\ntest\n    1 0 0 0\n   {k} 0.2 0 0\n   {k} 0 0.2 0\n   {k} 0 0 0.2\n    6 6.0 0 0 0\n"
+    );
+    let mut dx = format!("object 1 class gridpositions counts {k} {k} {k}\norigin 0 0 0\ndelta 0.1 0 0\ndelta 0 0.1 0\ndelta 0 0 0.1\nobject 3 class array type double rank 0 items {} data follows\n", k * k * k);
+    let mut mrc = vec![0u8; 1024];
+    for (o, v) in [
+        (0, k as i32),
+        (4, k as i32),
+        (8, k as i32),
+        (12, 2),
+        (28, k as i32),
+        (32, k as i32),
+        (36, k as i32),
+        (64, 1),
+        (68, 2),
+        (72, 3),
+    ] {
+        mrc[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    for (o, v) in [(40, 20.0f32), (44, 20.0), (48, 20.0)] {
+        mrc[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    for i in 0..k {
+        for j in 0..k {
+            for l in 0..k {
+                let v = value(i, j, l);
+                cube.push_str(&format!("{v:.5e} "));
+                dx.push_str(&format!("{v:.5e} "));
+            }
+            cube.push('\n');
+            dx.push('\n');
+        }
+    }
+    for l in 0..k {
+        for j in 0..k {
+            for i in 0..k {
+                mrc.extend(value(i, j, l).to_le_bytes());
+            }
+        }
+    }
+    eprintln!(
+        "  (cube text {} MB, MRC {} MB)",
+        cube.len() >> 20,
+        mrc.len() >> 20
+    );
+    time("read 200³ cube file", 1, || {
+        crate::formats::load_bytes("big.cube", cube.clone().into_bytes()).unwrap();
+    });
+    time("read 200³ OpenDX map", 1, || {
+        crate::volume::read_map("big.dx", dx.clone().into_bytes()).unwrap();
+    });
+    time("read 200³ MRC map", 3, || {
+        crate::volume::read_map("big.mrc", mrc.clone()).unwrap();
+    });
+
+    // Replicating the dump, every frame.
+    time("replicate dump 2×2×2 (801 frames)", 1, || {
+        crate::pbc::replicate(&dump, [2, 2, 2]).unwrap();
+    });
+}
+
+/// Ray tracing alone, for A/B tests of the tracer:
+/// `cargo test --release trace_bench -- --ignored --nocapture`. Writes the
+/// pictures to `PROFOLD_TRACE_OUT`, when set, to compare before and after.
+#[test]
+#[ignore]
+fn trace_bench() {
+    use crate::render::{build_scene, Appearance, Camera, Coloring, Palette, Repr, Style};
+    let hb = crate::formats::load_bytes(
+        "4hhb.pdb.gz",
+        include_bytes!("../samples/4hhb.pdb.gz").to_vec(),
+    )
+    .unwrap();
+    let denge =
+        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/data.denge")).expect("data.denge");
+    let sim = crate::formats::load_bytes("data.denge", denge).unwrap();
+    let out = std::env::var("PROFOLD_TRACE_OUT").ok();
+    for (name, s, repr) in [
+        ("haemoglobin-cartoon", &hb, Repr::Cartoon),
+        ("haemoglobin-spacefill", &hb, Repr::Spacefill),
+        ("haemoglobin-surface", &hb, Repr::Surface),
+        ("denge-spacefill", &sim, Repr::Spacefill),
+    ] {
+        let scene = build_scene(
+            s,
+            repr,
+            Coloring::Chain,
+            1.0,
+            Style::Studio,
+            Palette::Spectrum,
+            true,
+            true,
+            &Appearance::default(),
+        );
+        let mut cam = Camera::frame(s);
+        cam.rotate(0.3, 0.2);
+        let mut frame = None;
+        time(
+            &format!("trace {name}, 1616×1436 ({} prims)", scene.len()),
+            2,
+            || {
+                frame = crate::trace::render(
+                    &scene,
+                    &cam,
+                    1616,
+                    1436,
+                    [0.97, 0.96, 0.94],
+                    Style::Studio,
+                    &Default::default(),
+                );
+            },
+        );
+        if let (Some(dir), Some(f)) = (&out, frame) {
+            let mut rgba = f.bgra;
+            for p in rgba.chunks_exact_mut(4) {
+                p.swap(0, 2);
+            }
+            image::save_buffer(
+                format!("{dir}/{name}.png"),
+                &rgba,
+                1616,
+                1436,
+                image::ColorType::Rgba8,
+            )
+            .unwrap();
+        }
+    }
+}

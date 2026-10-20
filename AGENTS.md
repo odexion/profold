@@ -24,6 +24,7 @@ Notes for coding agents working on profold.
 - Rendering is wgpu (`src/gpu.rs`, `gpu.wgsl`), with a CPU fallback in `render.rs` (`PROFOLD_CPU=1`).
 - Measure in the app with `PROFOLD_SPIN=1 ./target/release/profold <file>`. Use `bench_gpu` for A/B tests and report before/after numbers.
 - `gpu_matches_cpu` must stay green, and the CPU fallback must stay bit-identical.
+- Ray tracing (`src/trace.rs`) runs on the card through a compute shader (`trace.wgsl`, driven from `gpu_trace.rs`), and on the CPU where the card can't. The shader follows the CPU loop step for step. `gpu_traces_what_the_cpu_traces` must stay green, and `PROFOLD_TRACE_CPU=1` keeps tracing on the CPU for A/B tests. Time it with `cargo test --release trace_bench -- --ignored --nocapture`, with `PROFOLD_TRACE_OUT=<dir>` to write the pictures out for comparing.
 - `data.denge` (LAMMPS, 42k atoms) is the benchmark file. `dump.lammpstrj` (43k atoms × 801 frames, 1.2 GB, gitignored) is the large trajectory.
 - Measure the other operations with `cargo test --release ops_bench -- --ignored --nocapture`, and one operation on the large dump with `PROFOLD_OP=<op> cargo test --release dump_bench -- --ignored --nocapture` (`src/bench.rs`). Run that under `/usr/bin/time -l` to get its peak memory.
 
