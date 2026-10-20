@@ -19,9 +19,9 @@
   rather than 25, a 1080p film frame in 0.4 s rather than 2.2. The CPU
   tracer is faster too, by a tree built for least cost (1.1–1.6×). The
   pictures are the same, to the last bits of a few grazing rays.
-  Tracing stays off until asked for: *Image › Ray traced · slower* says so,
-  and once anything has been traced each picture size and the film dialog
-  say about how long it will take on this machine.
+  Tracing stays off until asked for, and *Image › Ray traced · slower* says
+  what it costs; the film dialog says about how long a traced film will
+  take on this machine.
 - **Ray-traced films.** The film dialog's *Ray traced* switch, or
   `movie … trace=on`, traces every frame the same way.
 

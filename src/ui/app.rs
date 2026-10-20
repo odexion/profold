@@ -6173,7 +6173,6 @@ impl Viewer {
             this.transparent = !this.transparent;
             cx.notify();
         }));
-        let traced_on = self.traced;
         let traced = item("traced", "Ray traced · slower".into(), self.traced)
             .debug_selector(|| "traced".into())
             .tooltip(|_, cx| {
@@ -6186,7 +6185,7 @@ impl Viewer {
                 this.traced = !this.traced;
                 cx.notify();
             }));
-        menu(if traced_on { 290. } else { 200. })
+        menu(200.)
             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                 this.open = None;
                 cx.notify();
@@ -6194,17 +6193,7 @@ impl Viewer {
             .child(traced)
             .child(divide())
             .children([1usize, 2, 3].into_iter().map(move |scale| {
-                // Traced, how long it will be, as this machine last traced.
-                let size = match (traced_on, crate::trace::estimate(w * scale, h * scale)) {
-                    (true, Some(t)) => format!(
-                        "{} × {} · ≈ {}",
-                        w * scale,
-                        h * scale,
-                        crate::trace::roughly(t)
-                    ),
-                    (true, None) => format!("{} × {} · seconds", w * scale, h * scale),
-                    (false, _) => format!("{} × {}", w * scale, h * scale),
-                };
+                let size = format!("{} × {}", w * scale, h * scale);
                 div()
                     .id(("image", scale))
                     .flex()
