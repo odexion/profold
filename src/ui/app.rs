@@ -4654,8 +4654,10 @@ impl Viewer {
                 }
             } else if e.modifiers.shift {
                 // Shift-click: every residue from the one picked to this one,
-                // as in the sequence. A miss leaves the pick as it was.
-                if let Some(t) = target.filter(|t| t.which == 0) {
+                // as in the sequence. Only where a click picks residues, in
+                // Cartoon, Tube and Surface; on an atom, as on a miss, the
+                // pick stays as it was.
+                if let Some(t) = target.filter(|t| t.which == 0 && t.picked.residue) {
                     if let Some(s) = self.structure.as_ref() {
                         let residue = s.atoms[t.picked.atom].residue as usize;
                         self.select_seq_range(residue, cx);
@@ -11572,6 +11574,25 @@ mod ui_tests {
         cx.run_until_parked();
         let after = view.update(cx, |this, _| this.seq_run().map(|(_, lo, hi)| (lo, hi)));
         assert_eq!(after, Some((3, residue)));
+
+        // In Ball and stick a click picks an atom, not a residue, so a
+        // shift-click there makes no run and leaves the pick alone.
+        view.update(cx, |this, cx| this.set_repr(Repr::BallAndStick, cx));
+        cx.run_until_parked();
+        click(cx, "residue-5");
+        let at = front_atom(&view, cx);
+        let hit = view
+            .update(cx, |this, _| this.pick_at(at))
+            .expect("no atom in front");
+        assert!(!hit.picked.residue);
+        let other = view.update(cx, |this, _| {
+            this.structure.as_ref().unwrap().atoms[hit.picked.atom].residue
+        });
+        assert_ne!(other, 5, "the atom in front is of the residue picked");
+        cx.simulate_click(at, Modifiers::shift());
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.seq_run()), None);
+        assert_eq!(view.update(cx, |this, _| this.selected_residue()), Some(5));
     }
 
     fn atom_on_screen(
