@@ -434,6 +434,10 @@ enum Turn {
 /// Frames the camera takes to fly to something, at about sixty a second.
 const FLY_FRAMES: u32 = 20;
 
+/// How close Focus comes, against its usual framing: the choices the camera
+/// menu offers, as a label and a factor on the zoom.
+const FOCUS_ZOOMS: [(&str, f32); 4] = [("½×", 0.5), ("1×", 1.0), ("2×", 2.0), ("4×", 4.0)];
+
 /// Pointers that move further than this between press and release, in
 /// pixels, were dragging the view rather than clicking on it.
 const CLICK_SLOP: f32 = 3.0;
@@ -522,6 +526,8 @@ pub struct Viewer {
     momentum: bool,
     /// The orientation axes in the corner of the viewport.
     show_axes: bool,
+    /// How much closer than its usual framing Focus brings the camera.
+    focus_zoom: f32,
     /// Where the left button went down on the viewport, while that may yet
     /// turn out to be a click.
     press: Option<Point<Pixels>>,
@@ -568,7 +574,7 @@ pub struct Viewer {
     /// Whether what is opened next is laid over the structure shown rather
     /// than taking its place.
     overlay_next: bool,
-    /// The camera turning by itself, until the view is touched.
+    /// The camera turning by itself, until its button is pressed again.
     turning: Option<Turn>,
     turn_task: Option<Task<()>>,
     /// Images are saved with nothing behind the molecule.
@@ -842,6 +848,7 @@ impl Viewer {
             spin_task: None,
             momentum: settings.momentum,
             show_axes: settings.axes,
+            focus_zoom: settings.focus_zoom,
             press: None,
             hover: None,
             selected: None,
@@ -1696,7 +1703,11 @@ impl Viewer {
                 let e = t * t * (3.0 - 2.0 * t);
                 let going = this.update(cx, |this, cx| {
                     let c = &mut this.camera;
-                    c.orientation = start.turned(axis, angle * e);
+                    // Without a face to turn to, the angle is left to spinning
+                    // or rocking, which goes on through the flight.
+                    if face.is_some() {
+                        c.orientation = start.turned(axis, angle * e);
+                    }
                     c.center = [0, 1, 2].map(|i| from[i] + (centre[i] - from[i]) * e);
                     // Zoom is a ratio, so it is eased as one.
                     c.zoom = zoom0 * (zoom1 / zoom0).powf(e);
@@ -1757,7 +1768,14 @@ impl Viewer {
             vec![t.picked.atom]
         };
         let (centre, reach) = spread(atoms.iter().map(|&i| s.atoms[i].pos));
-        self.fly_to(centre, reach * 2.0 + 10.0, None, cx);
+        self.fly_to(centre, self.focus_extent(reach, 10.0), None, cx);
+    }
+
+    /// The width Focus frames round something `reach` ångström from its
+    /// middle: a `margin` either side at the usual zoom, less as it comes
+    /// closer.
+    pub(crate) fn focus_extent(&self, reach: f32, margin: f32) -> f32 {
+        (reach * 2.0 + margin) / self.focus_zoom
     }
 
     /// Look at a ligand's binding site: its side chains drawn, each named,
@@ -2520,6 +2538,7 @@ impl Viewer {
         let json = Settings {
             momentum: self.momentum,
             axes: self.show_axes,
+            focus_zoom: self.focus_zoom,
             style: self.style,
             palette: self.palette,
             standard_colors: self.standard_colors,
@@ -4488,12 +4507,13 @@ impl Viewer {
 
     fn toggle_turn(&mut self, turn: Turn, cx: &mut Context<Self>) {
         self.open = None;
+        self.halt();
+        self.turn_task = None;
         if self.turning == Some(turn) {
-            self.halt();
+            self.turning = None;
             cx.notify();
             return;
         }
-        self.halt();
         self.turning = Some(turn);
         let start = std::time::Instant::now();
         self.turn_task = Some(cx.spawn(async move |this, cx| {
@@ -4552,12 +4572,13 @@ impl Viewer {
         }));
     }
 
+    /// Stop what the camera was thrown or flown into. Spinning or rocking
+    /// goes on, under whatever else moves the view, until its own button
+    /// stops it.
     fn halt(&mut self) {
         self.spin = None;
         self.spin_task = None;
         self.fly_task = None;
-        self.turning = None;
-        self.turn_task = None;
         self.last_step = [0.0; 2];
     }
 
@@ -5417,6 +5438,17 @@ impl Viewer {
             })
             .child(div().flex_1())
             .children(self.recording_badge(cx))
+            .when(loaded, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .mr(px(14.))
+                        .child(self.turn_button(Turn::Spin, cx))
+                        .child(self.turn_button(Turn::Rock, cx)),
+                )
+            })
             .when(loaded && !self.narrow, |d| d.child(self.angle_readout(cx)))
             .when_some(badge.filter(|_| !self.narrow), |d, badge| {
                 d.child(
@@ -5427,6 +5459,37 @@ impl Viewer {
                         .child(badge),
                 )
             })
+    }
+
+    /// A button in the bar that sets the camera spinning or rocking, drawn
+    /// as a ribbon going round, or swinging to and fro, pressed in while
+    /// it goes on.
+    fn turn_button(&self, turn: Turn, cx: &mut Context<Self>) -> impl IntoElement {
+        let on = self.turning == Some(turn);
+        let (id, tip, icon) = match turn {
+            Turn::Spin => ("spin", "Spin", "icons/spin.svg"),
+            Turn::Rock => ("rock", "Rock", "icons/rock.svg"),
+        };
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .on_mouse_down(MouseButton::Left, swallow)
+            .p(px(3.))
+            .rounded(px(5.))
+            .group(id)
+            .cursor_pointer()
+            .when(on, |d| d.bg(theme::sunken()))
+            .when(!on, |d| d.hover(|s| s.bg(theme::sunken())))
+            .tooltip(move |_, cx| cx.new(|_| Tip(tip.into())).into())
+            .child(
+                gpui::svg()
+                    .path(icon)
+                    .w(px(18.))
+                    .h(px(11.25))
+                    .text_color(if on { theme::ink() } else { theme::muted() })
+                    .when(!on, |d| d.group_hover(id, |s| s.text_color(theme::text()))),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_turn(turn, cx)))
     }
 
     /// How far the view is turned about each axis from square on, and how
@@ -6171,16 +6234,6 @@ impl Viewer {
                     },
                 )),
             )
-            .child(
-                item("spin", "Spin".into(), self.turning == Some(Turn::Spin))
-                    .debug_selector(|| "spin".into())
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_turn(Turn::Spin, cx))),
-            )
-            .child(
-                item("rock", "Rock".into(), self.turning == Some(Turn::Rock))
-                    .debug_selector(|| "rock".into())
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_turn(Turn::Rock, cx))),
-            )
             .child(divide())
             .child(
                 item("axes", "Orientation axes".into(), self.show_axes)
@@ -6234,6 +6287,7 @@ impl Viewer {
                 item("recentre", "Centre".into(), false)
                     .on_click(cx.listener(|this, _, _, cx| this.recentre(cx))),
             )
+            .child(self.focus_zooms(cx))
             .when(self.selected.is_some(), |d| {
                 d.child(
                     item("focus-menu", "Focus on the pick".into(), false)
@@ -6248,6 +6302,52 @@ impl Viewer {
                 item("reset-view", "Reset view".into(), false)
                     .debug_selector(|| "reset-view".into())
                     .on_click(cx.listener(|this, _, _, cx| this.reset_view(cx))),
+            )
+    }
+
+    /// A line of the camera menu: how close Focus comes, one of a few.
+    fn focus_zooms(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let chosen = self.focus_zoom;
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(6.))
+            .pl(px(8.))
+            .pr(px(3.))
+            .py(px(2.))
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(theme::text())
+                    .child("Focus zoom"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(2.))
+                    .children(FOCUS_ZOOMS.iter().map(|&(label, factor)| {
+                        let on = chosen == factor;
+                        div()
+                            .id(label)
+                            .debug_selector(move || format!("focus-zoom-{factor}"))
+                            .px(px(5.))
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .text_size(px(10.5))
+                            .cursor_pointer()
+                            .when(on, |d| d.bg(theme::sunken()).text_color(theme::ink()))
+                            .when(!on, |d| {
+                                d.text_color(theme::muted())
+                                    .hover(|s| s.bg(theme::sunken()).text_color(theme::ink()))
+                            })
+                            .child(label)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.focus_zoom = factor;
+                                this.persist();
+                                cx.notify();
+                            }))
+                    })),
             )
     }
 
@@ -11298,6 +11398,107 @@ mod ui_tests {
     }
 
     #[gpui::test]
+    fn focus_comes_as_close_as_chosen_and_keeps_rocking(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        click(cx, "tab-camera");
+        click(cx, "focus-zoom-2");
+        assert_eq!(view.update(cx, |this, _| this.focus_zoom), 2.0);
+        click(cx, "rock");
+        cx.executor().advance_clock(Duration::from_millis(300));
+        cx.run_until_parked();
+        let at = front_atom(&view, cx);
+        cx.simulate_click(at, Modifiers::secondary_key());
+        cx.executor().advance_clock(Duration::from_millis(1500));
+        cx.run_until_parked();
+        let (picked, centre, zoom, radius, turning) = view.update(cx, |this, _| {
+            let t = this.selected.expect("nothing picked");
+            (
+                this.structure.as_ref().unwrap().atoms[t.picked.atom].pos,
+                this.camera.center,
+                this.camera.zoom,
+                this.camera.radius,
+                this.turning,
+            )
+        });
+        assert_eq!(turning, Some(Turn::Rock), "focusing stopped the rocking");
+        let off = (0..3)
+            .map(|i| (centre[i] - picked[i]).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        assert!(off < 0.5, "the view is {off} Å from the atom");
+        // An atom is framed 10 Å across at 1×, so 5 Å at 2×.
+        let want = (radius / 5.0).clamp(0.12, 24.0);
+        assert!((zoom - want).abs() < 1e-3 * want, "zoom {zoom}, not {want}");
+        let angle = view.update(cx, |this, _| this.camera.orientation);
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert_ne!(view.update(cx, |this, _| this.camera.orientation), angle);
+
+        // From the console too, with the same zoom.
+        view.update(cx, |this, cx| this.run_command("focus all", cx))
+            .unwrap();
+        cx.executor().advance_clock(Duration::from_millis(1500));
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Rock));
+        let (zoom, reach) = view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            (this.camera.zoom, spread(s.atoms.iter().map(|a| a.pos)).1)
+        });
+        let want = (radius / ((reach * 2.0 + 8.0) / 2.0)).clamp(0.12, 24.0);
+        assert!((zoom - want).abs() < 1e-3 * want, "zoom {zoom}, not {want}");
+
+        // Zooming with the wheel or trackpad, and panning, leave it rocking.
+        let middle = view.update(cx, |this, _| this.cache.borrow().bounds.center());
+        let zoom = view.update(cx, |this, _| this.camera.zoom);
+        cx.simulate_event(ScrollWheelEvent {
+            position: middle,
+            delta: ScrollDelta::Pixels(gpui::point(px(0.), px(-60.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        assert!(view.update(cx, |this, _| this.camera.zoom) < zoom);
+        assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Rock));
+        let pan = view.update(cx, |this, _| this.camera.pan);
+        let shift = Modifiers::shift();
+        cx.simulate_mouse_down(middle, MouseButton::Left, shift);
+        cx.simulate_mouse_move(
+            middle + gpui::point(px(30.), px(0.)),
+            Some(MouseButton::Left),
+            shift,
+        );
+        cx.simulate_mouse_up(
+            middle + gpui::point(px(30.), px(0.)),
+            MouseButton::Left,
+            shift,
+        );
+        cx.run_until_parked();
+        assert_ne!(view.update(cx, |this, _| this.camera.pan), pan);
+        assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Rock));
+        let angle = view.update(cx, |this, _| this.camera.orientation);
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert_ne!(view.update(cx, |this, _| this.camera.orientation), angle);
+
+        // Nor does a ⌘-drag, which rolls the view by hand: the rocking goes
+        // on under it, until its own button stops it.
+        cx.simulate_mouse_down(middle, MouseButton::Left, Modifiers::secondary_key());
+        cx.simulate_mouse_move(
+            middle + gpui::point(px(40.), px(30.)),
+            Some(MouseButton::Left),
+            Modifiers::secondary_key(),
+        );
+        cx.simulate_mouse_up(
+            middle + gpui::point(px(40.), px(30.)),
+            MouseButton::Left,
+            Modifiers::secondary_key(),
+        );
+        cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Rock));
+        click(cx, "rock");
+        assert_eq!(view.update(cx, |this, _| this.turning), None);
+    }
+
+    #[gpui::test]
     fn clicking_an_axis_looks_down_it_and_the_axes_can_be_hidden(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
         click(cx, "axis-y");
@@ -12192,38 +12393,65 @@ mod ui_tests {
     }
 
     #[gpui::test]
-    fn the_camera_spins_and_rocks_until_touched(cx: &mut TestAppContext) {
+    fn the_camera_spins_and_rocks_until_its_button_stops_it(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
         let angle = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
             view.update(cx, |this, _| this.camera.angles()[1])
         };
         let start = angle(&view, cx);
-        click(cx, "tab-camera");
         click(cx, "spin");
         assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Spin));
         cx.executor().advance_clock(Duration::from_millis(700));
         cx.run_until_parked();
         let turned = angle(&view, cx);
         assert!((turned - start).abs() > 5.0, "{start} to {turned}");
-        // A press on the view stops it.
+        // Nothing done to the view stops it: a click, a drag that turns it,
+        // a double-click that frames it again.
         let middle = view.update(cx, |this, _| this.cache.borrow().bounds.center());
         cx.simulate_mouse_down(middle, MouseButton::Left, Modifiers::none());
         cx.simulate_mouse_up(middle, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_down(middle, MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(
+            middle + gpui::point(px(50.), px(10.)),
+            Some(MouseButton::Left),
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            middle + gpui::point(px(50.), px(10.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_click(middle, Modifiers::none());
+        cx.simulate_event(MouseDownEvent {
+            position: middle,
+            button: MouseButton::Left,
+            modifiers: Modifiers::none(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_mouse_up(middle, MouseButton::Left, Modifiers::none());
         cx.run_until_parked();
+        assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Spin));
+        let going = angle(&view, cx);
+        cx.executor().advance_clock(Duration::from_millis(500));
+        cx.run_until_parked();
+        assert_ne!(angle(&view, cx), going);
+        // Its button again does.
+        click(cx, "spin");
         assert_eq!(view.update(cx, |this, _| this.turning), None);
         let still = angle(&view, cx);
         cx.executor().advance_clock(Duration::from_millis(500));
         cx.run_until_parked();
         assert_eq!(angle(&view, cx), still);
 
-        click(cx, "tab-camera");
         click(cx, "rock");
         cx.executor().advance_clock(Duration::from_millis(1500));
         cx.run_until_parked();
         assert_ne!(angle(&view, cx), still);
-        // The same again stops it.
-        click(cx, "tab-camera");
-        click(cx, "rock");
+        // Spin while rocking turns the one into the other.
+        click(cx, "spin");
+        assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Spin));
+        click(cx, "spin");
         assert_eq!(view.update(cx, |this, _| this.turning), None);
 
         click(cx, "tab-image");

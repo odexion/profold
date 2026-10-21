@@ -195,6 +195,25 @@ pub fn add_fonts(cx: &mut gpui::App) {
     }
 }
 
+/// The icons the app carries, drawn by `svg()` in the colour of the text
+/// around them.
+pub struct Icons;
+
+impl gpui::AssetSource for Icons {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        let bytes: &'static [u8] = match path {
+            "icons/spin.svg" => include_bytes!("../assets/icons/spin.svg"),
+            "icons/rock.svg" => include_bytes!("../assets/icons/rock.svg"),
+            _ => return Ok(None),
+        };
+        Ok(Some(std::borrow::Cow::Borrowed(bytes)))
+    }
+
+    fn list(&self, _: &str) -> gpui::Result<Vec<gpui::SharedString>> {
+        Ok(vec!["icons/spin.svg".into(), "icons/rock.svg".into()])
+    }
+}
+
 /// A shortcut as this system writes it: `⇧⌘T` on a Mac, `Ctrl+Shift+T`
 /// elsewhere. Written the Mac way, with ⇧ before ⌘.
 pub fn keys(mac: &str) -> String {

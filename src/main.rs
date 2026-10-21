@@ -57,128 +57,130 @@ fn main() {
     // Setting up the graphics card takes a moment; do it while the window
     // opens rather than on the first frame.
     std::thread::spawn(|| gpu::get());
-    Application::new().run(|cx: &mut App| {
-        #[cfg(target_os = "macos")]
-        set_dock_icon();
-        theme::add_fonts(cx);
-        ui::input::bind_keys(cx);
-        ui::workspace::bind_keys(cx);
-        // Closing the window quits, except on a Mac, where the app stays in
-        // the Dock as Mac apps do.
-        #[cfg(not(target_os = "macos"))]
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        cx.set_menus(ui::workspace::menus());
+    Application::new()
+        .with_assets(theme::Icons)
+        .run(|cx: &mut App| {
+            #[cfg(target_os = "macos")]
+            set_dock_icon();
+            theme::add_fonts(cx);
+            ui::input::bind_keys(cx);
+            ui::workspace::bind_keys(cx);
+            // Closing the window quits, except on a Mac, where the app stays in
+            // the Dock as Mac apps do.
+            #[cfg(not(target_os = "macos"))]
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            cx.set_menus(ui::workspace::menus());
 
-        // With the panel under the view, the window opens phone-shaped.
-        let window_size = if settings::Settings::load().vertical {
-            let screen = cx
-                .primary_display()
-                .map(|d| f32::from(d.bounds().size.height))
-                .unwrap_or(900.);
-            let height = (screen - 120.).clamp(600., 900.);
-            size(px(ui::workspace::phone_width(height)), px(height))
-        } else {
-            size(px(1180.), px(760.))
-        };
-        let bounds = Bounds::centered(None, window_size, cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("profold".into()),
-                    appears_transparent: true,
-                    traffic_light_position: Some(point(px(16.), px(15.))),
-                }),
-                // Linux asks the compositor for its own title bar; where it
-                // has none to give (GNOME on Wayland), the tab bar draws the
-                // window's buttons itself.
-                #[cfg(target_os = "linux")]
-                window_decorations: Some(gpui::WindowDecorations::Server),
-                app_id: Some("dev.profold".into()),
-                focus: true,
-                ..Default::default()
-            },
-            |window, cx| {
-                let view = cx.new(|cx| ui::workspace::Workspace::new(window, cx));
-                // `profold 1CRN` or `profold traj.xyz` opens with that
-                // loaded, and each further argument in a tab of its own. With
-                // the SimpleFold plugin, `--fold` predicts an entry in a fold
-                // tab instead of fetching it, and `--compare` does both and
-                // lays one over the other.
-                let mut args: Vec<String> = std::env::args().skip(1).collect();
-                // `--run script.txt` runs a script of console commands in the
-                // first tab, once what it opens has opened.
-                let script = args.iter().position(|a| a == "--run").map(|i| {
-                    let file = args.get(i + 1).cloned().unwrap_or_default();
-                    args.drain(i..(i + 2).min(args.len()));
-                    std::fs::read_to_string(&file)
-                        .map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
-                        .unwrap_or_else(|e| vec![format!("# could not read {file}: {e}")])
-                });
-                let verb = args.first().filter(|a| a.starts_with("--")).cloned();
-                let targets = &args[usize::from(verb.is_some())..];
-                view.update(cx, |this, cx| {
-                    // `--fold` alone opens an empty fold tab.
-                    #[cfg(feature = "simplefold")]
-                    if verb.as_deref() == Some("--fold") && targets.is_empty() {
-                        this.add(ui::app::Mode::Fold, window, cx);
-                    }
-                    // With nothing named, the tabs of last time come back.
-                    if targets.is_empty() && verb.is_none() {
-                        this.restore(window, cx);
-                    }
-                    for (n, target) in targets.iter().enumerate() {
-                        let path = std::path::PathBuf::from(target);
-                        match verb.as_deref() {
-                            #[cfg(feature = "simplefold")]
-                            Some("--compare") | Some("--fold") => {
-                                let tab = this.add(ui::app::Mode::Fold, window, cx);
-                                let compare = verb.as_deref() == Some("--compare");
-                                tab.update(cx, |tab, cx| {
-                                    if compare {
-                                        tab.open_comparison(target, cx)
+            // With the panel under the view, the window opens phone-shaped.
+            let window_size = if settings::Settings::load().vertical {
+                let screen = cx
+                    .primary_display()
+                    .map(|d| f32::from(d.bounds().size.height))
+                    .unwrap_or(900.);
+                let height = (screen - 120.).clamp(600., 900.);
+                size(px(ui::workspace::phone_width(height)), px(height))
+            } else {
+                size(px(1180.), px(760.))
+            };
+            let bounds = Bounds::centered(None, window_size, cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("profold".into()),
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(px(16.), px(15.))),
+                    }),
+                    // Linux asks the compositor for its own title bar; where it
+                    // has none to give (GNOME on Wayland), the tab bar draws the
+                    // window's buttons itself.
+                    #[cfg(target_os = "linux")]
+                    window_decorations: Some(gpui::WindowDecorations::Server),
+                    app_id: Some("dev.profold".into()),
+                    focus: true,
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let view = cx.new(|cx| ui::workspace::Workspace::new(window, cx));
+                    // `profold 1CRN` or `profold traj.xyz` opens with that
+                    // loaded, and each further argument in a tab of its own. With
+                    // the SimpleFold plugin, `--fold` predicts an entry in a fold
+                    // tab instead of fetching it, and `--compare` does both and
+                    // lays one over the other.
+                    let mut args: Vec<String> = std::env::args().skip(1).collect();
+                    // `--run script.txt` runs a script of console commands in the
+                    // first tab, once what it opens has opened.
+                    let script = args.iter().position(|a| a == "--run").map(|i| {
+                        let file = args.get(i + 1).cloned().unwrap_or_default();
+                        args.drain(i..(i + 2).min(args.len()));
+                        std::fs::read_to_string(&file)
+                            .map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
+                            .unwrap_or_else(|e| vec![format!("# could not read {file}: {e}")])
+                    });
+                    let verb = args.first().filter(|a| a.starts_with("--")).cloned();
+                    let targets = &args[usize::from(verb.is_some())..];
+                    view.update(cx, |this, cx| {
+                        // `--fold` alone opens an empty fold tab.
+                        #[cfg(feature = "simplefold")]
+                        if verb.as_deref() == Some("--fold") && targets.is_empty() {
+                            this.add(ui::app::Mode::Fold, window, cx);
+                        }
+                        // With nothing named, the tabs of last time come back.
+                        if targets.is_empty() && verb.is_none() {
+                            this.restore(window, cx);
+                        }
+                        for (n, target) in targets.iter().enumerate() {
+                            let path = std::path::PathBuf::from(target);
+                            match verb.as_deref() {
+                                #[cfg(feature = "simplefold")]
+                                Some("--compare") | Some("--fold") => {
+                                    let tab = this.add(ui::app::Mode::Fold, window, cx);
+                                    let compare = verb.as_deref() == Some("--compare");
+                                    tab.update(cx, |tab, cx| {
+                                        if compare {
+                                            tab.open_comparison(target, cx)
+                                        } else {
+                                            tab.open_fold(target, cx)
+                                        }
+                                    });
+                                }
+                                _ => {
+                                    let tab = if n == 0 {
+                                        this.active()
                                     } else {
-                                        tab.open_fold(target, cx)
-                                    }
-                                });
-                            }
-                            _ => {
-                                let tab = if n == 0 {
-                                    this.active()
-                                } else {
-                                    this.add(ui::app::Mode::View, window, cx)
-                                };
-                                tab.update(cx, |tab, cx| {
-                                    if path.is_file() {
-                                        tab.open_path(path, cx)
-                                    } else {
-                                        tab.open(target, cx)
-                                    }
-                                });
+                                        this.add(ui::app::Mode::View, window, cx)
+                                    };
+                                    tab.update(cx, |tab, cx| {
+                                        if path.is_file() {
+                                            tab.open_path(path, cx)
+                                        } else {
+                                            tab.open(target, cx)
+                                        }
+                                    });
+                                }
                             }
                         }
-                    }
-                    if let Some(lines) = script {
-                        this.active()
-                            .update(cx, |tab, cx| tab.queue_script(lines, cx));
-                    }
-                    // `PROFOLD_TYPE=caffeine` types into the field without
-                    // pressing Return, for looking at the search results.
-                    if let Ok(text) = std::env::var("PROFOLD_TYPE") {
-                        this.active().update(cx, |tab, cx| tab.type_text(&text, cx));
-                    }
-                });
-                view
-            },
-        )
-        .unwrap();
-        cx.activate(true);
-    });
+                        if let Some(lines) = script {
+                            this.active()
+                                .update(cx, |tab, cx| tab.queue_script(lines, cx));
+                        }
+                        // `PROFOLD_TYPE=caffeine` types into the field without
+                        // pressing Return, for looking at the search results.
+                        if let Ok(text) = std::env::var("PROFOLD_TYPE") {
+                            this.active().update(cx, |tab, cx| tab.type_text(&text, cx));
+                        }
+                    });
+                    view
+                },
+            )
+            .unwrap();
+            cx.activate(true);
+        });
 }
 
 /// Puts the logo in the Dock. A bundled build gets it from Info.plist; this

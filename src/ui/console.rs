@@ -284,7 +284,7 @@ impl Viewer {
                     bail!("\"{rest}\" matches no atoms");
                 }
                 let (centre, reach) = spread(points.iter().copied());
-                self.fly_to(centre, reach * 2.0 + 8.0, None, cx);
+                self.fly_to(centre, self.focus_extent(reach, 8.0), None, cx);
                 format!("{} atoms in view", points.len())
             }
             "site" => {

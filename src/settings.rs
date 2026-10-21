@@ -17,6 +17,8 @@ pub struct Settings {
     pub momentum: bool,
     /// The orientation axes in the corner of the viewport.
     pub axes: bool,
+    /// How much closer than its usual framing Focus brings the camera.
+    pub focus_zoom: f32,
     pub style: Style,
     pub palette: Palette,
     /// Elements in their standard colours rather than the palette's. Only
@@ -37,6 +39,7 @@ impl Default for Settings {
         Settings {
             momentum: true,
             axes: true,
+            focus_zoom: 1.0,
             style: Style::Illustrative,
             palette: Palette::Spectrum,
             standard_colors: true,
@@ -155,6 +158,9 @@ impl Settings {
             "element_colours": if self.standard_colors { "standard" } else { "palette" },
             "atoms": looks,
         });
+        if self.focus_zoom != 1.0 {
+            v["focus_zoom"] = json!(self.focus_zoom);
+        }
         if self.dark {
             v["theme"] = json!("dark");
         }
@@ -181,6 +187,11 @@ impl Settings {
         if let Some(name) = v.get("style").and_then(Value::as_str) {
             if let Some(st) = Style::ALL.iter().find(|st| st.label() == name) {
                 s.style = *st;
+            }
+        }
+        if let Some(z) = v.get("focus_zoom").and_then(Value::as_f64) {
+            if z > 0.0 && z.is_finite() {
+                s.focus_zoom = z as f32;
             }
         }
         s.dark = v.get("theme").and_then(Value::as_str) == Some("dark");
@@ -374,6 +385,7 @@ mod tests {
             standard_colors: false,
             vertical: true,
             band_height: 420.0,
+            focus_zoom: 4.0,
             ..Settings::default()
         };
         s.appearance.set(
@@ -400,6 +412,7 @@ mod tests {
         assert!(!back.standard_colors);
         assert!(back.vertical);
         assert_eq!(back.band_height, 420.0);
+        assert_eq!(back.focus_zoom, 4.0);
         assert_eq!(back.appearance.get(&Species::Kind("2".into())).alpha, 0.25);
     }
 
