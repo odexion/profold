@@ -15,6 +15,8 @@ use crate::render::{Appearance, Look, Palette, Species, Style};
 #[derive(Clone)]
 pub struct Settings {
     pub momentum: bool,
+    /// The orientation axes in the corner of the viewport.
+    pub axes: bool,
     pub style: Style,
     pub palette: Palette,
     /// Elements in their standard colours rather than the palette's. Only
@@ -34,6 +36,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             momentum: true,
+            axes: true,
             style: Style::Illustrative,
             palette: Palette::Spectrum,
             standard_colors: true,
@@ -146,6 +149,7 @@ impl Settings {
         };
         let mut v = json!({
             "momentum": self.momentum,
+            "axes": self.axes,
             "style": self.style.label(),
             "palette": self.palette.label(),
             "element_colours": if self.standard_colors { "standard" } else { "palette" },
@@ -170,6 +174,9 @@ impl Settings {
         let mut s = Settings::default();
         if let Some(m) = v.get("momentum").and_then(Value::as_bool) {
             s.momentum = m;
+        }
+        if let Some(a) = v.get("axes").and_then(Value::as_bool) {
+            s.axes = a;
         }
         if let Some(name) = v.get("style").and_then(Value::as_str) {
             if let Some(st) = Style::ALL.iter().find(|st| st.label() == name) {

@@ -44,6 +44,7 @@ use crate::samples::SAMPLES;
 use crate::search::{self, Hit, Kind};
 use crate::settings::{self, Settings};
 use crate::theme;
+use crate::ui::gizmo;
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::viewer;
 
@@ -519,6 +520,8 @@ pub struct Viewer {
     spin: Option<[f32; 2]>,
     spin_task: Option<Task<()>>,
     momentum: bool,
+    /// The orientation axes in the corner of the viewport.
+    show_axes: bool,
     /// Where the left button went down on the viewport, while that may yet
     /// turn out to be a click.
     press: Option<Point<Pixels>>,
@@ -838,6 +841,7 @@ impl Viewer {
             spin: None,
             spin_task: None,
             momentum: settings.momentum,
+            show_axes: settings.axes,
             press: None,
             hover: None,
             selected: None,
@@ -2515,6 +2519,7 @@ impl Viewer {
     fn persist(&mut self) {
         let json = Settings {
             momentum: self.momentum,
+            axes: self.show_axes,
             style: self.style,
             palette: self.palette,
             standard_colors: self.standard_colors,
@@ -4254,6 +4259,27 @@ impl Viewer {
         cx.notify();
     }
 
+    /// The structure's axes, over the controls along the foot at the right,
+    /// turning with it, so it is plain which way is towards the eye. A click
+    /// on an axis looks down it from its positive end, and with the command
+    /// key (control off the Mac) from its negative end.
+    fn axes(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if !self.show_axes || self.structure.is_none() || self.visible().is_empty() {
+            return None;
+        }
+        let axes = gizmo::view(
+            self.camera.orientation,
+            cx.listener(|this, &(axis, positive): &(usize, bool), _, cx| {
+                let view = Camera {
+                    orientation: gizmo::facing(axis, positive),
+                    ..this.camera
+                };
+                this.fly_to_view(view, cx);
+            }),
+        );
+        Some(div().child(axes).into_any_element())
+    }
+
     /// The slab's place in the structure: a gauge at the right of the
     /// viewport, the structure's depth along it and the slab a band on it,
     /// with how to move it.
@@ -5603,16 +5629,30 @@ impl Viewer {
 
         // A row of groups across the viewport, centred. Clicks on it are
         // its own: the viewport underneath would take them as a drag.
-        let bar = || {
+        let row = || {
             div()
-                .absolute()
-                .left(px(16.))
-                .right(px(16.))
                 .flex()
                 .flex_wrap()
                 .justify_center()
                 .gap(px(8.))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        };
+        let bar = || row().absolute().left(px(16.)).right(px(16.));
+        // The row along the foot with the orientation axes over it at the
+        // right, which so keep clear of it however many lines it wraps onto.
+        let axes = self.axes(cx);
+        let below = move |foot: gpui::Div| {
+            div()
+                .absolute()
+                .bottom(px(bottom))
+                .left(px(16.))
+                .right(px(16.))
+                .flex()
+                .flex_col()
+                .items_end()
+                .gap(px(6.))
+                .children(axes)
+                .child(foot.w_full())
         };
 
         // In a viewport as narrow as a phone the rows will not fit across,
@@ -5705,8 +5745,8 @@ impl Viewer {
                         }))
                         .into_any_element()]))
                 });
-            let bottom = bar()
-                .bottom(px(bottom))
+            let bottom = row()
+                .debug_selector(|| "bottom-controls".into())
                 .child(self.palette_button(cx))
                 .child(self.choice(
                     Dropdown::Coloring,
@@ -5716,7 +5756,7 @@ impl Viewer {
                     colourings,
                     cx,
                 ));
-            return vec![top.into_any_element(), bottom.into_any_element()];
+            return vec![top.into_any_element(), below(bottom).into_any_element()];
         }
 
         // Up top, how it is drawn; at the foot, what it is coloured by
@@ -5766,8 +5806,8 @@ impl Viewer {
                     .into_any_element()]))
             });
 
-        let bottom = bar()
-            .bottom(px(bottom))
+        let bottom = row()
+            .debug_selector(|| "bottom-controls".into())
             .child(self.palette_button(cx))
             .child(group(
                 options
@@ -5797,7 +5837,7 @@ impl Viewer {
                     .collect(),
             ));
 
-        vec![top.into_any_element(), bottom.into_any_element()]
+        vec![top.into_any_element(), below(bottom).into_any_element()]
     }
 
     /// A choice made from a menu: a button naming what is chosen, the size
@@ -6142,6 +6182,15 @@ impl Viewer {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_turn(Turn::Rock, cx))),
             )
             .child(divide())
+            .child(
+                item("axes", "Orientation axes".into(), self.show_axes)
+                    .debug_selector(|| "axes-toggle".into())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_axes = !this.show_axes;
+                        this.persist();
+                        cx.notify();
+                    })),
+            )
             .child(
                 item("perspective", "Perspective".into(), self.camera.perspective)
                     .debug_selector(|| "perspective".into())
@@ -11086,6 +11135,58 @@ mod ui_tests {
         cx.simulate_click(at, Modifiers::secondary_key());
         cx.run_until_parked();
         assert!(view.update(cx, |this, _| this.selected.is_some()));
+    }
+
+    #[gpui::test]
+    fn clicking_an_axis_looks_down_it_and_the_axes_can_be_hidden(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        click(cx, "axis-y");
+        cx.executor().advance_clock(Duration::from_millis(1500));
+        cx.run_until_parked();
+        let orientation = view.update(cx, |this, _| this.camera.orientation);
+        assert_eq!(orientation, gizmo::facing(1, true));
+
+        // With the command key, or control, from the other end.
+        for held in [Modifiers::secondary_key(), Modifiers::control()] {
+            view.update(cx, |this, _| this.camera.orientation = Camera::home());
+            cx.run_until_parked();
+            let at = cx.debug_bounds("axis-x").expect("no x axis").center();
+            cx.simulate_click(at, held);
+            cx.executor().advance_clock(Duration::from_millis(1500));
+            cx.run_until_parked();
+            let orientation = view.update(cx, |this, _| this.camera.orientation);
+            assert_eq!(orientation, gizmo::facing(0, false));
+        }
+
+        // The test window keeps the bounds of whatever it once drew, so ask
+        // the viewer rather than the window.
+        let hidden = view.update(cx, |this, cx| {
+            this.show_axes = false;
+            this.axes(cx).is_none()
+        });
+        assert!(hidden);
+    }
+
+    #[gpui::test]
+    fn the_axes_keep_clear_of_the_controls_at_any_width(cx: &mut TestAppContext) {
+        let (_, cx) = open(cx);
+        // Wide, with the rows on one line each, then narrow enough to wrap
+        // them, then a phone's width.
+        for width in [1600., 1150., 860., 400.] {
+            cx.simulate_resize(gpui::size(px(width), px(820.)));
+            cx.run_until_parked();
+            let top = cx.debug_bounds("top-controls").expect("no controls");
+            let foot = cx.debug_bounds("bottom-controls").expect("no controls");
+            let axes = cx.debug_bounds("axes").expect("no axes");
+            assert!(
+                axes.bottom() <= foot.top() && axes.top() >= top.bottom(),
+                "at {width} the axes at {axes:?} run into the controls"
+            );
+            assert!(
+                axes.right() >= foot.right() - px(1.),
+                "at {width} the axes are not at the right"
+            );
+        }
     }
 
     #[gpui::test]
