@@ -434,8 +434,8 @@ enum Turn {
 /// Frames the camera takes to fly to something, at about sixty a second.
 const FLY_FRAMES: u32 = 20;
 
-/// How close Focus comes, against its usual framing: the choices the camera
-/// menu offers, as a label and a factor on the zoom.
+/// How close Focus comes, against its usual framing: the choices the pick's
+/// card offers under Focus, as a label and a factor on the zoom.
 const FOCUS_ZOOMS: [(&str, f32); 4] = [("½×", 0.5), ("1×", 1.0), ("2×", 2.0), ("4×", 4.0)];
 
 /// Pointers that move further than this between press and release, in
@@ -6287,7 +6287,6 @@ impl Viewer {
                 item("recentre", "Centre".into(), false)
                     .on_click(cx.listener(|this, _, _, cx| this.recentre(cx))),
             )
-            .child(self.focus_zooms(cx))
             .when(self.selected.is_some(), |d| {
                 d.child(
                     item("focus-menu", "Focus on the pick".into(), false)
@@ -6302,52 +6301,6 @@ impl Viewer {
                 item("reset-view", "Reset view".into(), false)
                     .debug_selector(|| "reset-view".into())
                     .on_click(cx.listener(|this, _, _, cx| this.reset_view(cx))),
-            )
-    }
-
-    /// A line of the camera menu: how close Focus comes, one of a few.
-    fn focus_zooms(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let chosen = self.focus_zoom;
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap(px(6.))
-            .pl(px(8.))
-            .pr(px(3.))
-            .py(px(2.))
-            .child(
-                div()
-                    .text_size(px(11.5))
-                    .text_color(theme::text())
-                    .child("Focus zoom"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap(px(2.))
-                    .children(FOCUS_ZOOMS.iter().map(|&(label, factor)| {
-                        let on = chosen == factor;
-                        div()
-                            .id(label)
-                            .debug_selector(move || format!("focus-zoom-{factor}"))
-                            .px(px(5.))
-                            .py(px(2.))
-                            .rounded(px(4.))
-                            .text_size(px(10.5))
-                            .cursor_pointer()
-                            .when(on, |d| d.bg(theme::sunken()).text_color(theme::ink()))
-                            .when(!on, |d| {
-                                d.text_color(theme::muted())
-                                    .hover(|s| s.bg(theme::sunken()).text_color(theme::ink()))
-                            })
-                            .child(label)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.focus_zoom = factor;
-                                this.persist();
-                                cx.notify();
-                            }))
-                    })),
             )
     }
 
@@ -10686,6 +10639,42 @@ impl Viewer {
                             ))
                         }),
                 )
+                // How close Focus comes; a choice flies there at once.
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .mr(px(4.))
+                                .text_size(px(9.))
+                                .text_color(soft(0.5))
+                                .child("FOCUS ZOOM"),
+                        )
+                        .children(FOCUS_ZOOMS.iter().map(|&(label, factor)| {
+                            let chosen = self.focus_zoom == factor;
+                            div()
+                                .id(label)
+                                .debug_selector(move || format!("focus-zoom-{factor}"))
+                                .px(px(5.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .text_size(px(10.))
+                                .cursor_pointer()
+                                .when(chosen, |d| d.bg(soft(0.16)).text_color(on_ink))
+                                .when(!chosen, |d| {
+                                    d.text_color(soft(0.6))
+                                        .hover(|d| d.bg(soft(0.1)).text_color(on_ink))
+                                })
+                                .child(label)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.focus_zoom = factor;
+                                    this.persist();
+                                    this.focus_selected(cx);
+                                }))
+                        })),
+                )
                 .into_any_element(),
         )
     }
@@ -11400,14 +11389,19 @@ mod ui_tests {
     #[gpui::test]
     fn focus_comes_as_close_as_chosen_and_keeps_rocking(cx: &mut TestAppContext) {
         let (view, cx) = open(cx);
-        click(cx, "tab-camera");
-        click(cx, "focus-zoom-2");
-        assert_eq!(view.update(cx, |this, _| this.focus_zoom), 2.0);
         click(cx, "rock");
         cx.executor().advance_clock(Duration::from_millis(300));
         cx.run_until_parked();
         let at = front_atom(&view, cx);
         cx.simulate_click(at, Modifiers::secondary_key());
+        cx.executor().advance_clock(Duration::from_millis(1500));
+        cx.run_until_parked();
+        // The pick's card, under Focus, chooses how close it comes, and
+        // flies there.
+        let picked = view.update(cx, |this, _| this.selected);
+        click(cx, "focus-zoom-2");
+        assert_eq!(view.update(cx, |this, _| this.focus_zoom), 2.0);
+        assert_eq!(view.update(cx, |this, _| this.selected), picked);
         cx.executor().advance_clock(Duration::from_millis(1500));
         cx.run_until_parked();
         let (picked, centre, zoom, radius, turning) = view.update(cx, |this, _| {
