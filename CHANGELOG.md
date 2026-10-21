@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 — 2026-10-21
 
 ### Fixes
 - **The drawing styles on Linux and Windows** are Alt+1 to Alt+4, in place
