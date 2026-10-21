@@ -1277,6 +1277,16 @@ impl Viewer {
         (s.residues.get(end)?.chain == chain).then(|| (chain, anchor.min(end), anchor.max(end)))
     }
 
+    /// The residues of the run shift-clicked out in the sequence, in order.
+    fn seq_run_residues(&self) -> Vec<usize> {
+        let (Some(run), Some(s)) = (self.seq_run(), self.structure.as_ref()) else {
+            return Vec::new();
+        };
+        (run.1..=run.2)
+            .filter(|&r| Self::in_seq_run(s, Some(run), r))
+            .collect()
+    }
+
     /// Whether residue `r` is in the run shift-clicked out in the sequence.
     fn in_seq_run(s: &Structure, run: Option<(u16, usize, usize)>, r: usize) -> bool {
         run.is_some_and(|(chain, lo, hi)| {
@@ -1728,7 +1738,10 @@ impl Viewer {
     pub fn focus_selected(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.selected else { return };
         let Some(s) = self.shown(t.which) else { return };
-        let atoms = if t.picked.residue {
+        let run = self.seq_run_residues();
+        let atoms = if t.which == 0 && !run.is_empty() {
+            run.iter().flat_map(|&r| s.residue_atoms(r)).collect()
+        } else if t.picked.residue {
             s.residue_atoms(s.atoms[t.picked.atom].residue as usize)
         } else {
             vec![t.picked.atom]
@@ -9527,6 +9540,203 @@ impl Viewer {
 }
 
 impl Viewer {
+    /// What is said about a run of residues picked out in the sequence: how
+    /// many, from which to which, their letters, what kinds and folds they
+    /// are, and their mean B-factor or pLDDT.
+    fn run_card(&self, run: &[usize]) -> Option<gpui::Div> {
+        let s = self.shown(0)?;
+        let cards: Vec<crate::protein::Card> = run
+            .iter()
+            .filter_map(|&r| s.card(residue_pick(s, r)?.atom, true))
+            .collect();
+        let (first, last) = (cards.first()?, cards.last()?);
+        let on_ink = theme::on_ink();
+        let soft = |a: f32| gpui::Hsla { a, ..on_ink };
+        let badge = div()
+            .flex_none()
+            .size(px(26.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .bg(soft(0.16))
+            .text_size(px(if run.len() < 100 { 12. } else { 9.5 }))
+            .font_weight(gpui::FontWeight::BOLD)
+            .child(run.len().to_string());
+        let mut sub = format!("{} – {}", first.tag, last.tag);
+        if let Some(c) = &first.chain {
+            sub.push_str(&format!(" · chain {c}"));
+        }
+        let header = div().flex().items_center().gap(px(8.)).child(badge).child(
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(format!("{} residues", run.len())),
+                )
+                .child(
+                    div()
+                        .font_family(theme::MONO)
+                        .text_size(px(9.5))
+                        .text_color(soft(0.6))
+                        .child(sub),
+                ),
+        );
+
+        let dot = |c: [f32; 3]| div().flex_none().size(px(7.)).rounded_full().bg(swatch(c));
+        let row = |label: &str, value: gpui::AnyElement| {
+            div()
+                .flex()
+                .items_start()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .w(px(64.))
+                        .flex_none()
+                        .pt(px(2.))
+                        .text_size(px(9.))
+                        .text_color(soft(0.5))
+                        .child(if label == "pLDDT" {
+                            label.to_string()
+                        } else {
+                            spaced(&label.to_uppercase())
+                        }),
+                )
+                .child(value)
+                .into_any_element()
+        };
+        // How many of each, most first, a coloured dot to each.
+        let tally = |items: Vec<(&'static str, [f32; 3])>| {
+            let mut counts: Vec<(&'static str, [f32; 3], usize)> = Vec::new();
+            for (name, c) in items {
+                match counts.iter_mut().find(|(n, _, _)| *n == name) {
+                    Some((_, _, k)) => *k += 1,
+                    None => counts.push((name, c, 1)),
+                }
+            }
+            counts.sort_by(|a, b| b.2.cmp(&a.2));
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .children(counts.into_iter().map(|(name, c, k)| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(5.))
+                        .child(dot(c))
+                        .child(
+                            div()
+                                .font_family(theme::MONO)
+                                .text_size(px(10.5))
+                                .w(px(22.))
+                                .child(k.to_string()),
+                        )
+                        .child(div().text_size(px(10.5)).child(name.to_lowercase()))
+                }))
+                .into_any_element()
+        };
+
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        // The letters in blocks of ten, three to a line, as the sequence
+        // panel sets them; a long run is cut short and says by how much.
+        const SHOWN: usize = 60;
+        let letters: Vec<char> = run
+            .iter()
+            .take(SHOWN)
+            .map(|&r| residue_letter(&s.residues[r]))
+            .collect();
+        let mut lines: Vec<String> = letters
+            .chunks(SEQUENCE_BLOCK * 3)
+            .map(|line| {
+                line.chunks(SEQUENCE_BLOCK)
+                    .map(|b| b.iter().collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        if run.len() > SHOWN {
+            lines.push(format!("… {} more", run.len() - SHOWN));
+        }
+        rows.push(row(
+            "sequence",
+            div()
+                .flex()
+                .flex_col()
+                .font_family(theme::MONO)
+                .text_size(px(10.5))
+                .children(lines)
+                .into_any_element(),
+        ));
+        let kinds: Vec<_> = cards
+            .iter()
+            .filter_map(|c| c.class.map(|(_, k, c)| (k, c)))
+            .collect();
+        if !kinds.is_empty() {
+            rows.push(row("kind", tally(kinds)));
+        }
+        let folds: Vec<_> = cards
+            .iter()
+            .filter_map(|c| {
+                let ss = c.ss?;
+                let (_, name, color) = crate::render::SS_COLORS
+                    .iter()
+                    .find(|(s, _, _)| *s == ss)
+                    .copied()
+                    .unwrap_or((ss, "Coil", [0.78; 3]));
+                Some((name, color))
+            })
+            .collect();
+        if !folds.is_empty() {
+            rows.push(row("fold", tally(folds)));
+        }
+        let bs: Vec<(&'static str, f32)> = cards.iter().filter_map(|c| c.b).collect();
+        if let Some(&(label, _)) = bs.first() {
+            let n = bs.len() as f64;
+            let mean = bs.iter().map(|&(_, b)| b as f64).sum::<f64>() / n;
+            let lo = bs.iter().map(|&(_, b)| b).fold(f32::INFINITY, f32::min);
+            let hi = bs.iter().map(|&(_, b)| b).fold(f32::NEG_INFINITY, f32::max);
+            let v = div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .font_family(theme::MONO)
+                        .text_size(px(10.5))
+                        .child(format!("{mean:.1}")),
+                )
+                .child(
+                    div()
+                        .text_size(px(9.5))
+                        .text_color(soft(0.6))
+                        .child(format!("mean · {lo:.1}–{hi:.1}")),
+                );
+            rows.push(row(label, v.into_any_element()));
+        }
+
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(7.))
+                .min_w(px(150.))
+                .px(px(10.))
+                .py(px(8.))
+                .rounded(px(9.))
+                .bg(theme::ink())
+                .text_color(on_ink)
+                .shadow_lg()
+                .whitespace_nowrap()
+                .child(header)
+                .child(div().h(px(1.)).w_full().bg(soft(0.12)))
+                .child(div().flex().flex_col().gap(px(4.)).children(rows)),
+        )
+    }
+
     /// What is said about an atom or residue: a coloured badge and its
     /// name, over a few labelled facts.
     fn atom_card(&self, t: Target) -> Option<gpui::Div> {
@@ -10064,7 +10274,16 @@ impl Viewer {
             return None;
         }
         let t = self.selected?;
-        let card = self.atom_card(t)?;
+        let run = if t.which == 0 {
+            self.seq_run_residues()
+        } else {
+            Vec::new()
+        };
+        let card = if run.is_empty() {
+            self.atom_card(t)?
+        } else {
+            self.run_card(&run)?
+        };
         let s = self.shown(t.which)?;
         let residue = s.atoms[t.picked.atom].residue as usize;
         // A ligand's own atom offers its binding site.
@@ -10102,14 +10321,36 @@ impl Viewer {
                                 .on_click(cx.listener(|this, _, _, cx| this.focus_selected(cx))),
                         )
                         .when(t.which == 0, |d| {
-                            let labelled =
-                                self.labels.iter().any(|l| l.atom as usize == t.picked.atom);
+                            let labelled = if run.is_empty() {
+                                self.labels.iter().any(|l| l.atom as usize == t.picked.atom)
+                            } else {
+                                run.iter().all(|&r| {
+                                    residue_pick(s, r).is_some_and(|p| {
+                                        self.labels.iter().any(|l| l.atom as usize == p.atom)
+                                    })
+                                })
+                            };
                             d.child(
                                 action(
                                     "label-selected",
                                     if labelled { "Unlabel" } else { "Label" },
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| this.toggle_label(cx))),
+                            )
+                        })
+                        .when(!run.is_empty(), |d| {
+                            let letters: String = run
+                                .iter()
+                                .map(|&r| residue_letter(&s.residues[r]))
+                                .collect();
+                            d.child(
+                                action(
+                                    "copy-selected",
+                                    if self.copied { "Copied" } else { "Copy" },
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| this.copy_sequence(letters.clone(), cx),
+                                )),
                             )
                         })
                         .when(ligand, |d| {
@@ -10374,6 +10615,29 @@ impl Viewer {
         let Some(s) = self.structure.clone() else {
             return;
         };
+        // A run is labelled residue by residue, and unlabelled once it all is.
+        let run = self.seq_run_residues();
+        if !run.is_empty() {
+            let atoms: Vec<u32> = run
+                .iter()
+                .filter_map(|&r| Some(residue_pick(&s, r)?.atom as u32))
+                .collect();
+            if atoms
+                .iter()
+                .all(|a| self.labels.iter().any(|l| l.atom == *a))
+            {
+                self.labels.retain(|l| !atoms.contains(&l.atom));
+            } else {
+                for (&r, &atom) in run.iter().zip(&atoms) {
+                    if !self.labels.iter().any(|l| l.atom == atom) {
+                        let text = Self::residue_label(&s, r);
+                        self.labels.push(Label { atom, text });
+                    }
+                }
+            }
+            cx.notify();
+            return;
+        }
         let atom = t.picked.atom as u32;
         if let Some(i) = self.labels.iter().position(|l| l.atom == atom) {
             self.labels.remove(i);
@@ -11225,11 +11489,22 @@ mod ui_tests {
         assert_eq!(run(&view, cx), Some((1, 3)));
         assert_eq!(painted(&view, cx), (1..=3).collect::<Vec<u32>>());
 
+        // The card speaks for the run: Copy is offered, and Label labels
+        // each of its residues, then takes them all off again.
+        assert!(cx.debug_bounds("copy-selected").is_some());
+        click(cx, "label-selected");
+        assert_eq!(view.update(cx, |this, _| this.labels.len()), 3);
+        click(cx, "label-selected");
+        assert_eq!(view.update(cx, |this, _| this.labels.len()), 0);
+
         // A plain click starts over from the residue clicked.
         click(cx, "residue-5");
         assert_eq!(run(&view, cx), None);
         assert_eq!(view.update(cx, |this, _| this.selected_residue()), Some(5));
         assert_eq!(painted(&view, cx), vec![5]);
+        // And Label goes back to labelling the one residue.
+        click(cx, "label-selected");
+        assert_eq!(view.update(cx, |this, _| this.labels.len()), 1);
     }
 
     /// Where in the window atom `i` is drawn.
