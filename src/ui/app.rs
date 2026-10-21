@@ -6407,8 +6407,8 @@ impl Viewer {
                     .gap(px(8.))
                     .child(
                         div()
-                            .font_family(theme::SERIF)
-                            .font_weight(gpui::FontWeight::BOLD)
+                            .font_family(theme::ROUNDED)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_size(px(size))
                             .line_height(px(size + 2.))
                             .whitespace_nowrap()

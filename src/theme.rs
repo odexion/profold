@@ -172,18 +172,24 @@ pub const MONO: &str = "Consolas";
 #[cfg(not(any(target_os = "macos", windows)))]
 pub const MONO: &str = "DejaVu Sans Mono";
 
-/// Display serif, used only for the wordmark (bold) and the name of the
-/// structure on screen (regular): Charis SIL, Charter's open twin, shipped
-/// inside the app so it is the same on every system.
+/// Display serif, used for the name of the structure on screen: Charis SIL,
+/// Charter's open twin, shipped inside the app so it is the same on every
+/// system.
 pub const SERIF: &str = "Charis SIL";
+
+/// Rounded sans for the wordmark at the head of the panel: Nunito SemiBold,
+/// shipped inside the app like Charis.
+pub const ROUNDED: &str = "Nunito";
 
 /// Registers the fonts the app carries, before any window draws.
 pub fn add_fonts(cx: &mut gpui::App) {
     static CHARIS_REGULAR: &[u8] = include_bytes!("../assets/fonts/CharisSIL-Regular.ttf");
     static CHARIS_BOLD: &[u8] = include_bytes!("../assets/fonts/CharisSIL-Bold.ttf");
+    static NUNITO_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Nunito-SemiBold.ttf");
     if let Err(e) = cx.text_system().add_fonts(vec![
         std::borrow::Cow::Borrowed(CHARIS_REGULAR),
         std::borrow::Cow::Borrowed(CHARIS_BOLD),
+        std::borrow::Cow::Borrowed(NUNITO_SEMIBOLD),
     ]) {
         eprintln!("profold: couldn't load the display font: {e}");
     }
