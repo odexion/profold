@@ -139,6 +139,19 @@ const TAB_BAR: f32 = 40.0;
 /// window's buttons are at the right, drawn by the bar itself.
 const LIGHTS: f32 = if cfg!(target_os = "macos") { 80.0 } else { 8.0 };
 
+/// The styles' chords. ⌃⌘ on a Mac; elsewhere ⌘ is Ctrl, where ⌃⌘1 would
+/// be Ctrl+1 and take the tab's key, so the styles take Ctrl+Shift.
+pub const STYLE_KEYS: [&str; 4] = if cfg!(target_os = "macos") {
+    ["ctrl-cmd-1", "ctrl-cmd-2", "ctrl-cmd-3", "ctrl-cmd-4"]
+} else {
+    [
+        "ctrl-shift-1",
+        "ctrl-shift-2",
+        "ctrl-shift-3",
+        "ctrl-shift-4",
+    ]
+};
+
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         gpui::KeyBinding::new("secondary-o", OpenFile, None),
@@ -165,7 +178,8 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("secondary-shift-e", ExportMovie, None),
         gpui::KeyBinding::new("secondary-shift-d", ToggleDark, None),
         gpui::KeyBinding::new("secondary-shift-l", ToggleLayout, None),
-        // ⌘1 to ⌘9 are the tabs, so the views take ⌥⌘ and the styles ⌃⌘.
+        // ⌘1 to ⌘9 are the tabs, so the views take ⌥⌘ and the styles ⌃⌘ (⇧⌘
+        // off the Mac).
         gpui::KeyBinding::new("alt-secondary-1", ShowCartoon, None),
         gpui::KeyBinding::new("alt-secondary-2", ShowTube, None),
         gpui::KeyBinding::new("alt-secondary-3", ShowBallAndStick, None),
@@ -176,10 +190,10 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("secondary-z", Undo, None),
         gpui::KeyBinding::new("secondary-k", ToggleConsole, None),
         gpui::KeyBinding::new("secondary-shift-z", Redo, None),
-        gpui::KeyBinding::new("ctrl-secondary-1", StyleIllustrative, None),
-        gpui::KeyBinding::new("ctrl-secondary-2", StyleFlat, None),
-        gpui::KeyBinding::new("ctrl-secondary-3", StyleSoft, None),
-        gpui::KeyBinding::new("ctrl-secondary-4", StyleStudio, None),
+        gpui::KeyBinding::new(STYLE_KEYS[0], StyleIllustrative, None),
+        gpui::KeyBinding::new(STYLE_KEYS[1], StyleFlat, None),
+        gpui::KeyBinding::new(STYLE_KEYS[2], StyleSoft, None),
+        gpui::KeyBinding::new(STYLE_KEYS[3], StyleStudio, None),
         gpui::KeyBinding::new("secondary-0", ResetView, None),
     ]);
     #[cfg(target_os = "macos")]
@@ -1625,6 +1639,22 @@ mod tests {
         assert_eq!(tabs(&view, cx), (3, 2));
         cx.simulate_keystrokes("secondary-1");
         assert_eq!(tabs(&view, cx), (3, 0));
+        for (i, key) in ["secondary-2", "secondary-3", "secondary-1"]
+            .iter()
+            .enumerate()
+        {
+            cx.simulate_keystrokes(key);
+            assert_eq!(tabs(&view, cx), (3, [1, 2, 0][i]), "{key}");
+        }
+
+        // The styles' chords draw the tab in front, and leave it in front:
+        // off the Mac, ⌃⌘1 would be Ctrl+1 and take a tab's key.
+        let style =
+            |cx: &mut VisualTestContext| view.update(cx, |this, cx| this.tabs[0].read(cx).style());
+        cx.simulate_keystrokes(STYLE_KEYS[1]);
+        assert_eq!((tabs(&view, cx), style(cx)), ((3, 0), Style::Flat));
+        cx.simulate_keystrokes(STYLE_KEYS[3]);
+        assert_eq!((tabs(&view, cx), style(cx)), ((3, 0), Style::Studio));
 
         click(cx, "close-tab-0");
         assert_eq!(tabs(&view, cx), (2, 0));

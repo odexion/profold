@@ -1299,6 +1299,11 @@ impl Viewer {
         self.rebuild(cx);
     }
 
+    #[cfg(test)]
+    pub fn style(&self) -> Style {
+        self.style
+    }
+
     /// Bring the structure back to the middle, keeping the angle and zoom.
     pub fn recentre(&mut self, cx: &mut Context<Self>) {
         self.camera.pan = [0.0, 0.0];
@@ -4259,7 +4264,14 @@ impl Viewer {
                 "Viewing",
                 &[
                     ("⌥⌘1 – ⌥⌘6", "Cartoon … Surface"),
-                    ("⌃⌘1 – ⌃⌘4", "Illustrative … Studio"),
+                    (
+                        if cfg!(target_os = "macos") {
+                            "⌃⌘1 – ⌃⌘4"
+                        } else {
+                            "⇧⌘1 – ⇧⌘4"
+                        },
+                        "Illustrative … Studio",
+                    ),
                     ("⌘0", "Reset the view"),
                     ("⇧⌘D", "Toggle light or dark theme"),
                     ("⇧⌘L", "Panel beside or under the view"),
