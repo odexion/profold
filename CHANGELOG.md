@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-10-21
 
 ### Rendering
 - **Ray traced.** *Image › Ray traced* lights the molecule with rays: soft
@@ -24,6 +24,20 @@
   take on this machine.
 - **Ray-traced films.** The film dialog's *Ray traced* switch, or
   `movie … trace=on`, traces every frame the same way.
+
+### Films
+- **A truer preview.** The film dialog's preview plays every frame in
+  order, drawn as the film will draw it, at the film's frame rate, and
+  widens with the window (296 to 640 pt) so the counter and time over it
+  can be read.
+- **Caption and legend.** The caption sits top or bottom, left, centre or
+  right, in four sizes, and keeps clear of the counter and scale bar. The
+  legend takes its own title, size and backdrop, and the writing a colour
+  of its own. The console's `movie` takes `caption-at`, `caption-size`,
+  `legend-title`, `legend-size`, `legend-box` and `ink`.
+- **Colours from the atoms' picker.** The background and the writing are
+  chosen in the same picker as the atoms, with its presets and hex and RGB
+  fields.
 
 ### Labels
 - **Labels in 3D.** Pin a residue's name and number, an atom's name or text
@@ -68,6 +82,15 @@
   *Replicate 2×2×2* repeats the cell, frames and properties included.
   *Original* undoes them. In the console: `wrap`, `whole`, `unwrap`,
   `replicate 3 3 1` and `original`.
+- **Large dumps in half the memory.** A LAMMPS dump is read 64 MB at a
+  time, the next piece while this one is parsed: 0.80 GB rather than
+  1.64 GB for 43k atoms × 801 frames, and no slower. RMSD and RMSF no
+  longer hold every fitted frame, and SASA and contacts find neighbours in
+  a flat cell list. Each gives the same answer as before, which tests check.
+- **Cell tools where they mean something.** Wrap, Whole, Unwrap and
+  Replicate show for simulation boxes, trajectories, crystals and small
+  molecules, not a protein's crystal cell, on one line with short names.
+  A lit button is in effect; a click on it turns it off.
 - **Selecting by value.** Selections compare: `c_pe < -3`, `vx >= 0.5 and
   z > 10`, `b < 30`, with `x`, `y`, `z` and `b` always there.
 
@@ -75,12 +98,20 @@
 - **Panned pictures.** A PNG saved at 2× or 3×, or from the console, kept the
   view's pan at the screen's size, so a view panned off centre came out
   shifted. The pan now grows with the picture, as it already did in films.
+- **Ctrl+1 to Ctrl+4 on Linux and Windows** changed the drawing style
+  rather than going to tabs 1 to 4: the styles' ⌃⌘ chord is Ctrl alone off
+  the Mac. The styles are now Ctrl+Shift+1 to Ctrl+Shift+4 there (still
+  ⌃⌘1 to ⌃⌘4 on the Mac).
+- **Menus in a narrow window** hang from their own button and stay inside
+  the window; the palette used to run off its right edge.
 
 ### Viewing
 - **⌘-click to focus** (Ctrl-click on Linux and Windows) picks an atom or
   residue and flies the view to it, as the card's Focus button does.
 
 ### Menus
+- **The structure's name** is set in Charis SIL Regular; the wordmark
+  stays bold.
 - **The recording light** sits in the top bar, beside the angles, rather
   than over the style pills it used to cover.
 - **The bar along the top** is now Open · Samples · Camera · Image · Film ·
