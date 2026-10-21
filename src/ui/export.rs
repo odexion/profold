@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{div, prelude::*, px, relative, Context, MouseButton, SharedString, Task};
 
-use super::{pill_keyed, spaced, swallow, Field, Viewer};
+use super::{pill_keyed, spaced, swallow, swatch, Field, Pick, Viewer};
 use crate::movie::{
     self, Axis, Background, Corner, Format, Legend, Motion, Options, Place, Sample, Size, TextSize,
     TimeUnit,
@@ -31,11 +31,9 @@ pub(super) enum Knob {
     Width,
     Height,
     Quality,
-    Hex,
     Dt,
     Caption,
     LegendTitle,
-    Ink,
 }
 
 struct Recording {
@@ -200,6 +198,9 @@ impl Viewer {
     pub(super) fn close_movie(&mut self, cx: &mut Context<Self>) {
         self.commit_edit(cx);
         self.movie.open = false;
+        if matches!(self.picking, Some(Pick::FilmBackground | Pick::FilmInk)) {
+            self.picking = None;
+        }
         self.stop_preview();
         cx.notify();
     }
@@ -799,22 +800,9 @@ impl Viewer {
             Knob::Width => o.width = n().map(|v| v as u32).unwrap_or(o.width),
             Knob::Height => o.height = n().map(|v| v as u32).unwrap_or(o.height),
             Knob::Quality => o.quality = n().map(|v| v as u32).unwrap_or(o.quality),
-            Knob::Hex => {
-                if let Some(c) = settings::parse_hex(text) {
-                    o.background = Background::Color(c);
-                }
-            }
             Knob::Dt => o.dt = n().unwrap_or(o.dt),
             Knob::Caption => o.caption = text.trim().to_string(),
             Knob::LegendTitle => o.legend_title = text.trim().to_string(),
-            Knob::Ink => {
-                let t = text.trim();
-                if t.is_empty() || t.eq_ignore_ascii_case("auto") {
-                    o.ink = None;
-                } else if let Some(c) = settings::parse_hex(t) {
-                    o.ink = Some(c);
-                }
-            }
         }
         self.set_options(o, cx);
     }
@@ -866,6 +854,69 @@ impl Viewer {
         )
         .cursor_pointer()
         .on_click(cx.listener(move |this, _, _, cx| this.change(cx, flip)))
+    }
+
+    /// The colour in use, which opens the colour picker for `pick` when
+    /// clicked, as an atom's colour does.
+    fn color_button(
+        &self,
+        id: &'static str,
+        pick: Pick,
+        name: &str,
+        default: [f32; 3],
+        chosen: Option<[f32; 3]>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let open = self.picking.as_ref() == Some(&pick);
+        let shown = chosen.unwrap_or(default);
+        let toggle = pick.clone();
+        div()
+            .relative()
+            .child(
+                div()
+                    .id(id)
+                    .debug_selector(move || id.into())
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded(px(5.))
+                    .border_1()
+                    .border_color(if open { theme::ink() } else { theme::border() })
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::sunken()))
+                    .child(
+                        div()
+                            .size(px(12.))
+                            .rounded(px(3.))
+                            .border_1()
+                            .border_color(theme::border())
+                            .bg(swatch(shown)),
+                    )
+                    .child(
+                        div()
+                            .font_family(theme::MONO)
+                            .text_size(px(10.))
+                            .text_color(theme::muted())
+                            .child(settings::hex(shown)),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.picking = if this.picking.as_ref() == Some(&toggle) {
+                            None
+                        } else {
+                            Some(toggle.clone())
+                        };
+                        cx.notify();
+                    })),
+            )
+            .when(open, |d| {
+                d.child(
+                    gpui::deferred(self.color_picker(pick, name.to_string(), default, chosen, cx))
+                        .with_priority(3),
+                )
+            })
+            .into_any_element()
     }
 
     fn knob(
@@ -1120,10 +1171,6 @@ impl Viewer {
             ),
             small("of 100"),
         ]);
-        let color = match o.background {
-            Background::Color(c) => c,
-            _ => theme::view(),
-        };
         let backgrounds = self
             .choices(
                 "movie-bg",
@@ -1150,30 +1197,20 @@ impl Viewer {
                 cx,
             )
             .into_any_element();
-        let hex = matches!(o.background, Background::Color(_)).then(|| {
-            let b = color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-            inline(vec![
-                div()
-                    .size(px(14.))
-                    .rounded(px(3.))
-                    .border_1()
-                    .border_color(theme::border())
-                    .bg(gpui::Rgba {
-                        r: color[0],
-                        g: color[1],
-                        b: color[2],
-                        a: 1.0,
-                    })
-                    .into_any_element(),
-                self.knob(
-                    "movie-hex",
-                    Knob::Hex,
-                    format!("#{:02x}{:02x}{:02x}", b[0], b[1], b[2]),
-                    64.,
+        let hex = match o.background {
+            Background::Color(c) => {
+                let page = theme::view();
+                Some(self.color_button(
+                    "movie-bg-color",
+                    Pick::FilmBackground,
+                    "the background",
+                    page,
+                    (c != page).then_some(c),
                     cx,
-                ),
-            ])
-        });
+                ))
+            }
+            _ => None,
+        };
 
         // -- Format
         let formats: Vec<_> = Format::ALL
@@ -1369,27 +1406,13 @@ impl Viewer {
                     cx,
                 )
                 .into_any_element()];
-            if let Some(c) = o.ink {
-                let b = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-                items.push(
-                    div()
-                        .size(px(14.))
-                        .rounded(px(3.))
-                        .border_1()
-                        .border_color(theme::border())
-                        .bg(gpui::Rgba {
-                            r: c[0],
-                            g: c[1],
-                            b: c[2],
-                            a: 1.0,
-                        })
-                        .into_any_element(),
-                );
-                items.push(self.knob(
-                    "movie-ink-hex",
-                    Knob::Ink,
-                    format!("#{:02x}{:02x}{:02x}", b[0], b[1], b[2]),
-                    64.,
+            if o.ink.is_some() {
+                items.push(self.color_button(
+                    "movie-ink-color",
+                    Pick::FilmInk,
+                    "the writing",
+                    movie::auto_ink(o.background, theme::view()),
+                    o.ink,
                     cx,
                 ));
             }

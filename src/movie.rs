@@ -1268,16 +1268,22 @@ impl<'a> Drawer<'a> {
         if let Some(c) = self.job.options.ink {
             return c;
         }
-        let ground = match self.job.options.background {
-            Background::Color(c) => c,
-            Background::Theme | Background::Transparent => self.job.page,
-        };
-        let luma = 0.2126 * ground[0] + 0.7152 * ground[1] + 0.0722 * ground[2];
-        if luma > 0.5 {
-            [0.10, 0.10, 0.12]
-        } else {
-            [0.94, 0.94, 0.95]
-        }
+        auto_ink(self.job.options.background, self.job.page)
+    }
+}
+
+/// Whichever of dark or light writing stands out from `background`, drawn
+/// on `page` when it is the theme's or transparent.
+pub fn auto_ink(background: Background, page: [f32; 3]) -> [f32; 3] {
+    let ground = match background {
+        Background::Color(c) => c,
+        Background::Theme | Background::Transparent => page,
+    };
+    let luma = 0.2126 * ground[0] + 0.7152 * ground[1] + 0.0722 * ground[2];
+    if luma > 0.5 {
+        [0.10, 0.10, 0.12]
+    } else {
+        [0.94, 0.94, 0.95]
     }
 }
 

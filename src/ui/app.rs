@@ -128,6 +128,9 @@ enum Pick {
     Chain(usize),
     /// A kind of ligand, by residue name.
     Ligand(String),
+    /// The film's background, and its writing.
+    FilmBackground,
+    FilmInk,
 }
 
 /// The colour a ligand takes when it is first given one: gold, which sits
@@ -2539,6 +2542,10 @@ impl Viewer {
                 });
                 self.set_ligand_paint(name, paint, cx)
             }
+            Pick::FilmBackground => self.change(cx, |o| {
+                o.background = crate::movie::Background::Color(color.unwrap_or_else(theme::view))
+            }),
+            Pick::FilmInk => self.change(cx, |o| o.ink = color),
         }
     }
 
@@ -5979,6 +5986,7 @@ impl Viewer {
             Pick::Chain(_) => "chain-unpick",
             Pick::Ligand(_) => "ligand-unpick",
             Pick::Species(_) => "species-unpick",
+            Pick::FilmBackground | Pick::FilmInk => "film-unpick",
         };
         let button = div()
             .id((id, row))
@@ -11662,6 +11670,47 @@ mod ui_tests {
             view.update(cx, |this, _| this.movie.open && !this.recording()),
             "the dialog did not come back"
         );
+    }
+
+    #[gpui::test]
+    fn the_films_colours_are_picked_as_an_atoms_are(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        let melt = SAMPLES
+            .iter()
+            .find(|s| s.file.ends_with("lammpstrj.gz"))
+            .unwrap();
+        view.update(cx, |this, cx| {
+            this.show(
+                formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap(),
+                cx,
+            );
+            this.open_movie(cx);
+            this.change(cx, |o| {
+                o.background = crate::movie::Background::Color(theme::view());
+                o.ink = Some([0.0, 0.0, 0.0]);
+            });
+        });
+        cx.run_until_parked();
+        click(cx, "movie-bg-color");
+        assert!(
+            view.update(cx, |this, _| this.picking == Some(Pick::FilmBackground)),
+            "the picker did not open"
+        );
+        click(cx, "swatch-1");
+        let bg = view.update(cx, |this, _| this.options().background);
+        assert_eq!(bg, crate::movie::Background::Color(SWATCHES[0]));
+        // Typed into the picker's hex field, as for an atom.
+        view.update(cx, |this, cx| {
+            this.paint(Pick::FilmInk, settings::parse_hex("#336699"), cx)
+        });
+        let ink = view.update(cx, |this, _| this.options().ink);
+        assert_eq!(ink, settings::parse_hex("#336699"));
+        // The first swatch gives the writing back its automatic colour.
+        view.update(cx, |this, cx| this.paint(Pick::FilmInk, None, cx));
+        assert_eq!(view.update(cx, |this, _| this.options().ink), None);
+        // Closing the dialog closes its picker.
+        view.update(cx, |this, cx| this.close_movie(cx));
+        assert!(view.update(cx, |this, _| this.picking.is_none()));
     }
 
     #[gpui::test]
