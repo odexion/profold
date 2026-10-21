@@ -39,6 +39,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("label [atoms] <selection> [\"text\"], label clear", "pin residue names, atom names or your own text to atoms"),
     ("trace on|off", "ray trace the still view and saved images: shadows and ambient occlusion"),
     ("water on|off, hydrogens on|off", "toggle display"),
+    ("carbons on|off", "colour only carbons by the scheme, every other element by its own"),
     ("frame <n>, play", "step a trajectory"),
     ("save <file.png|.pdb|.cif|.profold>", "save to file without prompting"),
     (
@@ -493,6 +494,18 @@ impl Viewer {
                         "on"
                     } else {
                         "off"
+                    }
+                )
+            }
+            "carbons" => {
+                self.appearance.carbons_only = on_off(rest)?;
+                self.rebuild(cx);
+                format!(
+                    "{} by the scheme",
+                    if self.appearance.carbons_only {
+                        "only carbons"
+                    } else {
+                        "every atom"
                     }
                 )
             }

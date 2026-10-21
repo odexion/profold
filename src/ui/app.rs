@@ -8231,6 +8231,25 @@ impl Viewer {
     fn species_table(&self, structure: &Structure, cx: &mut Context<Self>) -> impl IntoElement {
         let by_element = self.coloring == Coloring::Element
             || (self.compare.is_none() && structure.has_ligands());
+        // Carbons painted by the scheme rather than their element.
+        let scheme_carbons = self.appearance.carbons_only
+            && self.coloring != Coloring::Element
+            && !matches!(self.repr, Repr::Cartoon | Repr::Tube);
+        let carbon_samples = if scheme_carbons {
+            render::scheme_samples(structure, self.coloring, self.palette, &self.appearance, 4)
+        } else {
+            Vec::new()
+        };
+        // In running text: "by amino acid", but "by pLDDT".
+        let scheme_label = match self.coloring {
+            Coloring::Chain if !structure.has_polymer() => "Molecule",
+            c => c.label(),
+        };
+        let scheme_label = if scheme_label.chars().skip(1).any(char::is_uppercase) {
+            scheme_label.to_string()
+        } else {
+            scheme_label.to_lowercase()
+        };
         let palette = self.palette;
         let colors = render::element_colors(structure, palette, self.standard_colors);
         let mut rows: Vec<(Species, String, [f32; 3], usize)> = structure
@@ -8305,6 +8324,17 @@ impl Viewer {
                 rows.into_iter()
                     .enumerate()
                     .map(|(i, (species, name, default, n))| {
+                        // Only carbons take the scheme; the rest wear these.
+                        let by_element = by_element
+                            || (self.appearance.carbons_only
+                                && matches!(species, Species::Element(z) if z != 6));
+                        // And carbon's row says so: the scheme's own colours
+                        // in its dot, and the scheme's name beside it.
+                        let scheme_row = scheme_carbons && species == Species::Element(6);
+                        let scheme = scheme_row
+                            .then_some(&carbon_samples)
+                            .filter(|c| !c.is_empty());
+                        let by_element = by_element && !scheme_row;
                         let look = self.appearance.get(&species);
                         let shown = look.color.unwrap_or(default);
                         let picking =
@@ -8344,8 +8374,26 @@ impl Viewer {
                                                 d.border_1().border_color(theme::ink())
                                             })
                                             .hover(|d| d.bg(theme::sunken()))
-                                            .child(
-                                                div()
+                                            .child(match scheme {
+                                                // Four quarters, each rounding its own
+                                                // corner, as children are not clipped.
+                                                Some(colors) => div()
+                                                    .size(px(8.))
+                                                    .flex()
+                                                    .flex_wrap()
+                                                    .opacity(look.alpha.max(0.2))
+                                                    .children((0..4).map(|k| {
+                                                        let quarter = div()
+                                                            .size(px(4.))
+                                                            .bg(swatch(colors[k % colors.len()]));
+                                                        match k {
+                                                            0 => quarter.rounded_tl(px(4.)),
+                                                            1 => quarter.rounded_tr(px(4.)),
+                                                            2 => quarter.rounded_bl(px(4.)),
+                                                            _ => quarter.rounded_br(px(4.)),
+                                                        }
+                                                    })),
+                                                None => div()
                                                     .size(px(8.))
                                                     .rounded_full()
                                                     .when(by_element, |d| {
@@ -8355,9 +8403,19 @@ impl Viewer {
                                                     .when(!by_element, |d| {
                                                         d.border_1().border_color(theme::faint())
                                                     }),
-                                            )
-                                            .tooltip(|_, cx| {
-                                                cx.new(|_| Tip("Choose a colour".into())).into()
+                                            })
+                                            .tooltip({
+                                                let tip = if scheme_row {
+                                                    format!(
+                                                        "Carbons are coloured by {scheme_label}. A colour chosen here shows under Element"
+                                                    )
+                                                } else {
+                                                    "Choose a colour".into()
+                                                };
+                                                move |_, cx| {
+                                                    let tip = tip.clone();
+                                                    cx.new(|_| Tip(tip.into())).into()
+                                                }
                                             })
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.picking = Some(pick.clone());
@@ -8432,6 +8490,7 @@ impl Viewer {
                     }),
             )
             .child(self.standard_colors_toggle(cx))
+            .children(self.carbons_only_toggle(cx))
             .children(self.visibility_toggles(structure, cx))
     }
 
@@ -8596,6 +8655,107 @@ impl Viewer {
                         ),
                     ),
             )
+    }
+
+    /// Whether the colour scheme paints every atom, or only the carbons
+    /// with every other element left in its own colour. Offered where atoms
+    /// are drawn and coloured by something other than their element.
+    fn carbons_only_toggle(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        if self.coloring == Coloring::Element || matches!(self.repr, Repr::Cartoon | Repr::Tube) {
+            return None;
+        }
+        let only = self.appearance.carbons_only;
+        // In running text: "by amino acid", but "by pLDDT".
+        let scheme = match self.coloring {
+            Coloring::Chain if !self.structure.as_ref().is_some_and(|s| s.has_polymer()) => {
+                "Molecule"
+            }
+            c => c.label(),
+        };
+        let scheme = if scheme.chars().skip(1).any(char::is_uppercase) {
+            scheme.to_string()
+        } else {
+            scheme.to_lowercase()
+        };
+        let option = |id: &'static str, label: &'static str, chosen: bool, set: bool| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .text_size(px(10.5))
+                .when(chosen, |d| {
+                    d.bg(theme::surface()).text_color(theme::ink()).shadow_sm()
+                })
+                .when(!chosen, |d| {
+                    d.text_color(theme::muted())
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme::ink()))
+                })
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.appearance.carbons_only != set {
+                        this.appearance.carbons_only = set;
+                        this.rebuild(cx);
+                    }
+                }))
+        };
+        let row = div()
+            .mt(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(theme::muted())
+                    .child("Scheme colours"),
+            )
+                .child(
+                    div()
+                        .flex()
+                        .p(px(2.))
+                        .gap(px(2.))
+                        .rounded(px(7.))
+                        .bg(theme::sunken())
+                        .child(
+                            option("scheme-colours-all", "All atoms", !only, false).tooltip(
+                                |_, cx| {
+                                    cx.new(|_| Tip("Every atom in its residue's colour".into()))
+                                        .into()
+                                },
+                            ),
+                        )
+                        .child(
+                            option("scheme-colours-carbons", "Carbons only", only, true).tooltip(
+                                |_, cx| {
+                                    cx.new(|_| {
+                                        Tip("Oxygen, nitrogen, sulfur and the rest keep their element's colour".into())
+                                    })
+                                    .into()
+                                },
+                            ),
+                        ),
+                );
+        // What paints the carbons, said where the choice is made: they
+        // follow the scheme, and change with it.
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(row)
+                .when(only, |d| {
+                    d.child(
+                        div()
+                            .debug_selector(|| "carbon-scheme".into())
+                            .text_size(px(10.))
+                            .text_color(theme::faint())
+                            .child(format!("Carbons follow the colouring: by {scheme}")),
+                    )
+                }),
+        )
     }
 
     /// Whether amino acids wear RasMol's colours or the palette's.
@@ -12749,6 +12909,33 @@ mod ui_tests {
         assert_eq!(kinds.len(), want.len(), "not one colour per amino acid");
         click(cx, "amino-colours-standard");
         assert_eq!(colors(&view, cx), standard);
+    }
+
+    #[gpui::test]
+    fn carbons_only_is_a_switch_beside_the_element_colours(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(SAMPLES[3].file, SAMPLES[3].bytes.to_vec()).unwrap();
+            this.show(s, cx);
+            this.set_repr(Repr::BallAndStick, cx);
+            this.set_coloring(Coloring::Element, cx);
+        });
+        cx.run_until_parked();
+        // Under Element there is nothing for it to do, so it is not offered.
+        assert!(cx.debug_bounds("scheme-colours-carbons").is_none());
+
+        view.update(cx, |this, cx| this.set_coloring(Coloring::Chain, cx));
+        cx.run_until_parked();
+        let before = colors(&view, cx);
+        assert!(cx.debug_bounds("carbon-scheme").is_none());
+        click(cx, "scheme-colours-carbons");
+        assert!(view.update(cx, |this, _| this.appearance.carbons_only));
+        // Carbon's row says what paints it.
+        assert!(cx.debug_bounds("carbon-scheme").is_some());
+        assert_ne!(colors(&view, cx), before, "the switch changed nothing");
+        click(cx, "scheme-colours-all");
+        assert!(view.update(cx, |this, _| !this.appearance.carbons_only));
+        assert_eq!(colors(&view, cx), before);
     }
 
     #[gpui::test]

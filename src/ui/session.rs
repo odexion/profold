@@ -95,6 +95,7 @@ impl Viewer {
             "palette": self.palette.label(),
             "standard_colors": self.standard_colors,
             "amino_palette": self.appearance.amino_palette,
+            "carbons_only": self.appearance.carbons_only,
             "show_cell": self.show_cell,
             "chain_colors": chains,
             "ligand_paint": ligands,
@@ -188,6 +189,9 @@ impl Viewer {
         }
         if let Some(b) = v["amino_palette"].as_bool() {
             self.appearance.amino_palette = b;
+        }
+        if let Some(b) = v["carbons_only"].as_bool() {
+            self.appearance.carbons_only = b;
         }
         if let Some(b) = v["show_cell"].as_bool() {
             self.show_cell = b;

@@ -58,6 +58,9 @@ pub struct Appearance {
     pub hidden: Option<std::sync::Arc<Vec<bool>>>,
     /// Amino acids in the palette's colours rather than RasMol's.
     pub amino_palette: bool,
+    /// Under any scheme but Element, only carbons take the scheme's colour:
+    /// oxygen, nitrogen, sulfur and the rest keep their elements'.
+    pub carbons_only: bool,
 }
 
 impl Appearance {
@@ -1220,6 +1223,45 @@ fn residue_color(s: &Structure, residue: usize, coloring: Coloring, palette: Pal
     }
 }
 
+/// A few of the colours `coloring` gives a structure's polymer residues,
+/// taken evenly along it with repeats dropped: what a key shows for a
+/// scheme that varies from residue to residue.
+pub fn scheme_samples(
+    s: &Structure,
+    coloring: Coloring,
+    palette: Palette,
+    appearance: &Appearance,
+    n: usize,
+) -> Vec<[f32; 3]> {
+    let coloring = match coloring {
+        Coloring::Residue if appearance.amino_palette => Coloring::ResiduePalette,
+        c => c,
+    };
+    let polymer: Vec<usize> = (0..s.residues.len())
+        .filter(|&r| !s.residues[r].outside_polymer())
+        .collect();
+    if polymer.is_empty() || n == 0 {
+        return Vec::new();
+    }
+    // Several times as many as wanted, so repeats can be dropped and the
+    // rest still spread along the chain.
+    let tries = (n * 4).min(polymer.len());
+    let mut seen: Vec<[f32; 3]> = Vec::new();
+    for k in 0..tries {
+        let r = polymer[k * (polymer.len() - 1) / (tries - 1).max(1)];
+        let c = residue_color(s, r, coloring, palette);
+        if !seen.contains(&c) {
+            seen.push(c);
+        }
+    }
+    if seen.len() <= n {
+        return seen;
+    }
+    (0..n)
+        .map(|k| seen[k * (seen.len() - 1) / (n - 1).max(1)])
+        .collect()
+}
+
 /// RasMol's "amino" colours, which Jmol and others keep: like side chains
 /// alike, acids red and bases blue. Fixed, as a reader knows them by sight.
 pub const AMINO_COLORS: [(&str, &str, [f32; 3]); 12] = [
@@ -1459,6 +1501,8 @@ struct Paint<'a> {
     images: Vec<u32>,
     /// Atoms hidden from every style, the backbone's included.
     hidden: Option<&'a [bool]>,
+    /// Only carbons take the scheme; every other element keeps its colour.
+    carbons_only: bool,
 }
 
 impl Paint<'_> {
@@ -1493,6 +1537,7 @@ impl Paint<'_> {
         // under any scheme that colours the polymer itself.
         let by_element = match self.coloring {
             Coloring::Element => true,
+            _ if self.carbons_only && a.element.is_known() && a.element.0 != 6 => true,
             _ => ligand && !comparing,
         };
         if by_element {
@@ -1573,6 +1618,7 @@ pub fn build_scene(
         own,
         images,
         hidden: appearance.mask(s),
+        carbons_only: appearance.carbons_only,
     };
     let mut scene = build_primitives(&paint, repr, quality);
     if cell {
@@ -1892,6 +1938,7 @@ pub fn pick(
         own: s.atoms.len(),
         images: Vec::new(),
         hidden: appearance.mask(s),
+        carbons_only: appearance.carbons_only,
     };
 
     let mut best: Option<Picked> = None;
@@ -2077,6 +2124,7 @@ pub fn build_highlight(
         own: s.atoms.len(),
         images: Vec::new(),
         hidden: appearance.mask(s),
+        carbons_only: appearance.carbons_only,
     };
     // The radius an atom is drawn at in this style.
     let drawn = |i: usize| match repr {
@@ -2155,6 +2203,7 @@ pub fn build_site(
         own: s.atoms.len(),
         images: Vec::new(),
         hidden: appearance.mask(s),
+        carbons_only: appearance.carbons_only,
     };
     let mut scene = build_sticks(&paint, &keep, false);
     settle(&mut scene, style);
@@ -2208,6 +2257,7 @@ pub fn build_layer(
         own: s.atoms.len(),
         images: Vec::new(),
         hidden: appearance.mask(s),
+        carbons_only: appearance.carbons_only,
     };
     let mut scene = match layer {
         LayerStyle::Sticks => build_sticks(&paint, atoms, true),
@@ -4560,6 +4610,88 @@ mod tests {
         assert_eq!(
             residue_color(&s, *polymer.last().unwrap(), Coloring::Rainbow, p),
             p.ramp(1.0)
+        );
+    }
+
+    #[test]
+    fn a_scheme_is_sampled_along_the_chain_without_repeats() {
+        let s = sample("1crn.pdb.gz");
+        let a = Appearance::default();
+        let p = Palette::Spectrum;
+        // Rainbow runs from one end of the ramp to the other.
+        let rainbow = scheme_samples(&s, Coloring::Rainbow, p, &a, 4);
+        assert_eq!(rainbow.len(), 4);
+        assert_eq!(rainbow[0], p.ramp(0.0));
+        assert_eq!(rainbow[3], p.ramp(1.0));
+        // Amino acids give their own colours, each once.
+        let amino = scheme_samples(&s, Coloring::Residue, p, &a, 4);
+        assert_eq!(amino.len(), 4);
+        for (i, c) in amino.iter().enumerate() {
+            assert!(AMINO_COLORS.iter().any(|(_, _, k)| k == c));
+            assert!(!amino[..i].contains(c));
+        }
+        // One chain, one colour.
+        assert_eq!(
+            scheme_samples(&s, Coloring::Chain, p, &a, 4),
+            vec![s.chain_color(0, p)]
+        );
+        // On the palette when the amino acids are.
+        let on = Appearance {
+            amino_palette: true,
+            ..Appearance::default()
+        };
+        assert!(scheme_samples(&s, Coloring::Residue, p, &on, 4)
+            .iter()
+            .all(|c| (0..AMINO_COLORS.len()).any(|i| amino_group_color(i, Some(p)) == *c)));
+    }
+
+    #[test]
+    fn carbons_only_leaves_every_other_element_its_own_colour() {
+        let s = sample("1crn.pdb.gz");
+        let build = |coloring: Coloring, carbons_only: bool| {
+            let appearance = Appearance {
+                carbons_only,
+                ..Appearance::default()
+            };
+            build_scene(
+                &s,
+                Repr::Spacefill,
+                coloring,
+                1.0,
+                Style::Soft,
+                Palette::Spectrum,
+                true,
+                false,
+                &appearance,
+            )
+            .spheres
+        };
+        for coloring in [Coloring::Residue, Coloring::Chain, Coloring::Structure] {
+            let only = build(coloring, true);
+            let scheme = build(coloring, false);
+            let elements = build(Coloring::Element, false);
+            assert_eq!(only.len(), s.atoms.len());
+            for (i, a) in s.atoms.iter().enumerate() {
+                assert_eq!(only[i].c, a.pos, "spheres out of atom order");
+                let want = if a.element.0 == 6 {
+                    scheme[i].color
+                } else {
+                    elements[i].color
+                };
+                assert_eq!(only[i].color, want, "{coloring:?}, atom {i}");
+            }
+            assert!(only.iter().zip(&scheme).any(|(a, b)| a.color != b.color));
+        }
+        // Element colouring is the same either way.
+        assert_eq!(
+            build(Coloring::Element, true)
+                .iter()
+                .map(|s| s.color)
+                .collect::<Vec<_>>(),
+            build(Coloring::Element, false)
+                .iter()
+                .map(|s| s.color)
+                .collect::<Vec<_>>()
         );
     }
 
