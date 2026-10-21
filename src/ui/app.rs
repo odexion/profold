@@ -4268,7 +4268,7 @@ impl Viewer {
                         if cfg!(target_os = "macos") {
                             "⌃⌘1 – ⌃⌘4"
                         } else {
-                            "⇧⌘1 – ⇧⌘4"
+                            "⌥1 – ⌥4"
                         },
                         "Illustrative … Studio",
                     ),

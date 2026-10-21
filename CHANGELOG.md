@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+- **The drawing styles on Linux and Windows** are Alt+1 to Alt+4. 0.5.0
+  gave them Ctrl+Shift+1 to Ctrl+Shift+4, which there arrive as Ctrl+! and
+  the like and so did nothing. The Mac keeps ⌃⌘1 to ⌃⌘4.
+
 ## 0.5.0 — 2026-10-21
 
 ### Rendering

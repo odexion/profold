@@ -140,16 +140,13 @@ const TAB_BAR: f32 = 40.0;
 const LIGHTS: f32 = if cfg!(target_os = "macos") { 80.0 } else { 8.0 };
 
 /// The styles' chords. ⌃⌘ on a Mac; elsewhere ⌘ is Ctrl, where ⌃⌘1 would
-/// be Ctrl+1 and take the tab's key, so the styles take Ctrl+Shift.
+/// be Ctrl+1 and take the tab's key, so the styles take Alt. (Not
+/// Ctrl+Shift: with Shift a digit arrives as the sign above it, and
+/// Ctrl+Shift+2 never matches there.)
 pub const STYLE_KEYS: [&str; 4] = if cfg!(target_os = "macos") {
     ["ctrl-cmd-1", "ctrl-cmd-2", "ctrl-cmd-3", "ctrl-cmd-4"]
 } else {
-    [
-        "ctrl-shift-1",
-        "ctrl-shift-2",
-        "ctrl-shift-3",
-        "ctrl-shift-4",
-    ]
+    ["alt-1", "alt-2", "alt-3", "alt-4"]
 };
 
 pub fn bind_keys(cx: &mut App) {
@@ -178,8 +175,8 @@ pub fn bind_keys(cx: &mut App) {
         gpui::KeyBinding::new("secondary-shift-e", ExportMovie, None),
         gpui::KeyBinding::new("secondary-shift-d", ToggleDark, None),
         gpui::KeyBinding::new("secondary-shift-l", ToggleLayout, None),
-        // ⌘1 to ⌘9 are the tabs, so the views take ⌥⌘ and the styles ⌃⌘ (⇧⌘
-        // off the Mac).
+        // ⌘1 to ⌘9 are the tabs, so the views take ⌥⌘ and the styles ⌃⌘ (⌥ off
+        // the Mac).
         gpui::KeyBinding::new("alt-secondary-1", ShowCartoon, None),
         gpui::KeyBinding::new("alt-secondary-2", ShowTube, None),
         gpui::KeyBinding::new("alt-secondary-3", ShowBallAndStick, None),
