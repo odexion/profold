@@ -174,6 +174,9 @@ impl Viewer {
                     "secondary" | "ss" | "structure" => Coloring::Structure,
                     "hydrophobic" | "hydrophobicity" => Coloring::Hydrophobic,
                     "charge" | "electrostatic" | "electrostatics" => Coloring::Charge,
+                    "amino" | "aminoacid" | "amino acid" | "residue" | "residues" => {
+                        Coloring::Residue
+                    }
                     "element" | "elements" | "atom" => Coloring::Element,
                     _ => {
                         // A palette's name colours by it too.

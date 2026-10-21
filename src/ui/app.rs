@@ -529,6 +529,10 @@ pub struct Viewer {
     /// The residue of the loaded structure the pointer is over in the
     /// sequence, which glows in the viewport while it is.
     seq_hover: Option<usize>,
+    /// The other end of a run of residues shift-clicked out in the sequence,
+    /// from the picked residue to this one. It holds only while that residue
+    /// stays picked.
+    seq_range: Option<usize>,
     /// The scene without anything glowing in it, which a glow is laid over
     /// without building the rest again.
     base: Arc<Scene>,
@@ -838,6 +842,7 @@ impl Viewer {
             hover: None,
             selected: None,
             seq_hover: None,
+            seq_range: None,
             base: Arc::new(Scene::default()),
             measuring: false,
             measure_kind: measure::Kind::Distance,
@@ -1237,10 +1242,48 @@ impl Viewer {
             self.selected
                 .is_none_or(|s| (s.which, s.picked.atom) != (t.which, t.picked.atom))
         });
-        if target != self.selected {
+        if target != self.selected || self.seq_range.is_some() {
             self.selected = target;
+            self.seq_range = None;
             self.compose(cx);
         }
+    }
+
+    /// Stretch the pick in the sequence from the residue picked to `end`,
+    /// both ends included. With nothing picked in that chain, pick `end`.
+    fn select_seq_range(&mut self, end: usize, cx: &mut Context<Self>) {
+        let Some(s) = self.structure.as_ref() else {
+            return;
+        };
+        match self.selected_residue() {
+            Some(anchor) if s.residues[anchor].chain == s.residues[end].chain => {
+                self.seq_range = (anchor != end).then_some(end);
+                self.compose(cx);
+            }
+            _ => {
+                let target = residue_pick(s, end).map(|picked| Target { which: 0, picked });
+                self.select(target, cx);
+            }
+        }
+    }
+
+    /// The run of residues shift-clicked out in the sequence: its chain and
+    /// first and last residue, when there is one.
+    fn seq_run(&self) -> Option<(u16, usize, usize)> {
+        let end = self.seq_range?;
+        let anchor = self.selected_residue()?;
+        let s = self.structure.as_ref()?;
+        let chain = s.residues.get(anchor)?.chain;
+        (s.residues.get(end)?.chain == chain).then(|| (chain, anchor.min(end), anchor.max(end)))
+    }
+
+    /// Whether residue `r` is in the run shift-clicked out in the sequence.
+    fn in_seq_run(s: &Structure, run: Option<(u16, usize, usize)>, r: usize) -> bool {
+        run.is_some_and(|(chain, lo, hi)| {
+            (lo..=hi).contains(&r)
+                && s.residues[r].chain == chain
+                && !s.residues[r].outside_polymer()
+        })
     }
 
     /// Point at a residue in the sequence, or with `None` at none.
@@ -1452,6 +1495,16 @@ impl Viewer {
             .chain(self.selected.map(|t| (t, false)))
             .collect();
         let mut scene = Scene::clone(&self.base);
+        if let (Some(run), Some(s)) = (self.seq_run(), self.structure.as_ref()) {
+            let (tris, capsules) = self.parts[0].clone();
+            scene.paint_residues(
+                tris,
+                capsules,
+                |r| Self::in_seq_run(s, Some(run), r as usize),
+                self.style,
+                false,
+            );
+        }
         for (t, faint) in glows {
             if let Some(s) = self.shown(t.which) {
                 if t.picked.residue {
@@ -4572,8 +4625,9 @@ impl Viewer {
                 // ⌘-click: pick it and fly to it. Never a second click that
                 // lets go, and a miss leaves the pick as it was.
                 if target.is_some() {
-                    if target != self.selected {
+                    if target != self.selected || self.seq_range.is_some() {
                         self.selected = target;
+                        self.seq_range = None;
                         self.compose(cx);
                     }
                     self.focus_selected(cx);
@@ -5575,7 +5629,7 @@ impl Viewer {
                 .filter(|c| {
                     **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some())
                 })
-                .filter(|c| **c != Coloring::Structure || polymer)
+                .filter(|c| !matches!(c, Coloring::Structure | Coloring::Residue) || polymer)
                 .filter(|c| {
                     **c != Coloring::Property || structure.is_some_and(|s| !s.props.is_empty())
                 })
@@ -5694,7 +5748,7 @@ impl Viewer {
                     .filter(|c| {
                         **c != Coloring::BFactor || structure.is_some_and(|s| s.b_span().is_some())
                     })
-                    .filter(|c| **c != Coloring::Structure || polymer)
+                    .filter(|c| !matches!(c, Coloring::Structure | Coloring::Residue) || polymer)
                     .filter(|c| {
                         **c != Coloring::Property || structure.is_some_and(|s| !s.props.is_empty())
                     })
@@ -7666,6 +7720,27 @@ impl Viewer {
                         .map(|(_, name, c)| row(*c, name.to_string())),
                 )
                 .into_any_element(),
+            Coloring::Residue => {
+                let palette = self.appearance.amino_palette.then_some(self.palette);
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(self.amino_colors_toggle(cx))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_x(px(14.))
+                            .gap_y(px(4.))
+                            .children(render::AMINO_COLORS.iter().enumerate().map(
+                                |(i, (_, name, _))| {
+                                    row(render::amino_group_color(i, palette), name.to_string())
+                                },
+                            )),
+                    )
+                    .into_any_element()
+            }
             Coloring::Hydrophobic | Coloring::Charge => {
                 let hydro = self.coloring == Coloring::Hydrophobic;
                 let (low, high) = if hydro {
@@ -7727,6 +7802,7 @@ impl Viewer {
                 .child(key(match self.coloring {
                     Coloring::BFactor => "b-factor",
                     Coloring::Structure => "secondary structure",
+                    Coloring::Residue => "amino acid",
                     Coloring::Hydrophobic => "hydrophobicity",
                     Coloring::Charge if self.repr == Repr::Surface => "electrostatic potential",
                     Coloring::Charge => "charge",
@@ -8442,6 +8518,53 @@ impl Viewer {
             )
     }
 
+    /// Whether amino acids wear RasMol's colours or the palette's.
+    fn amino_colors_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let on_palette = self.appearance.amino_palette;
+        let option = |id: &'static str, label: &'static str, chosen: bool, set: bool| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .text_size(px(10.5))
+                .when(chosen, |d| {
+                    d.bg(theme::surface()).text_color(theme::ink()).shadow_sm()
+                })
+                .when(!chosen, |d| {
+                    d.text_color(theme::muted())
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme::ink()))
+                })
+                .child(label)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if this.appearance.amino_palette != set {
+                        this.appearance.amino_palette = set;
+                        this.rebuild(cx);
+                    }
+                }))
+        };
+        div()
+            .flex()
+            .p(px(2.))
+            .gap(px(2.))
+            .rounded(px(7.))
+            .bg(theme::sunken())
+            .child(
+                option("amino-colours-standard", "Standard", !on_palette, false).tooltip(
+                    |_, cx| {
+                        cx.new(|_| Tip("RasMol's: acids red, bases blue".into()))
+                            .into()
+                    },
+                ),
+            )
+            .child(
+                option("amino-colours-palette", "Palette", on_palette, true)
+                    .tooltip(|_, cx| cx.new(|_| Tip("From the palette".into())).into()),
+            )
+    }
+
     /// Presets, then the colour as hex and as RGB to type over. The first
     /// preset is the species' or chain's own colour, which clears any choice.
     fn color_picker(
@@ -8832,10 +8955,12 @@ impl Viewer {
     /// figures in a ruled table that reads straight down the left edge.
     /// The sequence, chain by chain, in numbered blocks of ten. A letter
     /// glows its residue in the viewport while pointed at and picks it out
-    /// when clicked; what is picked or pointed at in the viewport is marked
-    /// here in turn.
+    /// when clicked, and shift-clicked takes in the whole run from the one
+    /// picked; what is picked or pointed at in the viewport is marked here
+    /// in turn.
     fn sequence_view(&self, structure: &Structure, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected_residue();
+        let run = self.seq_run();
         let pointed = self.hovered_residue().or(self.seq_hover);
         let total = structure.chains.len();
         let shown = if self.all_chains { total } else { total.min(6) };
@@ -8872,7 +8997,8 @@ impl Viewer {
                             .child(div().flex().children(block.iter().map(|&ri| {
                                 let r = &structure.residues[ri];
                                 let tip: SharedString = format!("{} {}", r.name, r.seq).into();
-                                let on = selected == Some(ri);
+                                let on =
+                                    selected == Some(ri) || Self::in_seq_run(structure, run, ri);
                                 let near = pointed == Some(ri);
                                 div()
                                     .id(("residue", ri))
@@ -8900,14 +9026,22 @@ impl Viewer {
                                             this.set_seq_hover(None, cx);
                                         }
                                     }))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        let Some(s) = this.structure.as_ref() else {
-                                            return;
-                                        };
-                                        let target = residue_pick(s, ri)
-                                            .map(|picked| Target { which: 0, picked });
-                                        this.select(target, cx);
-                                    }))
+                                    .on_click(cx.listener(
+                                        move |this, e: &gpui::ClickEvent, _, cx| {
+                                            // Shift-click takes in every residue
+                                            // from the one picked to this one.
+                                            if e.modifiers().shift {
+                                                this.select_seq_range(ri, cx);
+                                                return;
+                                            }
+                                            let Some(s) = this.structure.as_ref() else {
+                                                return;
+                                            };
+                                            let target = residue_pick(s, ri)
+                                                .map(|picked| Target { which: 0, picked });
+                                            this.select(target, cx);
+                                        },
+                                    ))
                             })))
                     });
                     Some(
@@ -11046,6 +11180,58 @@ mod ui_tests {
         assert_eq!(picked, hit);
     }
 
+    #[gpui::test]
+    fn shift_clicking_the_sequence_picks_out_a_run(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(SAMPLES[2].file, SAMPLES[2].bytes.to_vec()).unwrap();
+            this.show(s, cx);
+        });
+        cx.run_until_parked();
+        let shift_click = |cx: &mut VisualTestContext, selector: &'static str| {
+            let at = cx.debug_bounds(selector).unwrap().center();
+            cx.simulate_click(at, Modifiers::shift());
+            cx.run_until_parked();
+        };
+        // The residues whose ribbon is painted, against the bare scene.
+        let painted = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| {
+                let mut r: Vec<u32> = (this.scene.tris.iter().zip(&this.base.tris))
+                    .zip(&this.scene.tri_residue)
+                    .filter(|((a, b), _)| a.c != b.c)
+                    .map(|(_, &r)| r)
+                    .collect();
+                r.sort_unstable();
+                r.dedup();
+                r
+            })
+        };
+        let run = |view: &Entity<Viewer>, cx: &mut VisualTestContext| {
+            view.update(cx, |this, _| this.seq_run().map(|(_, lo, hi)| (lo, hi)))
+        };
+
+        // With nothing picked, a shift-click picks the one residue.
+        shift_click(cx, "residue-3");
+        assert_eq!(view.update(cx, |this, _| this.selected_residue()), Some(3));
+        assert_eq!(run(&view, cx), None);
+
+        // Then a shift-click further on takes in all between, both ends too.
+        shift_click(cx, "residue-8");
+        assert_eq!(run(&view, cx), Some((3, 8)));
+        assert_eq!(painted(&view, cx), (3..=8).collect::<Vec<u32>>());
+
+        // A shift-click before the first runs the other way from it.
+        shift_click(cx, "residue-1");
+        assert_eq!(run(&view, cx), Some((1, 3)));
+        assert_eq!(painted(&view, cx), (1..=3).collect::<Vec<u32>>());
+
+        // A plain click starts over from the residue clicked.
+        click(cx, "residue-5");
+        assert_eq!(run(&view, cx), None);
+        assert_eq!(view.update(cx, |this, _| this.selected_residue()), Some(5));
+        assert_eq!(painted(&view, cx), vec![5]);
+    }
+
     /// Where in the window atom `i` is drawn.
     fn atom_on_screen(
         view: &Entity<Viewer>,
@@ -12040,6 +12226,66 @@ mod ui_tests {
             "a wide window keeps its rows"
         );
         theme::set_vertical(false);
+    }
+
+    #[gpui::test]
+    fn a_protein_is_coloured_by_amino_acid_from_the_menu(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(SAMPLES[3].file, SAMPLES[3].bytes.to_vec()).unwrap();
+            this.show(s, cx);
+            this.set_repr(Repr::BallAndStick, cx);
+            this.rebuild(cx);
+        });
+        theme::set_vertical(true);
+        cx.simulate_resize(gpui::size(px(400.), px(820.)));
+        cx.run_until_parked();
+        click(cx, "colour-menu");
+        click(cx, "colour-item-Amino acid");
+        assert!(view.update(cx, |this, _| this.coloring == Coloring::Residue));
+        // Every amino acid in the chain is drawn in its own colour.
+        let want: std::collections::BTreeSet<_> = view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            s.residues
+                .iter()
+                .filter(|r| r.ca.is_some())
+                .filter_map(|r| {
+                    render::AMINO_COLORS
+                        .iter()
+                        .find(|(codes, _, _)| codes.contains(r.code))
+                        .map(|(_, _, c)| c.map(f32::to_bits))
+                })
+                .collect()
+        });
+        let got: std::collections::BTreeSet<_> = colors(&view, cx)
+            .iter()
+            .map(|c| c.map(f32::to_bits))
+            .collect();
+        theme::set_vertical(false);
+        assert!(want.len() >= 8, "ubiquitin has {} kinds", want.len());
+        // Each style tones colours a little, so count them: one per kind.
+        assert_eq!(got.len(), want.len(), "not one colour per amino acid");
+
+        // The key switches them onto the palette, which then recolours them.
+        cx.simulate_resize(gpui::size(px(1180.), px(760.)));
+        cx.run_until_parked();
+        let standard = colors(&view, cx);
+        click(cx, "amino-colours-palette");
+        assert!(view.update(cx, |this, _| this.appearance.amino_palette));
+        let spectrum = colors(&view, cx);
+        assert_ne!(spectrum, standard, "the switch changed nothing");
+        view.update(cx, |this, cx| {
+            this.palette = Palette::Viridis;
+            this.rebuild(cx);
+        });
+        assert_ne!(colors(&view, cx), spectrum, "the palette changed nothing");
+        let kinds: std::collections::BTreeSet<_> = colors(&view, cx)
+            .iter()
+            .map(|c| c.map(f32::to_bits))
+            .collect();
+        assert_eq!(kinds.len(), want.len(), "not one colour per amino acid");
+        click(cx, "amino-colours-standard");
+        assert_eq!(colors(&view, cx), standard);
     }
 
     #[gpui::test]

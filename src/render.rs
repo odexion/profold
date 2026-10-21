@@ -56,6 +56,8 @@ pub struct Appearance {
     pub hide_solvent: bool,
     /// Atoms hidden from every style, the backbone's included, by index.
     pub hidden: Option<std::sync::Arc<Vec<bool>>>,
+    /// Amino acids in the palette's colours rather than RasMol's.
+    pub amino_palette: bool,
 }
 
 impl Appearance {
@@ -219,6 +221,11 @@ pub enum Coloring {
     /// Acidic residues red and basic blue; over a surface, the electrostatic
     /// potential there.
     Charge,
+    /// Each amino acid its own colour, after RasMol's "amino" scheme.
+    Residue,
+    /// The same, in the palette's colours. Never offered in the menu:
+    /// `build_scene` paints `Residue` so when the appearance asks for it.
+    ResiduePalette,
     Element,
     /// One colour per structure, when two are superimposed.
     Pair,
@@ -230,7 +237,7 @@ pub enum Coloring {
 }
 
 impl Coloring {
-    pub const ALL: [Coloring; 9] = [
+    pub const ALL: [Coloring; 10] = [
         Coloring::Chain,
         Coloring::Rainbow,
         Coloring::Confidence,
@@ -238,6 +245,7 @@ impl Coloring {
         Coloring::Structure,
         Coloring::Hydrophobic,
         Coloring::Charge,
+        Coloring::Residue,
         Coloring::Element,
         Coloring::Property,
     ];
@@ -257,6 +265,7 @@ impl Coloring {
             Coloring::Structure => "Secondary",
             Coloring::Hydrophobic => "Hydrophobic",
             Coloring::Charge => "Charge",
+            Coloring::Residue | Coloring::ResiduePalette => "Amino acid",
             Coloring::Element => "Element",
             Coloring::Pair => "Pair",
             Coloring::Deviation => "Deviation",
@@ -1015,15 +1024,26 @@ impl Scene {
         style: Style,
         faint: bool,
     ) {
+        self.paint_residues(tris, capsules, |r| r == residue, style, faint);
+    }
+    /// Make every residue `pick` takes glow, in one pass over the parts.
+    pub fn paint_residues(
+        &mut self,
+        tris: std::ops::Range<usize>,
+        capsules: std::ops::Range<usize>,
+        pick: impl Fn(u32) -> bool,
+        style: Style,
+        faint: bool,
+    ) {
         let white = highlight_color(style);
         let paint = |c: [f32; 3]| if faint { mix(c, white, 0.7) } else { white };
         for i in tris {
-            if self.tri_residue.get(i) == Some(&residue) {
+            if self.tri_residue.get(i).is_some_and(|&r| pick(r)) {
                 self.tris[i].c = paint(self.tris[i].c);
             }
         }
         for i in capsules {
-            if self.capsule_residue.get(i) == Some(&residue) {
+            if self.capsule_residue.get(i).is_some_and(|&r| pick(r)) {
                 let c = &mut self.capsules[i];
                 (c.ca, c.cb) = (paint(c.ca), paint(c.cb));
             }
@@ -1194,8 +1214,56 @@ fn residue_color(s: &Structure, residue: usize, coloring: Coloring, palette: Pal
             "LYS" | "ARG" => POSITIVE,
             _ => NEUTRAL,
         },
+        Coloring::Residue => amino_color(r, None),
+        Coloring::ResiduePalette => amino_color(r, Some(palette)),
         Coloring::Element => [0.42, 0.44, 0.47],
     }
+}
+
+/// RasMol's "amino" colours, which Jmol and others keep: like side chains
+/// alike, acids red and bases blue. Fixed, as a reader knows them by sight.
+pub const AMINO_COLORS: [(&str, &str, [f32; 3]); 12] = [
+    ("DE", "Asp, Glu", rgb(230, 10, 10)),
+    ("KR", "Lys, Arg", rgb(20, 90, 255)),
+    ("H", "His", rgb(130, 130, 210)),
+    ("FY", "Phe, Tyr", rgb(50, 50, 170)),
+    ("W", "Trp", rgb(180, 90, 180)),
+    ("CM", "Cys, Met", rgb(230, 230, 0)),
+    ("ST", "Ser, Thr", rgb(250, 150, 0)),
+    ("NQ", "Asn, Gln", rgb(0, 220, 220)),
+    ("LVI", "Leu, Val, Ile", rgb(15, 130, 15)),
+    ("A", "Ala", rgb(200, 200, 200)),
+    ("G", "Gly", rgb(235, 235, 235)),
+    ("P", "Pro", rgb(220, 150, 130)),
+];
+
+/// Whatever is not one of the twenty: nucleotides, unusual residues.
+pub const AMINO_OTHER: [f32; 3] = rgb(190, 160, 110);
+
+const fn rgb(r: u8, g: u8, b: u8) -> [f32; 3] {
+    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]
+}
+
+/// The colour of `AMINO_COLORS`' group `i`: RasMol's, or with a palette,
+/// spread over its whole ramp. Stepping five of the twelve stops at a time
+/// puts groups listed together far apart, so acids and bases, side by side
+/// in the list, never share a hue.
+pub fn amino_group_color(i: usize, palette: Option<Palette>) -> [f32; 3] {
+    match palette {
+        None => AMINO_COLORS[i].2,
+        Some(p) => p.ramp((i * 5 % AMINO_COLORS.len()) as f32 / (AMINO_COLORS.len() - 1) as f32),
+    }
+}
+
+fn amino_color(r: &crate::protein::Residue, palette: Option<Palette>) -> [f32; 3] {
+    // A nucleotide's one-letter code would read as an amino acid's.
+    if r.ca.is_none() {
+        return AMINO_OTHER;
+    }
+    AMINO_COLORS
+        .iter()
+        .position(|(codes, _, _)| codes.contains(r.code))
+        .map_or(AMINO_OTHER, |i| amino_group_color(i, palette))
 }
 
 /// The ends of the hydrophobicity and charge scales, and their middle:
@@ -1485,6 +1553,10 @@ pub fn build_scene(
     // Colours are settled on the structure's own atoms, so showing the cell
     // and its boundary copies does not reshuffle them.
     let elements = element_colors(s, palette, standard_colors);
+    let coloring = match coloring {
+        Coloring::Residue if appearance.amino_palette => Coloring::ResiduePalette,
+        c => c,
+    };
     let own = s.atoms.len();
     let filled = if cell { with_boundary(s) } else { None };
     let (s, images) = match &filled {
@@ -4517,6 +4589,36 @@ mod tests {
             NEGATIVE
         );
         assert_eq!(residue_color(&s, find("THR"), Coloring::Charge, p), NEUTRAL);
+
+        // RasMol's amino colours, as Jmol shows them.
+        for (name, c) in [
+            ("ARG", rgb(20, 90, 255)),
+            ("GLU", rgb(230, 10, 10)),
+            ("THR", rgb(250, 150, 0)),
+            ("CYS", rgb(230, 230, 0)),
+            ("ILE", rgb(15, 130, 15)),
+            ("GLY", rgb(235, 235, 235)),
+            ("PRO", rgb(220, 150, 130)),
+            ("TYR", rgb(50, 50, 170)),
+        ] {
+            assert_eq!(
+                residue_color(&s, find(name), Coloring::Residue, p),
+                c,
+                "{name}"
+            );
+        }
+        // On a palette, twelve different stops of its ramp, one per group.
+        let stops: Vec<[f32; 3]> = (0..AMINO_COLORS.len())
+            .map(|i| amino_group_color(i, Some(Palette::Viridis)))
+            .collect();
+        for (i, c) in stops.iter().enumerate() {
+            assert!(!stops[..i].contains(c), "group {i} repeats a colour");
+        }
+        assert_eq!(stops[0], Palette::Viridis.ramp(0.0));
+        assert_eq!(
+            residue_color(&s, find("ARG"), Coloring::ResiduePalette, Palette::Viridis),
+            stops[1]
+        );
 
         // Just off an arginine's guanidinium it is positive, off a
         // glutamate's carboxylate negative.

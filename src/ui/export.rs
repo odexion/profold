@@ -376,6 +376,19 @@ impl Viewer {
                     .map(|(_, name, c)| (*c, name.to_string()))
                     .collect(),
             ),
+            Coloring::Residue if s.has_polymer() => {
+                let palette = self.appearance.amino_palette.then_some(palette);
+                swatches(
+                    "Amino acid",
+                    render::AMINO_COLORS
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, name, _))| {
+                            (render::amino_group_color(i, palette), name.to_string())
+                        })
+                        .collect(),
+                )
+            }
             Coloring::Confidence if s.has_confidence => swatches(
                 "pLDDT",
                 render::PLDDT_BANDS
