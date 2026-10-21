@@ -3,9 +3,10 @@
 ## Unreleased
 
 ### Fixes
-- **The drawing styles on Linux and Windows** are Alt+1 to Alt+4. 0.5.0
-  gave them Ctrl+Shift+1 to Ctrl+Shift+4, which there arrive as Ctrl+! and
-  the like and so did nothing. The Mac keeps ⌃⌘1 to ⌃⌘4.
+- **The drawing styles on Linux and Windows** are Alt+1 to Alt+4, in place
+  of 0.5.0's Ctrl+Shift+1 to Ctrl+Shift+4: with Shift held, what a digit
+  key sends depends on the keyboard layout, and Alt and a digit does not.
+  The Mac keeps ⌃⌘1 to ⌃⌘4.
 
 ## 0.5.0 — 2026-10-21
 

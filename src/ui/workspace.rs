@@ -140,9 +140,8 @@ const TAB_BAR: f32 = 40.0;
 const LIGHTS: f32 = if cfg!(target_os = "macos") { 80.0 } else { 8.0 };
 
 /// The styles' chords. ⌃⌘ on a Mac; elsewhere ⌘ is Ctrl, where ⌃⌘1 would
-/// be Ctrl+1 and take the tab's key, so the styles take Alt. (Not
-/// Ctrl+Shift: with Shift a digit arrives as the sign above it, and
-/// Ctrl+Shift+2 never matches there.)
+/// be Ctrl+1 and take the tab's key, so the styles take Alt: with Shift
+/// held, what a digit key sends depends on the keyboard layout.
 pub const STYLE_KEYS: [&str; 4] = if cfg!(target_os = "macos") {
     ["ctrl-cmd-1", "ctrl-cmd-2", "ctrl-cmd-3", "ctrl-cmd-4"]
 } else {
@@ -1626,7 +1625,16 @@ mod tests {
                 tab.open_path("samples/caffeine.sdf".into(), cx)
             });
         });
-        cx.run_until_parked();
+        // The file is read on a thread of its own, which parking does not
+        // wait for: on a slow machine the tab is still empty without this.
+        for _ in 0..1000 {
+            cx.executor().advance_clock(Duration::from_millis(50));
+            cx.run_until_parked();
+            if view.update(cx, |this, cx| this.tabs[0].read(cx).activity().is_none()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
 
         click(cx, "tab-0");
         assert_eq!(tabs(&view, cx), (3, 0));
