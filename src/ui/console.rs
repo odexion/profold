@@ -43,7 +43,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("save <file.png|.pdb|.cif|.profold>", "save to file without prompting"),
     (
         "movie [<file.mp4|.gif|.webm|.mov|folder> key=value …]",
-        "open the film dialog, or make a film: frames=first:last:every fps= seconds= turn=° rock=° axis=x|y|z smooth= pingpong size=1080p|4k|WxH aa= quality= bg=theme|transparent|#hex counter time dt=2fs scalebar caption=\"…\" recorded",
+        "open the film dialog, or make a film: frames=first:last:every fps= seconds= turn=° rock=° axis=x|y|z smooth= pingpong size=1080p|4k|WxH aa= quality= bg=theme|transparent|#hex counter time dt=2fs scalebar legend=corner legend-title=\"…\" legend-size= legend-box caption=\"…\" caption-at=top|bottom-right|… caption-size=small|large ink=auto|#hex recorded",
     ),
     ("record, record stop", "record a camera path, for movie … recorded"),
     ("run <script>", "run commands from a script file, one per line"),

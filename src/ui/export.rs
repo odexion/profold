@@ -11,7 +11,8 @@ use gpui::{div, prelude::*, px, relative, Context, MouseButton, SharedString, Ta
 
 use super::{pill_keyed, spaced, swallow, Field, Viewer};
 use crate::movie::{
-    self, Axis, Background, Corner, Format, Legend, Motion, Options, Sample, Size, TimeUnit,
+    self, Axis, Background, Corner, Format, Legend, Motion, Options, Place, Sample, Size, TextSize,
+    TimeUnit,
 };
 use crate::protein::Structure;
 use crate::render::{self, Coloring, Repr, Scene, Species};
@@ -33,6 +34,8 @@ pub(super) enum Knob {
     Hex,
     Dt,
     Caption,
+    LegendTitle,
+    Ink,
 }
 
 struct Recording {
@@ -46,11 +49,13 @@ struct Recording {
 pub(super) struct Movie {
     options: Option<Options>,
     pub(super) open: bool,
-    /// Small frames of the film and how many of its frames each stands for,
-    /// and the one showing.
-    preview: Vec<Arc<gpui::RenderImage>>,
-    preview_stride: usize,
-    preview_at: usize,
+    /// The film as it plays in the dialog: the frame showing and which of
+    /// the film's it is, and every frame drawn so far while they all fit in
+    /// `PREVIEW_BYTES`, to play again without drawing them again.
+    shown: Option<(usize, Arc<gpui::RenderImage>)>,
+    kept: Vec<Arc<gpui::RenderImage>>,
+    /// The width, in points, the preview was drawn to be shown at.
+    drawn_for: f32,
     preview_task: Option<Task<()>>,
     /// The wait after a change before the preview is drawn again, so typing
     /// or clicking through choices does not start one for each.
@@ -98,7 +103,31 @@ fn clock(s: f32) -> String {
     format!("{}:{:04.1}", (s / 60.0) as u32, s % 60.0)
 }
 
+/// The preview's width in the dialog, in points: as wide as the viewport
+/// leaves room for, between these.
 const PREVIEW_WIDTH: f32 = 296.0;
+const PREVIEW_WIDEST: f32 = 640.0;
+
+/// The dialog's width besides the preview: its settings, the gap between,
+/// its padding, and a margin each side in the viewport.
+const DIALOG_REST: f32 = 410.0 + 22.0 + 36.0 + 24.0;
+
+/// What the preview's frames may hold between them, in bytes; a longer
+/// film is drawn again each time round instead of kept.
+const PREVIEW_BYTES: usize = 192 << 20;
+
+/// A drawn frame as an image for the window.
+fn render_image(p: movie::Picture) -> Arc<gpui::RenderImage> {
+    let mut bgra = p.rgba;
+    for px in bgra.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+    let buffer =
+        image::RgbaImage::from_raw(p.width as u32, p.height as u32, bgra).expect("sized to fit");
+    Arc::new(gpui::RenderImage::new(smallvec::smallvec![
+        image::Frame::new(buffer)
+    ]))
+}
 
 /// How long settings must rest before the preview is drawn again.
 const PREVIEW_PAUSE: Duration = Duration::from_millis(350);
@@ -430,7 +459,31 @@ impl Viewer {
         (n, n as f32 / o.fps.max(1) as f32)
     }
 
-    /// Draw a few small frames of the film and play them in the dialog.
+    /// How wide the preview is shown, in points: what the viewport leaves
+    /// room for beside the settings.
+    fn preview_width(&self) -> f32 {
+        let room = f32::from(self.cache.borrow().bounds.size.width);
+        if room <= 0.0 {
+            PREVIEW_WIDTH
+        } else {
+            (room - DIALOG_REST).clamp(PREVIEW_WIDTH, PREVIEW_WIDEST)
+        }
+    }
+
+    /// The screen's pixels to the point, as the viewport is drawn.
+    fn screen_scale(&self) -> f32 {
+        let c = self.cache.borrow();
+        let w = f32::from(c.bounds.size.width);
+        if w > 0.0 {
+            (c.size.0 as f32 / w).max(1.0)
+        } else {
+            2.0
+        }
+    }
+
+    /// Play the film in the dialog, each frame drawn as it will be made at
+    /// the size it is shown, at the film's frame rate as far as drawing
+    /// keeps up.
     fn preview_movie(&mut self, cx: &mut Context<Self>) {
         let Some(job) = self.movie_job(&self.options()) else {
             return;
@@ -439,53 +492,62 @@ impl Viewer {
         let cancel = Arc::new(AtomicBool::new(false));
         self.movie.preview_cancel = Some(cancel.clone());
         self.movie.previewing = true;
+        self.movie.kept.clear();
+        self.movie.drawn_for = self.preview_width();
         let fps = job.options.fps.max(1);
-        let made = cx.background_executor().spawn(async move {
-            let (pictures, stride) =
-                movie::preview(&job, (PREVIEW_WIDTH * 2.0) as usize, 150, &cancel);
-            let images: Vec<Arc<gpui::RenderImage>> = pictures
-                .into_iter()
-                .map(|p| {
-                    let mut bgra = p.rgba;
-                    for px in bgra.chunks_exact_mut(4) {
-                        px.swap(0, 2);
-                    }
-                    let buffer = image::RgbaImage::from_raw(p.width as u32, p.height as u32, bgra)
-                        .expect("sized to fit");
-                    Arc::new(gpui::RenderImage::new(smallvec::smallvec![
-                        image::Frame::new(buffer)
-                    ]))
-                })
-                .collect();
-            (images, stride)
+        let across = (self.movie.drawn_for * self.screen_scale()).round() as usize;
+        let (pw, ph) = movie::preview_size(&job, across);
+        let fits = job.shots.len() * pw * ph * 4 <= PREVIEW_BYTES;
+        // Two frames drawn ahead at most, so drawing keeps pace with
+        // playing rather than filling memory.
+        // On a thread of its own, since it waits on the channel: waiting in
+        // the executor's pool would hold up whatever else runs there.
+        let (tx, rx) = std::sync::mpsc::sync_channel(2);
+        std::thread::spawn(move || {
+            movie::play(&job, across, !fits, &cancel, |i, p| {
+                tx.send((i, render_image(p))).is_ok()
+            });
         });
         self.movie.preview_task = Some(cx.spawn(async move |this, cx| {
-            let (images, stride) = made.await;
-            let delay = Duration::from_secs_f32(stride as f32 / fps as f32);
-            let ok = this.update(cx, |this, cx| {
-                this.movie.previewing = false;
-                this.movie.preview = images;
-                this.movie.preview_stride = stride;
-                this.movie.preview_at = 0;
-                cx.notify();
-                this.movie.preview.len() > 1
-            });
-            if !matches!(ok, Ok(true)) {
-                return;
-            }
+            use std::sync::mpsc::TryRecvError;
+            let tick = Duration::from_secs_f32(1.0 / fps as f32);
             loop {
-                cx.background_executor().timer(delay).await;
+                let next = rx.try_recv();
                 let going = this.update(cx, |this, cx| {
-                    let n = this.movie.preview.len();
-                    if n == 0 || !this.movie.open {
-                        return false;
+                    if !this.movie.open {
+                        return None;
                     }
-                    this.movie.preview_at = (this.movie.preview_at + 1) % n;
+                    let m = &mut this.movie;
+                    match next {
+                        Ok((i, image)) => {
+                            m.previewing = false;
+                            if fits {
+                                m.kept.push(image.clone());
+                            }
+                            m.shown = Some((i, image));
+                        }
+                        // Not drawn yet: look again soon.
+                        Err(TryRecvError::Empty) => return Some(false),
+                        // Every frame drawn and kept: play them round again.
+                        Err(TryRecvError::Disconnected) => {
+                            if m.kept.len() < 2 {
+                                return None;
+                            }
+                            let i = m.shown.as_ref().map_or(0, |(i, _)| (i + 1) % m.kept.len());
+                            m.shown = Some((i, m.kept[i].clone()));
+                        }
+                    }
                     cx.notify();
-                    true
+                    Some(true)
                 });
-                if !matches!(going, Ok(true)) {
-                    return;
+                match going {
+                    Ok(Some(true)) => cx.background_executor().timer(tick).await,
+                    Ok(Some(false)) => {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(8))
+                            .await
+                    }
+                    _ => return,
                 }
             }
         }));
@@ -744,6 +806,15 @@ impl Viewer {
             }
             Knob::Dt => o.dt = n().unwrap_or(o.dt),
             Knob::Caption => o.caption = text.trim().to_string(),
+            Knob::LegendTitle => o.legend_title = text.trim().to_string(),
+            Knob::Ink => {
+                let t = text.trim();
+                if t.is_empty() || t.eq_ignore_ascii_case("auto") {
+                    o.ink = None;
+                } else if let Some(c) = settings::parse_hex(t) {
+                    o.ink = Some(c);
+                }
+            }
         }
         self.set_options(o, cx);
     }
@@ -1162,13 +1233,57 @@ impl Viewer {
             )
             .into_any_element(),
         ]);
-        let legend = o.legend.then(|| match self.film_legend() {
+        let sizes_of = |id: &'static str,
+                        current: TextSize,
+                        set: fn(&mut Options, TextSize),
+                        cx: &mut Context<Self>| {
+            let items: Vec<_> = TextSize::ALL
+                .iter()
+                .map(|t| (*t, t.label(), true))
+                .collect();
+            self.choices(id, &items, current, set, cx)
+                .into_any_element()
+        };
+        let film_legend = self.film_legend();
+        let legend = o.legend.then(|| match &film_legend {
             Some(_) => {
                 let corners: Vec<_> = Corner::ALL.iter().map(|c| (*c, c.label(), true)).collect();
                 self.choices("movie-corner", &corners, o.corner, |o, v| o.corner = v, cx)
                     .into_any_element()
             }
             None => note("This colouring has no key to show".to_string()).into_any_element(),
+        });
+        // How the legend reads, once there is one to show.
+        let legend_look = film_legend.as_ref().filter(|_| o.legend).map(|l| {
+            let title = self.knob(
+                "movie-legend-title",
+                Knob::LegendTitle,
+                if o.legend_title.is_empty() {
+                    l.title().to_string()
+                } else {
+                    o.legend_title.clone()
+                },
+                160.,
+                cx,
+            );
+            let backdrop = self
+                .switch(
+                    "movie-legend-box",
+                    "Backdrop",
+                    o.legend_box,
+                    |o| o.legend_box = !o.legend_box,
+                    cx,
+                )
+                .into_any_element();
+            (
+                inline(vec![title, backdrop]),
+                sizes_of(
+                    "movie-legend-size",
+                    o.legend_size,
+                    |o, v| o.legend_size = v,
+                    cx,
+                ),
+            )
         });
         let steps = self
             .structure
@@ -1207,6 +1322,79 @@ impl Viewer {
             200.,
             cx,
         );
+        let caption_look = (!o.caption.trim().is_empty()).then(|| {
+            let p = o.caption_place;
+            (
+                inline(vec![
+                    self.choices(
+                        "movie-caption-edge",
+                        &[(false, "Top", true), (true, "Bottom", true)],
+                        p.bottom(),
+                        |o, v| o.caption_place = Place::at(v, o.caption_place.across()),
+                        cx,
+                    )
+                    .into_any_element(),
+                    small("·"),
+                    self.choices(
+                        "movie-caption-across",
+                        &[(0, "Left", true), (1, "Centre", true), (2, "Right", true)],
+                        p.across(),
+                        |o, v| o.caption_place = Place::at(o.caption_place.bottom(), v),
+                        cx,
+                    )
+                    .into_any_element(),
+                ]),
+                sizes_of(
+                    "movie-caption-size",
+                    o.caption_size,
+                    |o, v| o.caption_size = v,
+                    cx,
+                ),
+            )
+        });
+        let writing = o.legend && film_legend.is_some()
+            || !o.caption.trim().is_empty()
+            || o.counter
+            || o.time
+            || o.scale_bar;
+        let ink = writing.then(|| {
+            let mut items = vec![self
+                .choices(
+                    "movie-ink",
+                    &[(false, "Automatic", true), (true, "Colour", true)],
+                    o.ink.is_some(),
+                    |o, v| {
+                        o.ink = v.then(|| o.ink.unwrap_or([0.85, 0.2, 0.2]));
+                    },
+                    cx,
+                )
+                .into_any_element()];
+            if let Some(c) = o.ink {
+                let b = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+                items.push(
+                    div()
+                        .size(px(14.))
+                        .rounded(px(3.))
+                        .border_1()
+                        .border_color(theme::border())
+                        .bg(gpui::Rgba {
+                            r: c[0],
+                            g: c[1],
+                            b: c[2],
+                            a: 1.0,
+                        })
+                        .into_any_element(),
+                );
+                items.push(self.knob(
+                    "movie-ink-hex",
+                    Knob::Ink,
+                    format!("#{:02x}{:02x}{:02x}", b[0], b[1], b[2]),
+                    64.,
+                    cx,
+                ));
+            }
+            inline(items)
+        });
 
         let left = div()
             .w(px(410.))
@@ -1271,16 +1459,36 @@ impl Viewer {
             .children(ffmpeg_note)
             .child(heading("Overlays"))
             .child(row("Show", overlays))
-            .children(legend.map(|l| row("Legend", l)))
             .children(time.map(|t| row("", t)))
-            .child(row("Caption", caption));
+            .children(legend.map(|l| row("Legend", l)))
+            .children(legend_look.map(|(title, size)| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(row("Legend title", title))
+                    .child(row("Legend size", size))
+            }))
+            .child(row("Caption", caption))
+            .children(caption_look.map(|(place, size)| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(row("Placed", place))
+                    .child(row("Caption size", size))
+            }))
+            .children(ink.map(|i| row("Text colour", i)));
 
         // -- Preview and the buttons
         let ratio = h as f32 / w.max(1) as f32;
-        let ph = (PREVIEW_WIDTH * ratio).min(PREVIEW_WIDTH * 1.2);
+        let wide = self.preview_width();
+        let ph = (wide * ratio).min(wide * 1.2);
         let pw = ph / ratio;
-        let shown = self.movie.preview.get(self.movie.preview_at).cloned();
+        let shown = self.movie.shown.clone();
         let screen = div()
+            .id("movie-preview")
+            .debug_selector(|| "movie-preview".into())
             .w(px(pw))
             .h(px(ph))
             .rounded(px(6.))
@@ -1291,7 +1499,7 @@ impl Viewer {
             .flex()
             .items_center()
             .justify_center()
-            .when_some(shown, |d, image| {
+            .when_some(shown.clone(), |d, (_, image)| {
                 // What is showing is out of date while the next is drawn.
                 let stale = self.movie.previewing;
                 d.child(
@@ -1300,7 +1508,7 @@ impl Viewer {
                         .when(stale, |i| i.opacity(0.5)),
                 )
             })
-            .when(self.movie.preview.is_empty(), |d| {
+            .when(shown.is_none(), |d| {
                 d.child(div().text_size(px(10.5)).text_color(theme::faint()).child(
                     if self.movie.previewing {
                         "Drawing the preview…"
@@ -1309,8 +1517,7 @@ impl Viewer {
                     },
                 ))
             });
-        let at = (!self.movie.preview.is_empty()).then(|| {
-            let shot = self.movie.preview_at * self.movie.preview_stride.max(1);
+        let at = shown.as_ref().map(|(shot, _)| {
             let updating = if self.movie.previewing {
                 " · updating…"
             } else {
@@ -1320,7 +1527,7 @@ impl Viewer {
                 "{} / {} · {}{updating}",
                 shot + 1,
                 count,
-                clock(shot as f32 / o.fps.max(1) as f32)
+                clock(*shot as f32 / o.fps.max(1) as f32)
             ))
         });
         let summary = format!(
@@ -1413,7 +1620,7 @@ impl Viewer {
                 .into_any_element(),
         };
         let right = div()
-            .w(px(PREVIEW_WIDTH))
+            .w(px(wide))
             .flex_none()
             .flex()
             .flex_col()

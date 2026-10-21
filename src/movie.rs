@@ -201,6 +201,92 @@ impl Corner {
     }
 }
 
+/// Where along the picture's edges the caption sits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Place {
+    TopLeft,
+    Top,
+    TopRight,
+    BottomLeft,
+    Bottom,
+    BottomRight,
+}
+
+impl Place {
+    pub fn bottom(self) -> bool {
+        matches!(self, Place::BottomLeft | Place::Bottom | Place::BottomRight)
+    }
+
+    /// Across the picture: 0 for the left, 1 the middle, 2 the right.
+    pub fn across(self) -> u8 {
+        match self {
+            Place::TopLeft | Place::BottomLeft => 0,
+            Place::Top | Place::Bottom => 1,
+            Place::TopRight | Place::BottomRight => 2,
+        }
+    }
+
+    /// The place on the top or bottom edge, `across` it as `across` says.
+    pub fn at(bottom: bool, across: u8) -> Place {
+        match (bottom, across) {
+            (false, 0) => Place::TopLeft,
+            (false, 1) => Place::Top,
+            (false, _) => Place::TopRight,
+            (true, 0) => Place::BottomLeft,
+            (true, 1) => Place::Bottom,
+            (true, _) => Place::BottomRight,
+        }
+    }
+
+    /// The corner it shares, if it is not centred.
+    fn corner(self) -> Option<Corner> {
+        match self {
+            Place::TopLeft => Some(Corner::TopLeft),
+            Place::TopRight => Some(Corner::TopRight),
+            Place::BottomLeft => Some(Corner::BottomLeft),
+            Place::BottomRight => Some(Corner::BottomRight),
+            Place::Top | Place::Bottom => None,
+        }
+    }
+}
+
+/// How large a piece of writing is, against the size it is drawn at by
+/// default.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextSize {
+    Small,
+    Medium,
+    Large,
+    Larger,
+}
+
+impl TextSize {
+    pub const ALL: [TextSize; 4] = [
+        TextSize::Small,
+        TextSize::Medium,
+        TextSize::Large,
+        TextSize::Larger,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TextSize::Small => "Small",
+            TextSize::Medium => "Medium",
+            TextSize::Large => "Large",
+            TextSize::Larger => "Larger",
+        }
+    }
+
+    pub fn factor(self) -> f32 {
+        match self {
+            TextSize::Small => 0.75,
+            TextSize::Medium => 1.0,
+            TextSize::Large => 1.35,
+            TextSize::Larger => 1.8,
+        }
+    }
+}
+
 /// What the colours mean, as the panel's key shows it, for writing into a
 /// film.
 #[derive(Clone, Debug, PartialEq)]
@@ -218,6 +304,23 @@ pub enum Legend {
         items: Vec<([f32; 3], String)>,
         more: usize,
     },
+}
+
+impl Legend {
+    /// The same key under another title.
+    pub fn titled(&self, t: &str) -> Legend {
+        let mut l = self.clone();
+        match &mut l {
+            Legend::Ramp { title, .. } | Legend::Swatches { title, .. } => *title = t.to_string(),
+        }
+        l
+    }
+
+    pub fn title(&self) -> &str {
+        match self {
+            Legend::Ramp { title, .. } | Legend::Swatches { title, .. } => title,
+        }
+    }
 }
 
 /// The unit a simulation's timestep is given in.
@@ -276,7 +379,18 @@ pub struct Options {
     /// The colour key, in a corner of its own.
     pub legend: bool,
     pub corner: Corner,
+    /// The legend's own title; empty for the one the colouring gives it.
+    pub legend_title: String,
+    pub legend_size: TextSize,
+    /// A patch of the background behind the legend, so it reads over the
+    /// structure.
+    pub legend_box: bool,
     pub caption: String,
+    pub caption_place: Place,
+    pub caption_size: TextSize,
+    /// The colour of all the writing; `None` for whichever of dark or light
+    /// stands out from the background.
+    pub ink: Option<[f32; 3]>,
 }
 
 impl Default for Options {
@@ -309,7 +423,13 @@ impl Default for Options {
             scale_bar: false,
             legend: false,
             corner: Corner::BottomRight,
+            legend_title: String::new(),
+            legend_size: TextSize::Medium,
+            legend_box: false,
             caption: String::new(),
+            caption_place: Place::TopLeft,
+            caption_size: TextSize::Medium,
+            ink: None,
         }
     }
 }
@@ -361,6 +481,20 @@ const CORNERS: [(Corner, &str); 4] = [
     (Corner::BottomLeft, "bottom-left"),
     (Corner::BottomRight, "bottom-right"),
 ];
+const PLACES: [(Place, &str); 6] = [
+    (Place::TopLeft, "top-left"),
+    (Place::Top, "top"),
+    (Place::TopRight, "top-right"),
+    (Place::BottomLeft, "bottom-left"),
+    (Place::Bottom, "bottom"),
+    (Place::BottomRight, "bottom-right"),
+];
+const TEXT_SIZES: [(TextSize, &str); 4] = [
+    (TextSize::Small, "small"),
+    (TextSize::Medium, "medium"),
+    (TextSize::Large, "large"),
+    (TextSize::Larger, "larger"),
+];
 const UNITS: [(TimeUnit, &str); 3] = [
     (TimeUnit::Fs, "fs"),
     (TimeUnit::Ps, "ps"),
@@ -400,7 +534,13 @@ impl Options {
             "scale_bar": self.scale_bar,
             "legend": self.legend,
             "corner": name(&CORNERS, self.corner),
+            "legend_title": self.legend_title,
+            "legend_size": name(&TEXT_SIZES, self.legend_size),
+            "legend_box": self.legend_box,
             "caption": self.caption,
+            "caption_place": name(&PLACES, self.caption_place),
+            "caption_size": name(&TEXT_SIZES, self.caption_size),
+            "ink": self.ink.map_or_else(|| "auto".to_string(), hex),
         }))
         .unwrap_or_default()
     }
@@ -457,7 +597,13 @@ impl Options {
         o.scale_bar = b("scale_bar", o.scale_bar);
         o.legend = b("legend", o.legend);
         o.corner = named(&CORNERS, s("corner")).unwrap_or(o.corner);
+        o.legend_title = s("legend_title").to_string();
+        o.legend_size = named(&TEXT_SIZES, s("legend_size")).unwrap_or(o.legend_size);
+        o.legend_box = b("legend_box", o.legend_box);
         o.caption = s("caption").to_string();
+        o.caption_place = named(&PLACES, s("caption_place")).unwrap_or(o.caption_place);
+        o.caption_size = named(&TEXT_SIZES, s("caption_size")).unwrap_or(o.caption_size);
+        o.ink = crate::settings::parse_hex(s("ink"));
         o.clamped()
     }
 
@@ -982,20 +1128,6 @@ impl<'a> Drawer<'a> {
         // How far in from its edge each corner is filled.
         let mut used = [0.0f32; 4];
 
-        if !o.caption.trim().is_empty() {
-            let size = (short * 0.05).max(12.0);
-            text(
-                pic,
-                font,
-                o.caption.trim(),
-                margin,
-                margin + size * 0.8,
-                size,
-                ink,
-            );
-            used[Corner::TopLeft.index()] += size + gap;
-        }
-
         let mut info = Vec::new();
         let count = self.job.structure.frame_count();
         if o.counter && count > 1 {
@@ -1044,15 +1176,76 @@ impl<'a> Drawer<'a> {
             }
         }
 
+        let caption = o.caption.trim();
+        if !caption.is_empty() {
+            let size = (short * 0.05).max(12.0) * o.caption_size.factor();
+            let p = o.caption_place;
+            let tw = text_width(font, caption, size);
+            let x = match p {
+                Place::TopLeft | Place::BottomLeft => margin,
+                Place::Top | Place::Bottom => (w - tw) / 2.0,
+                Place::TopRight | Place::BottomRight => w - margin - tw,
+            };
+            // A centred caption clears whatever is in either corner of its
+            // edge, and both are then filled to below it.
+            let sides = match p.corner() {
+                Some(c) => vec![c],
+                None if p.bottom() => vec![Corner::BottomLeft, Corner::BottomRight],
+                None => vec![Corner::TopLeft, Corner::TopRight],
+            };
+            let before = sides.iter().map(|c| used[c.index()]).fold(0.0, f32::max);
+            let y = if p.bottom() {
+                h - margin - before
+            } else {
+                margin + before + size * 0.8
+            };
+            text(pic, font, caption, x, y, size, ink);
+            for c in sides {
+                used[c.index()] = before + size + gap;
+            }
+        }
+
         if let (true, Some(legend)) = (o.legend, &self.job.legend) {
+            let titled;
+            let legend = match o.legend_title.trim() {
+                "" => legend,
+                t => {
+                    titled = legend.titled(t);
+                    &titled
+                }
+            };
+            let f = o.legend_size.factor();
+            let (small, short) = (small * f, short * f);
             let c = o.corner;
             let (lw, lh) = legend_size(font, legend, small, short);
-            let x = if c.right() { w - margin - lw } else { margin };
-            let y = if c.bottom() {
-                h - margin - used[c.index()] - lh
+            // The backdrop's border, inside the margin.
+            let pad = if o.legend_box { small * 0.7 } else { 0.0 };
+            let x = if c.right() {
+                w - margin - pad - lw
             } else {
-                margin + used[c.index()]
+                margin + pad
             };
+            let y = if c.bottom() {
+                h - margin - pad - used[c.index()] - lh
+            } else {
+                margin + pad + used[c.index()]
+            };
+            if o.legend_box {
+                let page = match o.background {
+                    Background::Color(c) => c,
+                    _ => self.job.page,
+                };
+                veil(
+                    pic,
+                    x - pad,
+                    y - pad,
+                    lw + pad * 2.0,
+                    lh + pad * 1.4,
+                    pad * 0.8,
+                    page,
+                    0.85,
+                );
+            }
             draw_legend(pic, font, legend, x, y, small, short, ink);
         }
     }
@@ -1069,8 +1262,12 @@ impl<'a> Drawer<'a> {
         Some(a + (b - a) * shot.t as f64)
     }
 
-    /// What colour writing stands out from the background in.
+    /// What colour writing is in: the one asked for, or the one that
+    /// stands out from the background.
     fn ink(&self) -> [f32; 3] {
+        if let Some(c) = self.job.options.ink {
+            return c;
+        }
         let ground = match self.job.options.background {
             Background::Color(c) => c,
             Background::Theme | Background::Transparent => self.job.page,
@@ -1293,6 +1490,23 @@ fn disc(pic: &mut Picture, cx: f32, cy: f32, r: f32, color: [f32; 3]) {
         for px in x0..x1 {
             let d = ((px as f32 + 0.5 - cx).powi(2) + (py as f32 + 0.5 - cy).powi(2)).sqrt();
             blend(pic, px, py, (r - d + 0.5).clamp(0.0, 1.0), color);
+        }
+    }
+}
+
+/// A rectangle of `color` with corners rounded by `r`, laid over the
+/// picture at opacity `a`.
+#[allow(clippy::too_many_arguments)]
+fn veil(pic: &mut Picture, x: f32, y: f32, w: f32, h: f32, r: f32, color: [f32; 3], a: f32) {
+    let r = r.min(w / 2.0).min(h / 2.0).max(0.0);
+    for py in y.floor() as i64..(y + h).ceil() as i64 {
+        for px in x.floor() as i64..(x + w).ceil() as i64 {
+            // Distance outside the rounded rectangle, from the pixel's centre.
+            let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
+            let dx = (x + r - cx).max(cx - (x + w - r)).max(0.0);
+            let dy = (y + r - cy).max(cy - (y + h - r)).max(0.0);
+            let out = (dx * dx + dy * dy).sqrt() - r;
+            blend(pic, px, py, a * (0.5 - out).clamp(0.0, 1.0), color);
         }
     }
 }
@@ -1803,31 +2017,39 @@ pub fn export(job: &Job, path: &Path, progress: &Progress) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// A few small frames of the film, for seeing it before it is made: no
-/// more than `most`, taken evenly through it, `across` pixels wide at most.
-/// With each, how many of the film's frames it stands for.
-pub fn preview(
-    job: &Job,
-    across: usize,
-    most: usize,
-    cancel: &AtomicBool,
-) -> (Vec<Picture>, usize) {
+/// The size the film is drawn at to be shown `across` pixels wide at most.
+pub fn preview_size(job: &Job, across: usize) -> (usize, usize) {
     let (w, h) = job.options.output_size(job.view);
     let k = (across as f32 / w.max(1) as f32).min(1.0);
-    let (pw, ph) = (
+    (
         ((w as f32 * k) as usize).max(2),
         ((h as f32 * k) as usize).max(2),
-    );
-    let stride = job.shots.len().div_ceil(most.max(1)).max(1);
+    )
+}
+
+/// The film itself, every frame in order and drawn as it will be made, but
+/// no more than `across` pixels wide, for seeing it before it is made. Each
+/// goes to `each` as it is drawn, until `each` says stop or `cancel` is set;
+/// over and over when `again`.
+pub fn play(
+    job: &Job,
+    across: usize,
+    again: bool,
+    cancel: &AtomicBool,
+    mut each: impl FnMut(usize, Picture) -> bool,
+) {
+    let (pw, ph) = preview_size(job, across);
     let mut drawer = Drawer::new(job);
-    let mut out = Vec::new();
-    for i in (0..job.shots.len()).step_by(stride) {
-        if cancel.load(Ordering::Relaxed) {
-            break;
+    loop {
+        for i in 0..job.shots.len() {
+            if cancel.load(Ordering::Relaxed) || !each(i, drawer.draw(i, pw, ph, 1)) {
+                return;
+            }
         }
-        out.push(drawer.draw(i, pw, ph, 1));
+        if !again || job.shots.is_empty() {
+            return;
+        }
     }
-    (out, stride)
 }
 
 // ---------------------------------------------------------------------------
@@ -1961,6 +2183,36 @@ pub fn parse_args(base: Options, path: &Path, words: &[String]) -> Result<Option
                 }
             }
             "caption" | "title" => o.caption = v.to_string(),
+            "caption-at" => {
+                o.caption_place = named(&PLACES, v).ok_or_else(|| {
+                    anyhow!(
+                    "caption-at is top-left, top, top-right, bottom-left, bottom or bottom-right"
+                )
+                })?
+            }
+            "caption-size" | "legend-size" => {
+                let size = named(&TEXT_SIZES, v)
+                    .ok_or_else(|| anyhow!("{k} is small, medium, large or larger"))?;
+                if k.starts_with("caption") {
+                    o.caption_size = size;
+                } else {
+                    o.legend_size = size;
+                }
+            }
+            "legend-title" => {
+                o.legend = true;
+                o.legend_title = v.to_string();
+            }
+            "legend-box" => o.legend_box = on(v)?,
+            "ink" | "text-color" | "text-colour" => {
+                o.ink = match v {
+                    "auto" | "" => None,
+                    other => Some(
+                        crate::settings::parse_hex(other)
+                            .ok_or_else(|| anyhow!("{k} is auto or a #rrggbb colour"))?,
+                    ),
+                }
+            }
             _ => bail!("{k} is not something a film takes"),
         }
     }
@@ -2190,6 +2442,193 @@ mod tests {
         };
         let back = Options::from_json(&serde_json::from_str(&o.to_json()).unwrap());
         assert_eq!(back, o);
+        let dressed = Options {
+            caption: "hi".into(),
+            caption_place: Place::Bottom,
+            caption_size: TextSize::Larger,
+            legend: true,
+            legend_title: "Potential (kT/e)".into(),
+            legend_size: TextSize::Small,
+            legend_box: true,
+            ink: Some([1.0, 0.0, 0.0]),
+            ..Options::default()
+        };
+        let back = Options::from_json(&serde_json::from_str(&dressed.to_json()).unwrap());
+        assert_eq!(back, dressed);
+    }
+
+    #[test]
+    fn the_console_dresses_the_caption_and_legend() {
+        let said = words(
+            r#"caption="Melt" caption-at=bottom caption-size=large legend-title="Kinds" legend-size=small legend-box ink=#ff0000"#,
+        );
+        let o = parse_args(Options::default(), Path::new("a.gif"), &said).unwrap();
+        assert_eq!(o.caption_place, Place::Bottom);
+        assert_eq!(o.caption_size, TextSize::Large);
+        assert!(o.legend && o.legend_box);
+        assert_eq!(o.legend_title, "Kinds");
+        assert_eq!(o.legend_size, TextSize::Small);
+        assert_eq!(o.ink, Some([1.0, 0.0, 0.0]));
+        let o = parse_args(o, Path::new("a.gif"), &words("ink=auto")).unwrap();
+        assert_eq!(o.ink, None);
+        assert!(parse_args(
+            Options::default(),
+            Path::new("a.gif"),
+            &words("caption-at=middle")
+        )
+        .is_err());
+    }
+
+    /// The overlays alone, on nothing, 400 by 300.
+    fn overlays_only(options: Options, legend: Option<Legend>) -> Picture {
+        let melt = crate::samples::SAMPLES
+            .iter()
+            .find(|s| s.file.ends_with("lammpstrj.gz"))
+            .unwrap();
+        let s = crate::formats::load_bytes(melt.file, melt.bytes.to_vec()).unwrap();
+        let options = Options {
+            background: Background::Transparent,
+            format: Format::Png,
+            ..options
+        };
+        let shots = plan(&options, &Camera::frame(&s), 0, s.frame_count(), None);
+        let job = Job {
+            structure: s,
+            build: Arc::new(|_: &Structure| Scene::default()),
+            style: Style::Flat,
+            page: [0.97, 0.97, 0.96],
+            view: (400, 300),
+            shots,
+            options,
+            legend,
+            labels: Vec::new(),
+        };
+        Drawer::new(&job).draw(0, 400, 300, 1)
+    }
+
+    /// The rows of `pic` with anything drawn in columns `x0..x1`.
+    fn inked_rows(pic: &Picture, x0: usize, x1: usize) -> Vec<usize> {
+        (0..pic.height)
+            .filter(|y| (x0..x1).any(|x| pic.rgba[(y * pic.width + x) * 4 + 3] > 0))
+            .collect()
+    }
+
+    fn inked_columns(pic: &Picture) -> Vec<usize> {
+        (0..pic.width)
+            .filter(|x| (0..pic.height).any(|y| pic.rgba[(y * pic.width + x) * 4 + 3] > 0))
+            .collect()
+    }
+
+    #[test]
+    fn a_caption_goes_where_it_is_placed() {
+        for (place, _) in PLACES {
+            let pic = overlays_only(
+                Options {
+                    caption: "Melting".into(),
+                    caption_place: place,
+                    ..Options::default()
+                },
+                None,
+            );
+            let (rows, cols) = (inked_rows(&pic, 0, 400), inked_columns(&pic));
+            assert!(!rows.is_empty(), "{place:?}: nothing drawn");
+            let (top, bottom) = (rows[0], *rows.last().unwrap());
+            let (left, right) = (cols[0], *cols.last().unwrap());
+            assert_eq!(place.bottom(), top > 150, "{place:?}: rows {top}..{bottom}");
+            match place {
+                Place::TopLeft | Place::BottomLeft => assert!(right < 200, "{place:?}"),
+                Place::TopRight | Place::BottomRight => assert!(left > 200, "{place:?}"),
+                Place::Top | Place::Bottom => {
+                    let (l, r) = (left as i64, 399 - right as i64);
+                    assert!((l - r).abs() <= 3, "{place:?} off centre: {l} against {r}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_caption_at_the_bottom_stays_clear_of_the_counter() {
+        let counter = overlays_only(
+            Options {
+                counter: true,
+                ..Options::default()
+            },
+            None,
+        );
+        let both = overlays_only(
+            Options {
+                counter: true,
+                caption: "Melting".into(),
+                caption_place: Place::Bottom,
+                ..Options::default()
+            },
+            None,
+        );
+        let line = inked_rows(&counter, 0, 400);
+        let caption: Vec<usize> = inked_rows(&both, 0, 400)
+            .into_iter()
+            .filter(|y| !line.contains(y))
+            .collect();
+        assert!(!caption.is_empty());
+        assert!(
+            *caption.last().unwrap() < line[0],
+            "the caption ({caption:?}) runs into the counter (from row {})",
+            line[0]
+        );
+    }
+
+    #[test]
+    fn writing_takes_the_colour_asked_for() {
+        let pic = overlays_only(
+            Options {
+                caption: "Melting".into(),
+                ink: Some([1.0, 0.0, 0.0]),
+                ..Options::default()
+            },
+            None,
+        );
+        let solid: Vec<&[u8]> = pic.rgba.chunks_exact(4).filter(|p| p[3] == 255).collect();
+        assert!(!solid.is_empty());
+        assert!(solid.iter().all(|p| p[0] == 255 && p[1] == 0 && p[2] == 0));
+    }
+
+    #[test]
+    fn a_legend_takes_its_own_title_size_and_backdrop() {
+        let legend = Legend::Swatches {
+            title: "Atoms".into(),
+            items: vec![([0.1, 0.4, 0.9], "Type 1".into())],
+            more: 0,
+        };
+        let draw = |o: Options| overlays_only(Options { legend: true, ..o }, Some(legend.clone()));
+        let width = |p: &Picture| {
+            let c = inked_columns(p);
+            c.last().unwrap() - c[0]
+        };
+        let plain = draw(Options::default());
+        let renamed = draw(Options {
+            legend_title: "Particle kinds".into(),
+            ..Options::default()
+        });
+        assert!(
+            width(&renamed) > width(&plain),
+            "the longer title is no wider"
+        );
+        let large = draw(Options {
+            legend_size: TextSize::Larger,
+            ..Options::default()
+        });
+        assert!(width(&large) > width(&plain));
+        let boxed = draw(Options {
+            legend_box: true,
+            ..Options::default()
+        });
+        let covered = |p: &Picture| p.rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(
+            covered(&boxed) > covered(&plain) * 3,
+            "no backdrop behind the legend"
+        );
+        // Still in its corner.
+        assert!(inked_columns(&boxed)[0] > 200 && inked_rows(&boxed, 0, 400)[0] > 150);
     }
 
     #[test]
