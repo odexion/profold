@@ -1256,7 +1256,13 @@ impl Viewer {
             return;
         };
         match self.selected_residue() {
-            Some(anchor) if s.residues[anchor].chain == s.residues[end].chain => {
+            // A run is of the polymer: a ligand or water at either end would
+            // stretch it over residues neither was next to.
+            Some(anchor)
+                if s.residues[anchor].chain == s.residues[end].chain
+                    && !s.residues[anchor].outside_polymer()
+                    && !s.residues[end].outside_polymer() =>
+            {
                 self.seq_range = (anchor != end).then_some(end);
                 self.compose(cx);
             }
@@ -4533,8 +4539,9 @@ impl Viewer {
         self.halt();
         self.open = None;
         self.hover = None;
-        self.press = (e.button == MouseButton::Left && !e.modifiers.shift && e.click_count < 2)
-            .then_some(e.position);
+        // A shift-press that does not move is a click too, which stretches the
+        // pick to a run; moved, it pans.
+        self.press = (e.button == MouseButton::Left && e.click_count < 2).then_some(e.position);
         if e.click_count >= 2 {
             let all: Vec<&Structure> = self.visible().into_iter().map(|s| s.as_ref()).collect();
             if !all.is_empty() {
@@ -4644,6 +4651,15 @@ impl Viewer {
                         self.compose(cx);
                     }
                     self.focus_selected(cx);
+                }
+            } else if e.modifiers.shift {
+                // Shift-click: every residue from the one picked to this one,
+                // as in the sequence. A miss leaves the pick as it was.
+                if let Some(t) = target.filter(|t| t.which == 0) {
+                    if let Some(s) = self.structure.as_ref() {
+                        let residue = s.atoms[t.picked.atom].residue as usize;
+                        self.select_seq_range(residue, cx);
+                    }
                 }
             } else {
                 self.select(target, cx);
@@ -11508,6 +11524,56 @@ mod ui_tests {
     }
 
     /// Where in the window atom `i` is drawn.
+    #[gpui::test]
+    fn shift_clicking_the_viewport_picks_out_a_run(cx: &mut TestAppContext) {
+        let (view, cx) = cx.add_window_view(|window, cx| Viewer::new(Mode::View, window, cx));
+        view.update(cx, |this, cx| {
+            let s = formats::load_bytes(SAMPLES[2].file, SAMPLES[2].bytes.to_vec()).unwrap();
+            this.show(s, cx);
+        });
+        cx.run_until_parked();
+        click(cx, "residue-3");
+
+        // A residue of the protein in plain view: its CA is what is picked
+        // at the point it is drawn.
+        let (at, residue) = view.update(cx, |this, _| {
+            let s = this.structure.as_ref().unwrap();
+            (10..s.residues.len())
+                .filter(|&r| !s.residues[r].outside_polymer())
+                .find_map(|r| {
+                    let ca = s.residues[r].ca? as usize;
+                    let at = this.cache.borrow().bounds.origin + this.project(s.atoms[ca].pos)?;
+                    let hit = this.pick_at(at)?;
+                    (s.atoms[hit.picked.atom].residue as usize == r).then_some((at, r))
+                })
+                .expect("no residue in plain view")
+        });
+        cx.simulate_click(at, Modifiers::shift());
+        cx.run_until_parked();
+        let run = view.update(cx, |this, _| this.seq_run().map(|(_, lo, hi)| (lo, hi)));
+        assert_eq!(run, Some((3, residue)));
+        assert_eq!(view.update(cx, |this, _| this.selected_residue()), Some(3));
+
+        // Shift-dragged, it pans and leaves the run as it was.
+        let pan = view.update(cx, |this, _| this.camera.pan);
+        let to = at + gpui::point(px(40.), px(25.));
+        cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::shift());
+        cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::shift());
+        cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::shift());
+        cx.run_until_parked();
+        assert_ne!(view.update(cx, |this, _| this.camera.pan), pan);
+        let after = view.update(cx, |this, _| this.seq_run().map(|(_, lo, hi)| (lo, hi)));
+        assert_eq!(after, Some((3, residue)));
+
+        // A shift-click on nothing leaves the run as it was too.
+        let corner = view.update(cx, |this, _| this.cache.borrow().bounds.origin)
+            + gpui::point(px(3.), px(120.));
+        cx.simulate_click(corner, Modifiers::shift());
+        cx.run_until_parked();
+        let after = view.update(cx, |this, _| this.seq_run().map(|(_, lo, hi)| (lo, hi)));
+        assert_eq!(after, Some((3, residue)));
+    }
+
     fn atom_on_screen(
         view: &Entity<Viewer>,
         cx: &mut VisualTestContext,
