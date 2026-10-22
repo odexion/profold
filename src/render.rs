@@ -5315,7 +5315,7 @@ mod gallery {
     fn readme_gallery() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs");
         std::fs::create_dir_all(&dir).unwrap();
-        let shots: [(&str, &str, Repr, Coloring, Style, Palette, f32, bool); 14] = [
+        let shots: [(&str, &str, Repr, Coloring, Style, Palette, f32, bool, bool); 19] = [
             (
                 "haemoglobin",
                 "4hhb.pdb.gz",
@@ -5324,6 +5324,7 @@ mod gallery {
                 Style::Illustrative,
                 Palette::Spectrum,
                 0.0,
+                false,
                 false,
             ),
             (
@@ -5335,6 +5336,7 @@ mod gallery {
                 Palette::Spectrum,
                 0.0,
                 false,
+                false,
             ),
             (
                 "ubiquitin-soft",
@@ -5344,6 +5346,7 @@ mod gallery {
                 Style::Soft,
                 Palette::Spectrum,
                 0.0,
+                false,
                 false,
             ),
             (
@@ -5355,6 +5358,7 @@ mod gallery {
                 Palette::Viridis,
                 0.0,
                 false,
+                false,
             ),
             (
                 "crambin-ballstick",
@@ -5364,6 +5368,7 @@ mod gallery {
                 Style::Illustrative,
                 Palette::Spectrum,
                 0.0,
+                false,
                 false,
             ),
             (
@@ -5375,6 +5380,7 @@ mod gallery {
                 Palette::Spectrum,
                 0.0,
                 false,
+                false,
             ),
             (
                 "caffeine",
@@ -5384,6 +5390,7 @@ mod gallery {
                 Style::Illustrative,
                 Palette::Spectrum,
                 0.0,
+                false,
                 false,
             ),
             (
@@ -5395,6 +5402,7 @@ mod gallery {
                 Palette::Plasma,
                 0.0,
                 false,
+                false,
             ),
             (
                 "rocksalt",
@@ -5405,6 +5413,7 @@ mod gallery {
                 Palette::Spectrum,
                 0.0,
                 true,
+                false,
             ),
             (
                 "silicon",
@@ -5415,6 +5424,7 @@ mod gallery {
                 Palette::Ice,
                 0.0,
                 true,
+                false,
             ),
             (
                 "melt",
@@ -5425,6 +5435,7 @@ mod gallery {
                 Palette::Spectrum,
                 1.0,
                 true,
+                false,
             ),
             (
                 "ubiquitin-viridis",
@@ -5434,6 +5445,7 @@ mod gallery {
                 Style::Illustrative,
                 Palette::Viridis,
                 0.0,
+                false,
                 false,
             ),
             (
@@ -5445,6 +5457,7 @@ mod gallery {
                 Palette::Magma,
                 0.0,
                 false,
+                false,
             ),
             (
                 "ubiquitin-mako",
@@ -5455,9 +5468,65 @@ mod gallery {
                 Palette::Mako,
                 0.0,
                 false,
+                false,
+            ),
+            (
+                "haemoglobin-surface",
+                "4hhb.pdb.gz",
+                Repr::Surface,
+                Coloring::Charge,
+                Style::Soft,
+                Palette::Spectrum,
+                0.0,
+                false,
+                false,
+            ),
+            (
+                "gfp-flat",
+                "1ema.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Rainbow,
+                Style::Flat,
+                Palette::Spectrum,
+                0.0,
+                false,
+                false,
+            ),
+            (
+                "ubiquitin-amino",
+                "1ubq.pdb.gz",
+                Repr::Licorice,
+                Coloring::Residue,
+                Style::Illustrative,
+                Palette::Spectrum,
+                0.0,
+                false,
+                false,
+            ),
+            (
+                "haemoglobin-traced",
+                "4hhb.pdb.gz",
+                Repr::Spacefill,
+                Coloring::Chain,
+                Style::Studio,
+                Palette::Spectrum,
+                0.0,
+                false,
+                true,
+            ),
+            (
+                "gfp-traced",
+                "1ema.pdb.gz",
+                Repr::Cartoon,
+                Coloring::Rainbow,
+                Style::Studio,
+                Palette::Spectrum,
+                0.0,
+                false,
+                true,
             ),
         ];
-        for (name, file, repr, coloring, style, palette, at, cell) in shots {
+        for (name, file, repr, coloring, style, palette, at, cell, traced) in shots {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("samples")
                 .join(file);
@@ -5465,23 +5534,33 @@ mod gallery {
             // `at` is how far through a trajectory to draw it, 0..=1.
             let last = s.frame_count() - 1;
             s.set_frame((at * last as f32).round() as usize);
-            let scene = build_scene(
-                &s,
-                repr,
-                coloring,
-                1.0,
-                style,
-                palette,
-                false,
-                cell,
-                &Appearance::default(),
-            )
-            .stamp();
+            // As the viewer opens it: elements in their standard colours, and
+            // crystal waters hidden beside a protein.
+            let look = Appearance {
+                hide_solvent: s.has_polymer(),
+                ..Appearance::default()
+            };
+            let scene =
+                build_scene(&s, repr, coloring, 1.0, style, palette, true, cell, &look).stamp();
             let cam = Camera::frame(&s);
             // Drawn large, then cut to what was drawn and centred on a 4:3
             // page of its own, so every picture sits the same way.
             let (w, h) = (2000, 2000);
-            let frame = render(&scene, &cam, w, h, crate::theme::view(), style);
+            // `traced` lights it with rays, shadows and ambient occlusion.
+            let frame = if traced {
+                crate::trace::render(
+                    &scene,
+                    &cam,
+                    w,
+                    h,
+                    crate::theme::view(),
+                    style,
+                    &Default::default(),
+                )
+                .unwrap()
+            } else {
+                render(&scene, &cam, w, h, crate::theme::view(), style)
+            };
             let mut rgba = frame.bgra;
             for px in rgba.chunks_exact_mut(4) {
                 px.swap(0, 2);

@@ -21,7 +21,9 @@ Open a structure or a trajectory and turn it around: a protein from the PDB, a
 ligand, a crystal, or a LAMMPS or GROMACS simulation box. Search for a protein
 or a molecule by name, or paste an identifier, and it fetches the structure.
 Each tab holds its own, so a protein, a trajectory and caffeine can be open side
-by side. With the SimpleFold plugin, a fold tab folds a sequence with
+by side. Pick atoms and measure between them, look into a ligand's binding site,
+label what matters, analyse a trajectory frame by frame, and save a ray-traced
+picture or a film of it. With the SimpleFold plugin, a fold tab folds a sequence with
 [Apple's SimpleFold](https://github.com/apple/ml-simplefold), then lays the
 prediction over the experiment and tells you how close it came.
 
@@ -85,18 +87,35 @@ Settings, the folding environment and its weights live in `~/.profold` (and
   a PubChem CID or a sequence. It works out which one you gave it.
 - **Tabs.** Each tab has its own structure, camera and job, so a fold or a
   download in one never holds up the others.
-- **Twelve file formats.** PDB, mmCIF, crystallographic CIF, XYZ, GROMACS,
-  MOL2, SDF, LAMMPS data and dump, VASP, Gaussian cube and XCrySDen. Gzipped
+- **Many file formats.** PDB, mmCIF and BinaryCIF, crystallographic CIF, XYZ,
+  GROMACS, MOL2, SDF, LAMMPS data and dump, VASP, XCrySDen, DCD and XTC
+  trajectories, and volumes from Gaussian cube, CCP4/MRC and OpenDX. Gzipped
   files open as they are.
 - **Cartoons without annotations.** Helices and sheets are assigned from the
   backbone geometry with a DSSP-style hydrogen-bond analysis, so even a bare
   prediction gets ribbons and arrows.
-- **Five representations.** Cartoon, Tube, Ball & stick, Licorice and Spacefill.
-- **Two looks.** *Illustrative* has ink outlines and banded light, like a drawn
-  figure. *Soft* has smooth shading and depth fog.
-- **Colour by** chain, residue position, pLDDT or element, with eight palettes.
+- **Six representations.** Cartoon, Tube, Ball & stick, Licorice, Spacefill and
+  a molecular Surface.
+- **Four looks.** *Illustrative* has ink outlines and banded light, like a drawn
+  figure. *Flat* lays soft colour almost flat inside the ink, after David
+  Goodsell. *Soft* has smooth shading and depth fog. *Studio* has glossy light
+  and shadow, for a paper or a cover. Light and dark mode for the window.
+- **Colour by** chain, position, B-factor, secondary structure, hydrophobicity,
+  charge (the electrostatic potential over a surface), amino acid, pLDDT,
+  element or any per-atom property from the file, with fifteen palettes.
+- **Look closer.** Hover to name an atom, click to pick it, measure distances,
+  angles and dihedrals, and open a ligand's binding site with its hydrogen
+  bonds, salt bridges, metal contacts and clashes. Select with a small
+  language (`resn HIS and within 5 of ligand`, `c_pe < -3`), and pin labels to
+  atoms. A Ramachandran plot, and AlphaFold's predicted aligned error.
 - **Trajectories.** Every multi-frame format plays, steps and scrubs, and
-  periodic cells are drawn as a fine box.
+  periodic cells are drawn as a fine box. Analysis plots RMSD, radius of
+  gyration, SASA, polar contacts, RMSF and secondary structure through time.
+- **Simulation boxes.** Wrap atoms into the cell, mend molecules the walls cut,
+  unwrap a trajectory in time, or replicate the cell. Colour and select by any
+  column of a LAMMPS dump or extended XYZ.
+- **Isosurfaces** of densities and orbitals, solid or as a mesh, with a second
+  lobe for negative values.
 - **Per-element and per-type styling.** Size, opacity and colour sliders for
   each species. Turn the solvent to glass and look inside the box.
 - **Fast.** Impostor spheres and capsules on the GPU through wgpu, off the main
@@ -106,11 +125,14 @@ Settings, the folding environment and its weights live in `~/.profold` (and
 - **Prediction vs. experiment** (plugin). Fold a PDB entry's own sequence,
   superimpose it with Kabsch, and read off the Cα RMSD, coloured by deviation.
 - **Publication images.** Save the viewport as a PNG at one to three times the screen size,
-  ray traced if you like, with soft shadows and ambient occlusion.
+  ray traced if you like, with soft shadows and ambient occlusion, on the
+  graphics card where it can.
 - **Films.** Play a trajectory while the camera turns, rocks, or follows a path
   you recorded by hand, with smoothing between frames. Export as GIF or PNG
   frames, or with ffmpeg as MP4 or transparent WebM or ProRes, at up to 4K, with
   a frame counter, simulation time, a scale bar, the colour legend and a caption.
+- **A console** (⌘K) for every command, `profold --run script.txt` to run a
+  script of them, undo and redo, and sessions that reopen as they were left.
 
 ## Gallery
 
@@ -122,6 +144,15 @@ Settings, the folding environment and its weights live in `~/.profold` (and
 | **Haemoglobin** (4HHB): cartoon by chain, haems as atoms | **Green fluorescent protein** (1EMA): the β-barrel and its chromophore | **Ubiquitin** (1UBQ): the β-grasp fold in the *Soft* style |
 | <img src="docs/haemoglobin-spacefill.png" alt="Haemoglobin spacefill"> | <img src="docs/crambin-tube.png" alt="Crambin tube"> | <img src="docs/crambin-ballstick.png" alt="Crambin ball and stick"> |
 | **Haemoglobin**: spacefill, four chains packed together | **Crambin** (1CRN): a backbone tube | **Crambin**: every atom in ball & stick |
+| <img src="docs/haemoglobin-surface.png" alt="Haemoglobin surface coloured by electrostatic potential"> | <img src="docs/gfp-flat.png" alt="GFP cartoon in the Flat style"> | <img src="docs/ubiquitin-amino.png" alt="Ubiquitin licorice coloured by amino acid"> |
+| **Haemoglobin**: its surface, coloured by the electrostatic potential | **Green fluorescent protein** in the *Flat* style | **Ubiquitin**: licorice, each amino acid in RasMol's colour |
+
+### Ray traced
+
+| | |
+| :---: | :---: |
+| <img src="docs/haemoglobin-traced.png" alt="Haemoglobin spacefill, ray traced in the Studio style"> | <img src="docs/gfp-traced.png" alt="GFP cartoon, ray traced in the Studio style"> |
+| **Haemoglobin**: spacefill in the *Studio* style, with shadows and ambient occlusion | **Green fluorescent protein**: the chromophore inside its β-barrel, in the *Studio* style |
 
 ### Molecules, crystals and simulations
 
@@ -138,7 +169,8 @@ Settings, the folding environment and its weights live in `~/.profold` (and
 | :---: | :---: | :---: |
 | <img src="docs/ubiquitin-viridis.png" alt="Ubiquitin in Viridis"> | <img src="docs/ubiquitin-magma.png" alt="Ubiquitin in Magma"> | <img src="docs/ubiquitin-mako.png" alt="Ubiquitin in Mako"> |
 
-Spectrum, Ember, Ice, Plasma and Cividis are there too.
+Spectrum, Turbo, Cividis, Inferno, Plasma, Rocket, Ember, Ice, Forest, Dusk,
+Pastel and Greyscale are there too.
 
 ## Using it
 
@@ -189,24 +221,29 @@ tab stops it.
 In the viewport: drag to orbit, shift-drag to pan, scroll to zoom, double-click
 to reframe. The molecule follows the pointer, so dragging right brings the near
 face right. The angle and zoom readouts in the title bar can be clicked and
-typed into. **Camera** turns momentum on or off and resets the view, and
+typed into. ⌘-drag rolls the view (Ctrl-drag off the Mac), ⌘-click flies to
+an atom, and small axes in the corner say which way x, y and z point. The bar
+along the top is **Open · Samples · Camera · Image · Film · Save**: **Camera**
+centres, focuses, spins, rocks, and switches perspective and the clipping slab;
 **Image** saves the molecule alone as a PNG at up to three times the viewport
-size. **Image › Ray traced** lights the still view with rays, for soft
-shadows, ambient occlusion and smooth edges, and saved images with it. **Export film…** (⇧⌘E) makes an animation of it: the trajectory played
-through, the camera turning, rocking or replaying a path recorded with
-**Record a camera path**, at any size, antialiased, on the page, a colour or
-nothing, with a preview first. The console's `movie` does the same from a
-script.
+size, transparent if you like. **Image › Ray traced** lights the still view with
+rays, for soft shadows, ambient occlusion and smooth edges, and saved images
+with it. **Film › Export film…** (⇧⌘E) makes an animation of it (see
+[Pictures and films](#pictures-and-films)). **Save** writes the structure, a
+chain or a binding site as PDB or mmCIF, or the whole session as a `.profold`
+file. ⌘K opens the console, where every command can be typed, and ⌘/ lists the
+shortcuts.
 
 <br clear="right">
 
 ### Samples
 
-No data to hand? Nine structures are built into the app, listed on the empty
+No data to hand? Ten structures are built into the app, listed on the empty
 screen and under **Samples** at any time:
 
 - **Molecules:** caffeine and buckminsterfullerene
-- **Proteins:** crambin, ubiquitin, green fluorescent protein and haemoglobin
+- **Proteins:** crambin, ubiquitin, green fluorescent protein, haemoglobin and
+  SAM synthetase
 - **Crystals and simulations:** rock salt grown from its symmetry, a silicon
   supercell, and a Lennard-Jones crystal melting over 41 frames
 
@@ -219,20 +256,36 @@ helices, arrows for strands, cord for everything else. Ligands, ions and nucleic
 acids are drawn as atoms beside it rather than left out. *Tube* is a plain
 backbone trace. *Ball & stick* is the default for anything else, and *Licorice*
 draws bonds as rods of one thickness. *Spacefill* puts every atom at its van der
-Waals radius, and is how a box of anonymous beads opens.
+Waals radius, and is how a box of anonymous beads opens. *Surface* is a smooth
+Gaussian skin over the molecule, with its ligands standing inside it as atoms.
+DNA and RNA are drawn as a tube along the backbone with a rung to each base.
 
 **Styles.** *Illustrative* is the default and has the drawn look: ink outlines
 on both sides of the silhouette and across every overlap, saturated colour,
 light quantised into a few bands, and no depth fade, because a drawn figure does
-not have one. *Soft* has smooth shading on paper, with distance washing out. The
-line weight scales with the frame, so it holds on a retina display.
+not have one. *Flat* lays soft colour almost flat inside the ink, the look of a
+painted molecular illustration. *Soft* has smooth shading on paper, with
+distance washing out. *Studio* has glossy light and shadow where atoms crowd
+together, without ink. The line weight scales with the frame, so it holds on a
+retina display.
 
 **Colour** by chain (by molecule, without chains), by position along the chain,
-by pLDDT, or by element. Predicted models open coloured by pLDDT. The palette
+by B-factor, by secondary structure, by hydrophobicity (Kyte and Doolittle), by
+charge, by amino acid (RasMol's colours, or the palette's), by pLDDT, by
+element, or by a per-atom property. Over a surface, *Charge* shows the
+electrostatic potential. Predicted models open coloured by pLDDT. The palette
 colours the chains and the ramps; elements wear the standard colours (carbon
 grey, oxygen red, nitrogen blue) unless *Element colours* is set to *Palette*.
 Ligands beside a protein keep their element colours whatever the protein is
-coloured by, and any chain or element can be given a colour of its own.
+coloured by, and any chain or element can be given a colour of its own. Where
+atoms are drawn, *Carbons only* lets the colouring take the carbons while every
+other element keeps its own colour.
+
+<img src="docs/app-dark-surface.png" alt="Green fluorescent protein as a surface coloured by electrostatic potential, in dark mode">
+
+**Dark mode** is the ☾ in the tab bar, and is remembered between launches. The
+layout button beside it moves the side panel under the view, for tall or
+phone-shaped windows.
 
 **Atoms.** The side panel lists every element, or every atom type for a
 simulation, with its own size, opacity and colour. Preferences outlive the
@@ -241,6 +294,41 @@ session in `~/.profold/settings.json`.
 Anything slow, like a download, an install or a fold, takes over the viewport
 with its own progress. Where the underlying tool reports a percentage the bar is
 real. Where it does not, the bar says so by travelling instead.
+
+## Looking closer
+
+Hover over the molecule and a card names what is under the pointer: a
+residue's code and full name, its fold, B-factor or pLDDT; water, ions, common
+ligands and modified bases by their names. A click picks it out, painted white
+on the ribbon, and its card has **Focus** and **Label**. The sequence, chain by
+chain, is linked both ways with the view, and shift-click picks out a run in
+either. Pick atoms in turn to measure distances, angles and dihedrals, drawn as
+dashes over the molecule.
+
+<img src="docs/app-binding-site.png" alt="The haem binding site of haemoglobin's α chain, its residues named and its contacts drawn">
+
+**Binding sites.** *Site* beside a ligand flies into it: the residues within
+5 Å drawn and named, with its hydrogen bonds, salt bridges, metal contacts and
+clashes as coloured dashes. Above, the haem of haemoglobin's α chain, held
+between its proximal His87 and distal His58.
+
+**Selections** use a small language after PyMOL's and VMD's: `chain`, `resi`,
+`resn`, `name`, `elem`, `type`, `within N of`, `byres`, comparisons on any value
+(`b < 30`, `z > 10`, `c_pe < -3`), joined by `and`, `or` and `not`. Each
+selection is drawn its own way over the rest, as sticks, spheres or hidden.
+
+| | |
+| :---: | :---: |
+| <img src="docs/app-labels.png" alt="Ubiquitin coloured by amino acid, with Lys48, Lys63 and its C terminus labelled"> | <img src="docs/app-ramachandran.png" alt="Ubiquitin's Ramachandran plot in the side panel"> |
+| **Labels** pinned to atoms follow them through a trajectory and into images and films: ubiquitin's Lys48, Lys63 and C terminus, coloured by amino acid | **Plots**: a Ramachandran plot, and for AlphaFold models the predicted aligned error, both linked to the view |
+
+Labels come from the picked atom's card, or from the console: `label resi 10-20`,
+`label atoms name CA`, `label ligand "the drug"` and `label clear`.
+
+**Biological assemblies** are built from the deposited chains, and **Open ›
+Overlay** lays any structure over the one shown, paired by sequence alignment,
+with the RMSD and a deviation colouring. ⌘Z and ⇧⌘Z undo and redo how a
+structure is shown.
 
 ## Opening files
 
@@ -252,16 +340,18 @@ Gzipped files open as they are.
 | Format | Extensions | Notes |
 | --- | --- | --- |
 | PDB, PQR | `.pdb` `.ent` `.pqr` | Every MODEL, or VMD's END-separated frames, becomes a frame |
-| mmCIF | `.cif` `.mmcif` | Further models become frames |
+| mmCIF, BinaryCIF | `.cif` `.mmcif` `.bcif` | Further models become frames; assemblies built from the file |
 | CIF (crystallographic) | `.cif` | Fractional sites expanded by the symmetry operations to fill the cell |
 | XYZ, extended XYZ | `.xyz` `.extxyz` | Multi-frame; `Lattice=` and `Properties=` honoured |
 | GROMACS | `.gro` | Multi-frame, triclinic boxes, any precision |
 | MOL2 | `.mol2` | Bonds from the file; same-atom molecules become frames |
 | MDL molfile / SD | `.sdf` `.mol` | V2000 and V3000; conformers become frames |
 | LAMMPS data | `.data` `.lmp` `data.*` | Any atom style; elements from Masses; bonds from the file |
-| LAMMPS dump | `.lammpstrj` `.dump` `dump.*` | Text dumps; scaled, unwrapped and triclinic all handled |
+| LAMMPS dump | `.lammpstrj` `.dump` `dump.*` | Text dumps; scaled, unwrapped and triclinic all handled; extra columns kept as per-atom properties |
+| DCD, XTC | `.dcd` `.xtc` | Trajectories, laid over a structure with as many atoms |
 | VASP | `POSCAR` `CONTCAR` `XDATCAR` `.vasp` | Direct or Cartesian; XDATCAR steps become frames |
-| Gaussian cube | `.cube` | The molecule and its grid box |
+| Gaussian cube | `.cube` | The molecule, its grid box and an isosurface of the grid |
+| CCP4, MRC, OpenDX | `.ccp4` `.map` `.mrc` `.dx` | Volumes, laid over the structure shown or on their own |
 | XCrySDen | `.xsf` `.axsf` | Molecules, crystals and animations |
 
 Where a file does not list bonds they are worked out from distance: closer than
@@ -274,6 +364,63 @@ their own spacing, the way OVITO draws them.
 A trajectory gets a bar along the foot of the viewport: play, step, or drag
 through the frames. A simulation cell is drawn as a fine box, and can be
 switched off with **Cell**.
+
+## Simulations and volumes
+
+<img src="docs/app-melt.png" alt="The Lennard-Jones melt unwrapped through time, with its RMSD plotted in the side panel">
+
+**Trajectory analysis** in the side panel measures, frame by frame, the RMSD
+from the first frame (each fitted onto it by Kabsch), the radius of gyration,
+the solvent-accessible surface (Shrake–Rupley) and the polar contacts between
+residues; the RMSF of each atom; and helices and strands through time. Each is
+worked out only when picked, in the background, of the atoms chosen: Cα, the
+backbone, atom types or elements, or `analyse rmsd of <selection>` in the
+console. A line marks the frame shown, and a click on the plot goes to that
+frame. Above, the Lennard-Jones melt unwrapped through time, its RMSD rising as
+the crystal loosens.
+
+| | |
+| :---: | :---: |
+| <img src="docs/app-property.png" alt="The melt's atoms coloured by a per-atom displacement column"> | <img src="docs/app-periodic.png" alt="The Lennard-Jones box replicated 2×2×2"> |
+| **Per-atom properties**: every extra column of a LAMMPS dump or extended XYZ, frame by frame, to colour by or select on. Here each atom's displacement since the first frame | **Periodic boundaries**: *Wrap*, *Whole* (mend molecules the walls cut), *Unwrap* in time, and *Replicate*, under the cell's size. Here the box 2×2×2 |
+
+A property colours along the palette from its 1st to its 99th percentile across
+the whole trajectory, so a stray atom does not wash out the rest; `color
+property c_pe -5 -2` sets the range by hand. The cell tools are `wrap`,
+`whole`, `unwrap`, `replicate 3 3 1` and `original` in the console.
+
+<img src="docs/app-isosurface.png" alt="The 3d z² orbital of hydrogen as two blue lobes and a red torus" align="right" width="420">
+
+**Isosurfaces.** A Gaussian cube file's grid, or a CCP4, MRC or OpenDX map,
+is drawn as a surface where its values cross a level: mean plus 2.5 σ to
+begin with, − and + to step it, or `iso 0.05` in the console. Signed values,
+such as an orbital's, get a second, red lobe where they cross the negative
+level. Solid or as a mesh, in the view, traced pictures and films. On the
+right, hydrogen's 3d<sub>z²</sub> orbital, computed onto a cube grid.
+
+<br clear="right">
+
+## Pictures and films
+
+**Image** saves the molecule as a PNG at one to three times the size of the
+view, on the page or transparent. With **Ray traced** on, the view is lit
+with rays once it holds still, with soft shadows, ambient occlusion and edges
+smoothed by up to nine rays a pixel, and saved pictures are traced too. Every
+style keeps its own look. Tracing runs on the graphics card through a compute
+shader where it can (Metal, Vulkan, DirectX 12), and on the CPU otherwise; a
+protein at 1200 × 900 takes about a second.
+
+<img src="docs/app-film.png" alt="The Export a film dialog, with a turning preview of the melt">
+
+**Film › Export film…** (⇧⌘E) makes an animation: the trajectory played
+through, while the camera holds still, turns, rocks, or replays a path you
+recorded with **Record a camera path**. Pick the frames, smoothing between
+them, the frame rate, the size (up to 4K), antialiasing and the background,
+then the format: GIF or numbered PNGs made in the app, or, with ffmpeg
+installed, MP4, and WebM or ProRes 4444 with transparency. Overlays add a
+frame counter, the simulation time, a scale bar, the colour legend and a
+caption. The preview plays the film as it will be made, and the console's
+`movie out.mp4 turn=360 fps=30 counter scalebar` makes one without the dialog.
 
 ## Comparing
 
@@ -430,8 +577,9 @@ files, `install.sh` and `install.ps1`. Installed copies see it the next time
 they check. Only these builds update themselves: a build from source shows its
 version and says when a release is out, but never overwrites itself.
 
-The pictures in this README are drawn by the renderer itself. To redraw them
-into `docs/`:
+The gallery pictures in this README are drawn by the renderer itself, ray
+traced ones included; the `app-*` ones are screenshots of the window. To
+redraw the gallery into `docs/`:
 
 ```bash
 cargo test --release readme_gallery -- --ignored
@@ -447,9 +595,17 @@ cargo test --release readme_gallery -- --ignored
 | [`bonds.rs`](src/bonds.rs) | Bonds from distance, on a grid |
 | [`dssp.rs`](src/dssp.rs) | Secondary structure from backbone geometry |
 | [`align.rs`](src/align.rs) | Superposition and RMSD |
+| [`assembly.rs`](src/assembly.rs) | Biological assemblies from the deposited chains and their symmetry |
+| [`select.rs`](src/select.rs) | The selection language |
+| [`measure.rs`](src/measure.rs), [`contacts.rs`](src/contacts.rs) | Distances, angles and dihedrals; a ligand's contacts |
+| [`analysis.rs`](src/analysis.rs) | Trajectory analysis: RMSD, Rg, RMSF, SASA, contacts, secondary structure |
+| [`pbc.rs`](src/pbc.rs) | Periodic boundaries: wrap, make whole, unwrap, replicate |
+| [`surface.rs`](src/surface.rs), [`volume.rs`](src/volume.rs) | The molecular surface, and volumes with their isosurfaces |
 | [`job.rs`](src/job.rs) | Progress reporting shared by the slow paths |
 | [`render.rs`](src/render.rs) | Scene building, camera, and the software rasterizer |
 | [`gpu.rs`](src/gpu.rs), [`gpu.wgsl`](src/gpu.wgsl) | The same drawing on the graphics card, with wgpu |
+| [`trace.rs`](src/trace.rs), [`gpu_trace.rs`](src/gpu_trace.rs), [`trace.wgsl`](src/trace.wgsl) | Ray tracing, on the CPU and by a compute shader |
+| [`movie.rs`](src/movie.rs) | Films: frames, camera moves, overlays and encoders |
 | [`settings.rs`](src/settings.rs) | Preferences kept between sessions |
 | [`update.rs`](src/update.rs) | Checking GitHub releases, and replacing the app with a new one |
 | [`fetch.rs`](src/fetch.rs) | Input classification, RCSB / AlphaFold / UniProt / PubChem |
