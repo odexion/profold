@@ -115,6 +115,8 @@ enum Field {
     /// Rotation about the screen's x (0) or y (1) axis.
     Angle(usize),
     Zoom,
+    /// How fast spinning or rocking goes, in turns a minute.
+    Rpm(Turn),
     Hex(Pick),
     Rgb(Pick),
     /// A value in the film dialog.
@@ -431,6 +433,36 @@ enum Turn {
     Rock,
 }
 
+/// How far the camera turns in `dt` seconds at `rpm`: whole turns a minute
+/// when spinning, swings there and back a minute when rocking, 40 degrees
+/// each way. `phase` is where the rocking is in its swing, as a fraction of
+/// one, and is moved on.
+fn turn_step(turn: Turn, rpm: f32, dt: f32, phase: &mut f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    match turn {
+        Turn::Spin => dt * tau * rpm / 60.0,
+        Turn::Rock => {
+            let before = *phase;
+            let after = before + dt * rpm / 60.0;
+            *phase = after.rem_euclid(1.0);
+            0.7 * ((tau * after).sin() - (tau * before).sin())
+        }
+    }
+}
+
+/// The speeds offered when a turn button is right-clicked, in turns a minute.
+const TURN_RPMS: [f32; 5] = [1.0, 2.0, 5.0, 10.0, 20.0];
+
+/// Turns a minute as written in the bar: whole numbers bare, the rest to a
+/// tenth.
+fn rpm_text(rpm: f32) -> String {
+    if (rpm - rpm.round()).abs() < 0.05 {
+        format!("{}", rpm.round() as i32)
+    } else {
+        format!("{rpm:.1}")
+    }
+}
+
 /// Frames the camera takes to fly to something, at about sixty a second.
 const FLY_FRAMES: u32 = 20;
 
@@ -465,6 +497,8 @@ enum Dropdown {
     Repr,
     Style,
     Coloring,
+    /// How fast spinning or rocking goes, from right-clicking its button.
+    Speed(Turn),
 }
 
 pub struct Viewer {
@@ -577,6 +611,11 @@ pub struct Viewer {
     /// The camera turning by itself, until its button is pressed again.
     turning: Option<Turn>,
     turn_task: Option<Task<()>>,
+    /// How fast each goes, in turns (or swings) a minute.
+    spin_rpm: f32,
+    rock_rpm: f32,
+    /// Whose speeds the press under way closed, for that press only.
+    speed_closed: Option<Turn>,
     /// Images are saved with nothing behind the molecule.
     transparent: bool,
     /// The still view, and saved images, are ray traced: shadows, ambient
@@ -872,6 +911,9 @@ impl Viewer {
             overlay_next: false,
             turning: None,
             turn_task: None,
+            spin_rpm: settings.spin_rpm,
+            rock_rpm: settings.rock_rpm,
+            speed_closed: None,
             transparent: false,
             traced: false,
             saving: None,
@@ -2539,6 +2581,8 @@ impl Viewer {
             momentum: self.momentum,
             axes: self.show_axes,
             focus_zoom: self.focus_zoom,
+            spin_rpm: self.spin_rpm,
+            rock_rpm: self.rock_rpm,
             style: self.style,
             palette: self.palette,
             standard_colors: self.standard_colors,
@@ -2608,6 +2652,11 @@ impl Viewer {
                 if let Some(z) = settings::parse_zoom(&text) {
                     self.halt();
                     self.camera.zoom = z.clamp(0.12, 24.0);
+                }
+            }
+            Field::Rpm(turn) => {
+                if let Some(rpm) = settings::parse_rpm(&text) {
+                    self.set_rpm(turn, rpm, cx);
                 }
             }
             Field::Hex(target) => {
@@ -4514,29 +4563,48 @@ impl Viewer {
             cx.notify();
             return;
         }
+        self.start_turn(turn, cx);
+    }
+
+    fn rpm(&self, turn: Turn) -> f32 {
+        match turn {
+            Turn::Spin => self.spin_rpm,
+            Turn::Rock => self.rock_rpm,
+        }
+    }
+
+    /// Set how fast spinning or rocking goes, and set it going to be seen.
+    /// A turn already under way changes speed where it is.
+    fn set_rpm(&mut self, turn: Turn, rpm: f32, cx: &mut Context<Self>) {
+        match turn {
+            Turn::Spin => self.spin_rpm = rpm,
+            Turn::Rock => self.rock_rpm = rpm,
+        }
+        self.persist();
+        if self.turning != Some(turn) {
+            self.start_turn(turn, cx);
+        }
+        cx.notify();
+    }
+
+    fn start_turn(&mut self, turn: Turn, cx: &mut Context<Self>) {
+        self.halt();
         self.turning = Some(turn);
         let start = std::time::Instant::now();
         self.turn_task = Some(cx.spawn(async move |this, cx| {
-            let mut last = 0.0f32;
+            let (mut last, mut phase) = (0.0f32, 0.0f32);
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
                     .await;
                 let t = start.elapsed().as_secs_f32();
-                // Spinning: a turn every 14 seconds. Rocking: 40 degrees each
-                // way, there and back in six.
-                let step = match turn {
-                    Turn::Spin => (t - last) * std::f32::consts::TAU / 14.0,
-                    Turn::Rock => {
-                        let w = std::f32::consts::TAU / 6.0;
-                        0.7 * ((w * t).sin() - (w * last).sin())
-                    }
-                };
+                let dt = t - last;
                 last = t;
                 let going = this.update(cx, |this, cx| {
                     if this.turning != Some(turn) {
                         return false;
                     }
+                    let step = turn_step(turn, this.rpm(turn), dt, &mut phase);
                     this.camera.rotate(step, 0.0);
                     cx.notify();
                     true
@@ -5467,10 +5535,11 @@ impl Viewer {
     fn turn_button(&self, turn: Turn, cx: &mut Context<Self>) -> impl IntoElement {
         let on = self.turning == Some(turn);
         let (id, tip, icon) = match turn {
-            Turn::Spin => ("spin", "Spin", "icons/spin.svg"),
-            Turn::Rock => ("rock", "Rock", "icons/rock.svg"),
+            Turn::Spin => ("spin", "Spin · right-click for speed", "icons/spin.svg"),
+            Turn::Rock => ("rock", "Rock · right-click for speed", "icons/rock.svg"),
         };
-        div()
+        let which = Dropdown::Speed(turn);
+        let button = div()
             .id(id)
             .debug_selector(move || id.into())
             .on_mouse_down(MouseButton::Left, swallow)
@@ -5490,6 +5559,111 @@ impl Viewer {
                     .when(!on, |d| d.group_hover(id, |s| s.text_color(theme::text()))),
             )
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_turn(turn, cx)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if this.speed_closed.take() != Some(turn) {
+                        this.toggle(which, cx);
+                    }
+                }),
+            );
+        div()
+            .relative()
+            .child(button)
+            .when(self.open == Some(which), |d| {
+                d.child(deferred(self.speed_menu(turn, cx)).with_priority(2))
+            })
+    }
+
+    /// How fast spinning or rocking goes: typed, or one of a few speeds.
+    fn speed_menu(&self, turn: Turn, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let rpm = self.rpm(turn);
+        let (name, unit) = match turn {
+            Turn::Spin => ("SPIN SPEED", "turns a minute"),
+            Turn::Rock => ("ROCK SPEED", "swings a minute"),
+        };
+        let key = match turn {
+            Turn::Spin => "spin",
+            Turn::Rock => "rock",
+        };
+        menu(196.)
+            .left_auto()
+            .right(px(-3.))
+            .debug_selector(move || format!("{key}-speed"))
+            .on_mouse_down(MouseButton::Right, swallow)
+            // A press outside closes the speeds before anything else hears
+            // it, so a right-click on the button that opened them says they
+            // were just closed, and leaves them so.
+            .on_mouse_down_out(cx.listener(move |this, _, window, cx| {
+                this.open = None;
+                this.speed_closed = Some(turn);
+                cx.defer_in(window, |this, _, _| this.speed_closed = None);
+                cx.notify();
+            }))
+            .child(div().px(px(8.)).pt(px(3.)).pb(px(2.)).child(label(name)))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(4.))
+                    .child(self.field(
+                        if turn == Turn::Spin {
+                            "spin-rpm"
+                        } else {
+                            "rock-rpm"
+                        },
+                        Field::Rpm(turn),
+                        rpm_text(rpm),
+                        44.,
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(theme::muted())
+                            .child("RPM"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(9.5))
+                            .text_color(theme::faint())
+                            .child(unit),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(2.))
+                    .px(px(4.))
+                    .pt(px(3.))
+                    .pb(px(2.))
+                    .children(TURN_RPMS.iter().map(|&choice| {
+                        let chosen = (rpm - choice).abs() < 1e-4;
+                        div()
+                            .id(("rpm-choice", choice as usize))
+                            .debug_selector(move || format!("{key}-rpm-{choice}"))
+                            .flex_1()
+                            .flex()
+                            .justify_center()
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .font_family(theme::MONO)
+                            .text_size(px(10.5))
+                            .cursor_pointer()
+                            .when(chosen, |d| d.bg(theme::sunken()).text_color(theme::ink()))
+                            .when(!chosen, |d| {
+                                d.text_color(theme::muted())
+                                    .hover(|s| s.bg(theme::sunken()).text_color(theme::ink()))
+                            })
+                            .child(rpm_text(choice))
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.set_rpm(turn, choice, cx)),
+                            )
+                    })),
+            )
+            .into_any_element()
     }
 
     /// How far the view is turned about each axis from square on, and how
@@ -12384,6 +12558,96 @@ mod ui_tests {
         );
         click(cx, "show-water");
         assert_eq!(spheres(&view, cx), without);
+    }
+
+    #[test]
+    fn spinning_and_rocking_go_at_the_speed_set() {
+        use std::f32::consts::TAU;
+        // Summed over uneven frames, a minute at r turns a minute is r
+        // turns, and a rock is 40 degrees out at a quarter swing.
+        for rpm in [crate::settings::SPIN_RPM, 1.0, 7.5, 60.0] {
+            let (mut total, mut phase, mut t) = (0.0f64, 0.0f32, 0.0f32);
+            let mut i = 0;
+            while t < 60.0 {
+                let dt = (0.012 + 0.008 * (i % 3) as f32).min(60.0 - t);
+                total += turn_step(Turn::Spin, rpm, dt, &mut phase) as f64;
+                t += dt;
+                i += 1;
+            }
+            assert!(
+                (total - (rpm * TAU) as f64).abs() < 1e-3 * rpm as f64,
+                "{rpm}: {total}"
+            );
+        }
+        // The old fixed speeds: a turn in 14 seconds, a swing in six.
+        let mut phase = 0.0;
+        let a = turn_step(Turn::Spin, crate::settings::SPIN_RPM, 14.0, &mut phase);
+        assert!((a - TAU).abs() < 1e-5);
+        for rpm in [crate::settings::ROCK_RPM, 3.0, 30.0] {
+            let (mut angle, mut phase) = (0.0f32, 0.0f32);
+            let quarter = 15.0 / rpm;
+            for _ in 0..1000 {
+                angle += turn_step(Turn::Rock, rpm, quarter / 1000.0, &mut phase);
+            }
+            assert!((angle - 0.7).abs() < 1e-4, "{rpm}: {angle}");
+            // And back through nothing at the half swing, and out the other way.
+            for _ in 0..1000 {
+                angle += turn_step(Turn::Rock, rpm, quarter / 1000.0, &mut phase);
+            }
+            assert!(angle.abs() < 1e-4, "{rpm}: {angle}");
+            for _ in 0..1000 {
+                angle += turn_step(Turn::Rock, rpm, quarter / 1000.0, &mut phase);
+            }
+            assert!((angle + 0.7).abs() < 1e-4, "{rpm}: {angle}");
+        }
+    }
+
+    #[gpui::test]
+    fn right_clicking_spin_or_rock_sets_its_speed(cx: &mut TestAppContext) {
+        let (view, cx) = open(cx);
+        let right_click = |cx: &mut VisualTestContext, selector: &'static str| {
+            let at = cx.debug_bounds(selector).unwrap().center();
+            cx.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+            cx.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+            cx.run_until_parked();
+        };
+        // A right-click opens the speeds without setting anything turning.
+        right_click(cx, "spin");
+        assert!(cx.debug_bounds("spin-speed").is_some());
+        assert_eq!(view.update(cx, |this, _| this.turning), None);
+        // Speeds open one way or the other at a time.
+        let speeds = Some(Dropdown::Speed(Turn::Spin));
+        assert!(view.update(cx, |this, _| this.open == speeds));
+        // A speed sets it going at that speed, and leaves the speeds open.
+        click(cx, "spin-rpm-10");
+        assert_eq!(view.update(cx, |this, _| this.spin_rpm), 10.0);
+        assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Spin));
+        assert!(cx.debug_bounds("spin-speed").is_some());
+        click(cx, "spin-rpm-2");
+        assert_eq!(view.update(cx, |this, _| this.spin_rpm), 2.0);
+        assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Spin));
+        // Typed, too.
+        view.update_in(cx, |this, window, cx| {
+            this.start_edit(Field::Rpm(Turn::Spin), "2".into(), window, cx);
+            this.editor.update(cx, |e, cx| e.set_text("3.5 rpm", cx));
+            this.commit_edit(cx);
+        });
+        assert_eq!(view.update(cx, |this, _| this.spin_rpm), 3.5);
+        right_click(cx, "spin");
+        // Right-clicked again, it closes.
+        assert!(view.update(cx, |this, _| this.open.is_none()));
+
+        // Rock keeps its own, and switches over from spinning.
+        right_click(cx, "rock");
+        click(cx, "rock-rpm-5");
+        assert_eq!(
+            view.update(cx, |this, _| (this.rock_rpm, this.spin_rpm)),
+            (5.0, 3.5)
+        );
+        assert_eq!(view.update(cx, |this, _| this.turning), Some(Turn::Rock));
+        // A left click still stops it.
+        click(cx, "rock");
+        assert_eq!(view.update(cx, |this, _| this.turning), None);
     }
 
     #[gpui::test]

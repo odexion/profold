@@ -19,6 +19,10 @@ pub struct Settings {
     pub axes: bool,
     /// How much closer than its usual framing Focus brings the camera.
     pub focus_zoom: f32,
+    /// How fast the camera spins, in turns a minute, and rocks, in swings
+    /// there and back a minute.
+    pub spin_rpm: f32,
+    pub rock_rpm: f32,
     pub style: Style,
     pub palette: Palette,
     /// Elements in their standard colours rather than the palette's. Only
@@ -40,6 +44,8 @@ impl Default for Settings {
             momentum: true,
             axes: true,
             focus_zoom: 1.0,
+            spin_rpm: SPIN_RPM,
+            rock_rpm: ROCK_RPM,
             style: Style::Illustrative,
             palette: Palette::Spectrum,
             standard_colors: true,
@@ -51,6 +57,13 @@ impl Default for Settings {
         }
     }
 }
+
+/// A turn every 14 seconds, and a swing there and back every six.
+pub const SPIN_RPM: f32 = 60.0 / 14.0;
+pub const ROCK_RPM: f32 = 10.0;
+
+/// The slowest and fastest the camera spins or rocks, in turns a minute.
+pub const RPM_RANGE: (f32, f32) = (0.1, 120.0);
 
 fn path() -> Option<PathBuf> {
     file("settings.json")
@@ -161,6 +174,12 @@ impl Settings {
         if self.focus_zoom != 1.0 {
             v["focus_zoom"] = json!(self.focus_zoom);
         }
+        if self.spin_rpm != SPIN_RPM {
+            v["spin_rpm"] = json!(self.spin_rpm);
+        }
+        if self.rock_rpm != ROCK_RPM {
+            v["rock_rpm"] = json!(self.rock_rpm);
+        }
         if self.dark {
             v["theme"] = json!("dark");
         }
@@ -193,6 +212,16 @@ impl Settings {
             if z > 0.0 && z.is_finite() {
                 s.focus_zoom = z as f32;
             }
+        }
+        let rpm = |key: &str| {
+            let r = v.get(key).and_then(Value::as_f64)? as f32;
+            (r.is_finite() && r > 0.0).then(|| r.clamp(RPM_RANGE.0, RPM_RANGE.1))
+        };
+        if let Some(r) = rpm("spin_rpm") {
+            s.spin_rpm = r;
+        }
+        if let Some(r) = rpm("rock_rpm") {
+            s.rock_rpm = r;
         }
         s.dark = v.get("theme").and_then(Value::as_str) == Some("dark");
         s.vertical = v.get("layout").and_then(Value::as_str) == Some("vertical");
@@ -295,6 +324,19 @@ pub fn parse_zoom(text: &str) -> Option<f32> {
     plain_number(text, &['x', 'X', '×']).filter(|v| *v > 0.0)
 }
 
+/// Turns a minute: "10", "2.5 rpm". Kept between the slowest and fastest
+/// the camera goes; nothing or less is no speed.
+pub fn parse_rpm(text: &str) -> Option<f32> {
+    let t = text.trim();
+    let t = t
+        .strip_suffix("rpm")
+        .or_else(|| t.strip_suffix("RPM"))
+        .unwrap_or(t);
+    plain_number(t, &[])
+        .filter(|v| *v > 0.0)
+        .map(|v| v.clamp(RPM_RANGE.0, RPM_RANGE.1))
+}
+
 /// "#ff8800", "ff8800" or the short "#f80".
 pub fn parse_hex(text: &str) -> Option<[f32; 3]> {
     let t = text.trim().trim_start_matches('#');
@@ -365,6 +407,11 @@ mod tests {
         assert_eq!(parse_opacity("1"), Some(1.0));
         assert_eq!(parse_degrees("-45°"), Some(-45.0));
         assert_eq!(parse_zoom("0"), None);
+        assert_eq!(parse_rpm("10"), Some(10.0));
+        assert_eq!(parse_rpm(" 2.5 rpm"), Some(2.5));
+        assert_eq!(parse_rpm("1000"), Some(RPM_RANGE.1));
+        assert_eq!(parse_rpm("0"), None);
+        assert_eq!(parse_rpm("-3"), None);
         assert_eq!(parse_hex("#f80"), Some([1.0, 0x88 as f32 / 255.0, 0.0]));
         assert_eq!(parse_hex("ff8800").map(hex), Some("#ff8800".into()));
         assert_eq!(
@@ -386,6 +433,8 @@ mod tests {
             vertical: true,
             band_height: 420.0,
             focus_zoom: 4.0,
+            spin_rpm: 12.5,
+            rock_rpm: 3.0,
             ..Settings::default()
         };
         s.appearance.set(
@@ -413,6 +462,7 @@ mod tests {
         assert!(back.vertical);
         assert_eq!(back.band_height, 420.0);
         assert_eq!(back.focus_zoom, 4.0);
+        assert_eq!((back.spin_rpm, back.rock_rpm), (12.5, 3.0));
         assert_eq!(back.appearance.get(&Species::Kind("2".into())).alpha, 0.25);
     }
 
