@@ -306,13 +306,62 @@ pub fn replicate(s: &Structure, n: [usize; 3]) -> Result<Structure> {
             })
         })
         .collect();
-    out.bonds = (0..images.len())
-        .flat_map(|k| {
-            s.bonds
-                .iter()
-                .map(move |&[a, b]| [a + (k * count) as u32, b + (k * count) as u32])
+    // Each copy keeps its own bonds. One that reached through a wall of the
+    // old cell, shorter that way than across it, joins the neighbouring copy
+    // instead, and from the last copy wraps round the new cell as it wrapped
+    // round the old.
+    let frame = Frame::new(base);
+    let len2 = |d: V| d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    let through: Vec<[i64; 3]> = s
+        .bonds
+        .iter()
+        .map(|&[a, b]| {
+            let Some(frame) = &frame else {
+                return [0; 3];
+            };
+            let (pa, pb) = (s.atoms[a as usize].pos, s.atoms[b as usize].pos);
+            let direct: V = std::array::from_fn(|k| pb[k] - pa[k]);
+            // Whole cells between them, and the bond the short way round.
+            let (fa, fb) = (frame.fractional(pa), frame.fractional(pb));
+            let m: [i64; 3] = std::array::from_fn(|i| (fb[i] - fa[i]).round() as i64);
+            let shortcut = frame.nearest(pa, pb);
+            // A bond as long one way as the other, half a cell, stays put.
+            if len2(shortcut) < len2(direct) * (1.0 - 1e-4) {
+                m
+            } else {
+                [0; 3]
+            }
         })
         .collect();
+    let index = |f: [i64; 3]| -> usize {
+        let w: [usize; 3] = std::array::from_fn(|i| f[i].rem_euclid(n[i] as i64) as usize);
+        (w[0] * n[1] + w[1]) * n[2] + w[2]
+    };
+    let mut bonds: Vec<[u32; 2]> = images
+        .iter()
+        .enumerate()
+        .flat_map(|(k, f)| {
+            s.bonds.iter().zip(&through).map(move |(&[a, b], m)| {
+                let other = index(std::array::from_fn(|i| f[i] as i64 - m[i]));
+                [a + (k * count) as u32, b + (other * count) as u32]
+            })
+        })
+        .collect();
+    // Bonds worked out from distance are worked out again between copies, so
+    // atoms that meet across a seam bond as they would anywhere else.
+    if s.bonds_inferred && count > 0 {
+        bonds.extend(
+            crate::bonds::infer(&out.atoms)
+                .into_iter()
+                .filter(|&[x, y]| x as usize / count != y as usize / count),
+        );
+        for b in &mut bonds {
+            b.sort_unstable();
+        }
+        bonds.sort_unstable();
+        bonds.dedup();
+    }
+    out.bonds = bonds;
     out.frames = Arc::new(
         s.frames
             .iter()
@@ -422,5 +471,72 @@ ITEM: ATOMS id type x y z c_pe
             .iter()
             .all(|a| (a.residue as usize) < r.residues.len()));
         assert!(replicate(&s, [0, 1, 1]).is_err());
+    }
+
+    /// Every pair closer than its covalent radii plus 0.4 Å, over all pairs,
+    /// by the rule `bonds::infer` follows on its grid.
+    fn bonded_pairs(s: &Structure) -> Vec<[u32; 2]> {
+        let mut out = Vec::new();
+        for (i, a) in s.atoms.iter().enumerate() {
+            for (j, b) in s.atoms.iter().enumerate().skip(i + 1) {
+                let (ra, rb) = (a.element.covalent(), b.element.covalent());
+                if ra <= 0.0 || rb <= 0.0 || (a.element.is_metal() && b.element.is_metal()) {
+                    continue;
+                }
+                let d = (0..3).map(|k| (a.pos[k] - b.pos[k]).powi(2)).sum::<f32>();
+                if d < (ra + rb + 0.4).powi(2) && d > 0.4 * 0.4 {
+                    out.push([i as u32, j as u32]);
+                }
+            }
+        }
+        out
+    }
+
+    fn sorted(bonds: &[[u32; 2]]) -> Vec<[u32; 2]> {
+        let mut v: Vec<[u32; 2]> = bonds.iter().map(|&[a, b]| [a.min(b), a.max(b)]).collect();
+        v.sort_unstable();
+        v
+    }
+
+    #[test]
+    fn replicated_rock_salt_bonds_across_the_seams_between_copies() {
+        let s = crate::formats::load_bytes(
+            "rocksalt.cif",
+            include_bytes!("../samples/rocksalt.cif").to_vec(),
+        )
+        .unwrap();
+        assert!(s.bonds_inferred);
+        assert_eq!(s.atoms.len(), 8);
+        let r = replicate(&s, [3, 3, 2]).unwrap();
+        assert_eq!(r.atoms.len(), 144);
+        // Sites 6 × 6 × 4 apart by half a cell, each joined to the next
+        // along every axis: 5·6·4 + 6·5·4 + 6·6·3.
+        assert_eq!(r.bonds.len(), 348);
+        assert_eq!(sorted(&r.bonds), bonded_pairs(&r));
+        // Once, each.
+        let mut unique = sorted(&r.bonds);
+        unique.dedup();
+        assert_eq!(unique.len(), r.bonds.len());
+    }
+
+    #[test]
+    fn a_bond_through_a_wall_joins_the_next_copy_and_wraps_round_the_last() {
+        let mut s = dump();
+        s.frames = Arc::new(s.frames[..1].to_vec());
+        // Atom 2 sits 0.7 past atom 1's wall: the bond goes through it.
+        Arc::make_mut(&mut s.frames)[0].pos[1] = [0.2, 5.0, 5.0];
+        s.set_frame(0);
+        s.bonds = vec![[0, 1]];
+        let r = replicate(&s, [2, 1, 1]).unwrap();
+        // Listed bonds are the file's: copied, never added to.
+        assert_eq!(sorted(&r.bonds), vec![[0, 3], [1, 2]]);
+        let cell = Frame::new(r.cell.unwrap()).unwrap();
+        for &[a, b] in &r.bonds {
+            let d = cell.nearest(r.atoms[a as usize].pos, r.atoms[b as usize].pos);
+            assert!((d[0].abs() - 0.7).abs() < 1e-4 && d[1] == 0.0 && d[2] == 0.0);
+        }
+        // Atom 1 of the first copy, at 9.5, to atom 2 of the second, at
+        // 10.2: straight across the seam, not through the new wall.
+        assert!(close(r.atoms[3].pos, [10.2, 5.0, 5.0]));
     }
 }

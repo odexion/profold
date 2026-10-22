@@ -299,6 +299,9 @@ pub struct Structure {
     pub ligand_paint: HashMap<String, LigandPaint>,
     /// Pairs of atom indices, read from the file or worked out from distance.
     pub bonds: Vec<[u32; 2]>,
+    /// True when `bonds` were worked out from distance, the file listing
+    /// none, so they may be worked out again where atoms meet anew.
+    pub bonds_inferred: bool,
     pub cell: Option<Cell>,
     /// Every frame of a trajectory, the current one included. Empty for a
     /// single structure. Shared, so changing frame does not copy the lot.
@@ -346,6 +349,7 @@ impl Structure {
             tint: None,
             ligand_paint: HashMap::new(),
             bonds: Vec::new(),
+            bonds_inferred: false,
             cell: None,
             frames: Arc::new(Vec::new()),
             frame: 0,
@@ -1239,6 +1243,7 @@ impl Builder {
         structure.cell = self.cell;
         structure.kinds = self.kinds;
         structure.assemblies = self.assemblies;
+        structure.bonds_inferred = self.bonds.is_empty();
         structure.bonds = if self.bonds.is_empty() {
             crate::bonds::infer(&self.atoms)
         } else {
