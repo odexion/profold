@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.5.2 — 2026-11-23
+
+### Viewing
+- **Orientation axes** in the bottom-right corner turn with the structure:
+  an axis towards the eye is solid and ends in a dot, one going back is
+  faint and dashed. A click on a letter looks down that axis (from its
+  negative end with ⌘ or Ctrl). *Camera › Orientation axes* hides them.
+- **Focus zoom** (½×, 1×, 2×, 4×) under Focus in the pick's card sets how
+  close focus comes, and is remembered.
+- **Spin and Rock** are ribbon icons before the angle readout, and keep
+  turning through clicks, drags, zoom, pan, focus and reset until their
+  buttons stop them. Right-click either to set how many turns a minute
+  it goes.
+
+### Colouring
+- **Amino acid** colours each residue by its kind, in RasMol's colours or
+  the palette's.
+- **Carbons only**: the colouring can go to carbons alone, while every
+  other element keeps its own colour (`carbons on|off` in the console).
+
+### Picking
+- **Runs of residues.** Shift-click in the sequence, or in the viewport in
+  Cartoon, Tube and Surface, picks every residue between the two. The run
+  gets a card of its own: its length, ends, letters, residue and fold
+  counts, and mean B-factor or pLDDT with its range. Focus, Label and Copy
+  work on the whole run.
+
+### Fixes
+- **Replicated cells bond across the seams between their copies.** Bonds
+  worked out from distance are worked out again between copies, so rock
+  salt 3×3×2 has 348 bonds in one lattice rather than 216 in 18 blocks.
+  A bond through a wall of the old cell joins the neighbouring copy.
+
+### Look
+- The wordmark is in Nunito SemiBold, shipped inside the app under the OFL.
+
 ## 0.5.1 — 2026-10-21
 
 ### Fixes
